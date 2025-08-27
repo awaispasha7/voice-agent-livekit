@@ -49,8 +49,10 @@ voice-agent
      ```
 
 5. **Access the web interface:**
-   - cd web
-   - npx serve -s . -l 5000
+   ```
+   cd web
+   npx serve -s . -l 5000
+   ```
 
 ## Usage
 
