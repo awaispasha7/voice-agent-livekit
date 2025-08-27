@@ -154,8 +154,9 @@ class DynamicVoiceAgent {
             document.getElementById('joinBtn').disabled = true;
             
             // Get connection details with intent information
-            const response = await fetch('http://localhost:8000/api/connection_details', {
-                method: 'POST',
+            // const response = await fetch('http://localhost:8000/api/connection_details', {
+            const response = await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/connection_details', {
+            method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
@@ -310,7 +311,8 @@ class DynamicVoiceAgent {
     
     async updateSessionIntent(intent) {
         try {
-            await fetch('http://localhost:8000/api/sessions/update', {
+            // await fetch('http://localhost:8000/api/sessions/update', {
+                await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/sessions/update', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -519,7 +521,8 @@ class DynamicVoiceAgent {
     
     async requestTransfer(department) {
         try {
-            const response = await fetch(`http://localhost:8000/api/sessions/${this.currentRoomName}/transfer`, {
+            // const response = await fetch(`http://localhost:8000/api/sessions/${this.currentRoomName}/transfer`, {
+            const response = await fetch(`https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/sessions/${this.currentRoomName}/transfer`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -546,7 +549,8 @@ class DynamicVoiceAgent {
                 
                 // Notify backend about session completion
                 if (this.currentRoomName) {
-                    fetch(`http://localhost:8000/api/rooms/${this.currentRoomName}`, {
+                    // fetch(`http://localhost:8000/api/rooms/${this.currentRoomName}`, {
+                    fetch(`https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/rooms/${this.currentRoomName}`, {
                         method: 'DELETE'
                     }).catch(e => console.warn('Session cleanup notification failed:', e));
                 }
