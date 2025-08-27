@@ -39,12 +39,12 @@ voice-agent
 4. **Run the services:**
    - Start the worker:
      ```
-     python main_dynamic.py download-files
-     python main_dynamic.py dev
+     python worker/main_dynamic.py download-files
+     python worker/main_dynamic.py dev
      ```
    - Start the token server:
      ``` 
-     python main_dynamic.py
+     python token-server/main_dynamic.py
 
      ```
 
