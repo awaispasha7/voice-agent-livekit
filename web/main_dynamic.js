@@ -410,11 +410,27 @@ class DynamicVoiceAgent {
             document.getElementById('joinBtn').disabled = true;
             
             // Show and initialize transcript container
+            // First make sure the container exists
+            this.createTranscriptContainer();
+            
             const transcriptContainer = document.getElementById('transcript-container');
-            transcriptContainer.classList.add('show');
-            document.getElementById('transcript-status').className = 'listening';
-            document.getElementById('interim-transcript').textContent = '';
-            document.getElementById('final-transcript').textContent = '';
+            if (transcriptContainer) {
+                transcriptContainer.style.display = 'block';
+                transcriptContainer.classList.add('show');
+                
+                const status = document.getElementById('transcript-status');
+                if (status) status.className = 'listening';
+                
+                const interimElement = document.getElementById('interim-transcript');
+                if (interimElement) interimElement.textContent = '';
+                
+                const finalElement = document.getElementById('final-transcript');
+                if (finalElement) finalElement.textContent = '';
+                
+                console.log('Transcript container initialized and shown');
+            } else {
+                console.error('Failed to find or create transcript container');
+            }
             
             // Initialize transcript history
             this.interimTranscript = "";
@@ -619,8 +635,16 @@ class DynamicVoiceAgent {
                 // Handle transcript updates
                 if (data && (data.type === 'transcript' || data.transcript || data.text)) {
                     try {
+                        console.log('TRANSCRIPT DATA RECEIVED:', data);
                         self.updateTranscript(data);
                         console.log('Transcript update processed successfully');
+                        
+                        // Make transcript container visible
+                        const container = document.getElementById('transcript-container');
+                        if (container) {
+                            container.classList.add('show');
+                            console.log('Transcript container shown due to transcript update');
+                        }
                     } catch (err) {
                         console.error('Error updating transcript:', err);
                     }
@@ -926,6 +950,8 @@ class DynamicVoiceAgent {
                 this.finalTranscript += (this.finalTranscript ? ' ' : '') + transcriptText;
                 this.interimTranscript = '';
                 
+                console.log('Updated final transcript:', this.finalTranscript);
+                
                 // Log the final transcript as user message
                 this.addLogEntry({
                     speaker: this.participantName || 'You',
@@ -935,16 +961,28 @@ class DynamicVoiceAgent {
                 console.log('Added final transcript to conversation log');
             } else {
                 this.interimTranscript = transcriptText;
-                console.log('Updated interim transcript');
+                console.log('Updated interim transcript:', this.interimTranscript);
             }
             
-            // Update the UI
+            // Make sure DOM elements exist before attempting to update them
             const interimElement = document.getElementById('interim-transcript');
             const finalElement = document.getElementById('final-transcript');
             
+            // Debug element existence
+            console.log('Transcript elements exist:', {
+                interimElement: !!interimElement,
+                finalElement: !!finalElement
+            });
+            
             if (interimElement && finalElement) {
+                // Update the content
                 interimElement.textContent = this.interimTranscript;
                 finalElement.textContent = this.finalTranscript;
+                
+                console.log('Updated DOM with transcript text:', {
+                    interim: this.interimTranscript,
+                    final: this.finalTranscript
+                });
                 
                 // Update the timestamp
                 this.lastTranscriptUpdate = Date.now();
@@ -959,21 +997,75 @@ class DynamicVoiceAgent {
                         status.textContent = 'Listening...';
                         status.className = 'listening';
                     }
+                    console.log('Updated transcript status:', status.textContent);
                 }
                 
                 // Make sure transcript container is visible
                 const container = document.getElementById('transcript-container');
-                if (container && !container.classList.contains('show')) {
-                    container.classList.add('show');
-                    console.log('Transcript container now visible');
+                if (container) {
+                    container.style.display = 'block'; // Ensure it's visible with inline style
+                    if (!container.classList.contains('show')) {
+                        container.classList.add('show');
+                        console.log('Transcript container now visible');
+                    }
+                } else {
+                    console.warn('Transcript container element not found');
                 }
-                
-                console.log('Transcript UI updated successfully');
             } else {
-                console.warn('Transcript UI elements not found');
+                console.warn('Transcript UI elements not found. Creating them now...');
+                
+                // Try to create them if they don't exist
+                this.createTranscriptContainer();
+                
+                // Retry update after creating container
+                setTimeout(() => this.updateTranscript(data), 100);
             }
         } catch (uiError) {
             console.error('Error updating transcript UI:', uiError);
+        }
+    }
+    
+    // Helper method to create transcript container if it doesn't exist
+    createTranscriptContainer() {
+        try {
+            // Check if container already exists
+            if (document.getElementById('transcript-container')) {
+                console.log('Transcript container already exists');
+                return;
+            }
+            
+            console.log('Creating transcript container...');
+            
+            // Create container
+            const container = document.createElement('div');
+            container.id = 'transcript-container';
+            container.className = 'transcript-container show';
+            container.style.display = 'block';
+            
+            // Set HTML content
+            container.innerHTML = `
+                <div class="transcript-header">
+                    <span>🎤 Live Transcript</span>
+                    <span id="transcript-status">Listening...</span>
+                </div>
+                <div id="transcript-body" class="transcript-body">
+                    <div id="interim-transcript" class="transcript-text interim"></div>
+                    <div id="final-transcript" class="transcript-text final"></div>
+                </div>
+            `;
+            
+            // Find a good place to insert it
+            const controls = document.getElementById('controls');
+            if (controls && controls.parentNode) {
+                controls.parentNode.insertBefore(container, controls.nextSibling);
+            } else {
+                // Fallback - just append to the container
+                document.querySelector('.container').appendChild(container);
+            }
+            
+            console.log('Transcript container created successfully');
+        } catch (error) {
+            console.error('Error creating transcript container:', error);
         }
     }
     
