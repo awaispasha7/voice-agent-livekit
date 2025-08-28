@@ -419,16 +419,72 @@ class DynamicVoiceAgent {
             // Initialize transcript history
             this.interimTranscript = "";
             this.finalTranscript = "";
+            
+            // Send a test data message to ensure data channels are working
+            setTimeout(() => {
+                try {
+                    this.room.localParticipant.publishData(
+                        JSON.stringify({
+                            type: 'client_info',
+                            client: 'web',
+                            version: '2.0',
+                            timestamp: new Date().toISOString()
+                        }),
+                        LivekitClient.DataPacketKind.RELIABLE
+                    );
+                    console.log('Sent client info data packet');
+                } catch (e) {
+                    console.error('Failed to send test data packet:', e);
+                }
+            }, 2000);
         });
         
         // Setup data channel for receiving transcripts
         this.room.on(LivekitClient.RoomEvent.DataReceived, (payload) => {
             try {
-                const data = JSON.parse(payload.data);
-                console.log('Received data:', data);
+                console.log('Received data packet:', payload);
+                let data;
+                
+                // Handle different payload formats
+                if (payload.data instanceof Uint8Array || payload.data instanceof ArrayBuffer) {
+                    // Convert binary data to string
+                    const decoder = new TextDecoder();
+                    const dataStr = decoder.decode(payload.data);
+                    try {
+                        data = JSON.parse(dataStr);
+                    } catch (jsonError) {
+                        console.warn('Received non-JSON data:', dataStr);
+                        // If it's a simple string, treat it as transcript
+                        if (dataStr.trim()) {
+                            data = { transcript: dataStr, final: true };
+                        } else {
+                            return; // Skip empty data
+                        }
+                    }
+                } else if (typeof payload.data === 'string') {
+                    try {
+                        data = JSON.parse(payload.data);
+                    } catch (jsonError) {
+                        console.warn('Received non-JSON string:', payload.data);
+                        // If it's a simple string, treat it as transcript
+                        if (payload.data.trim()) {
+                            data = { transcript: payload.data, final: true };
+                        } else {
+                            return; // Skip empty data
+                        }
+                    }
+                } else if (typeof payload.data === 'object') {
+                    // Already an object
+                    data = payload.data;
+                } else {
+                    console.warn('Unhandled data format:', typeof payload.data, payload.data);
+                    return;
+                }
+                
+                console.log('Processed data:', data);
                 
                 // Handle transcript updates
-                if (data.type === 'transcript' || data.transcript) {
+                if (data.type === 'transcript' || data.transcript || data.text) {
                     this.updateTranscript(data);
                 }
                 
@@ -479,6 +535,8 @@ class DynamicVoiceAgent {
             return;
         }
         
+        console.log(`Transcript update: "${transcriptText}" (final: ${isFinal})`);
+        
         // Update appropriate transcript based on final flag
         if (isFinal) {
             this.finalTranscript += (this.finalTranscript ? ' ' : '') + transcriptText;
@@ -495,20 +553,35 @@ class DynamicVoiceAgent {
         }
         
         // Update the UI
-        document.getElementById('interim-transcript').textContent = this.interimTranscript;
-        document.getElementById('final-transcript').textContent = this.finalTranscript;
+        const interimElement = document.getElementById('interim-transcript');
+        const finalElement = document.getElementById('final-transcript');
         
-        // Update the timestamp
-        this.lastTranscriptUpdate = Date.now();
-        
-        // Update transcript status
-        const status = document.getElementById('transcript-status');
-        if (this.interimTranscript) {
-            status.textContent = 'Transcribing...';
-            status.className = '';
+        if (interimElement && finalElement) {
+            interimElement.textContent = this.interimTranscript;
+            finalElement.textContent = this.finalTranscript;
+            
+            // Update the timestamp
+            this.lastTranscriptUpdate = Date.now();
+            
+            // Update transcript status
+            const status = document.getElementById('transcript-status');
+            if (status) {
+                if (this.interimTranscript) {
+                    status.textContent = 'Transcribing...';
+                    status.className = '';
+                } else {
+                    status.textContent = 'Listening...';
+                    status.className = 'listening';
+                }
+            }
+            
+            // Make sure transcript container is visible
+            const container = document.getElementById('transcript-container');
+            if (container && !container.classList.contains('show')) {
+                container.classList.add('show');
+            }
         } else {
-            status.textContent = 'Listening...';
-            status.className = 'listening';
+            console.warn('Transcript UI elements not found');
         }
     }
     
