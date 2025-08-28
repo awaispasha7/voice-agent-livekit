@@ -438,6 +438,68 @@
             padding: 1rem;
             margin-bottom: 1rem;
         }
+        
+        /* Live transcript styling */
+        .transcript-container {
+            margin-top: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 10px;
+            overflow: hidden;
+            display: none;
+            order: 2.5; /* Position between controls and conversation log */
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            width: 100%;
+        }
+        
+        .transcript-container.show {
+            display: block;
+        }
+        
+        .transcript-header {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 0.5rem 1rem;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        #transcript-status {
+            font-size: 0.8rem;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 0.2rem 0.5rem;
+            border-radius: 12px;
+        }
+        
+        #transcript-status.listening {
+            animation: pulse 1.5s infinite;
+        }
+        
+        .transcript-body {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-top: none;
+            padding: 1rem;
+            max-height: 150px;
+            overflow-y: auto;
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+        
+        .transcript-text {
+            margin-bottom: 0.5rem;
+        }
+        
+        .transcript-text.final {
+            font-weight: 500;
+            color: #212529;
+        }
+        
+        .transcript-text.interim {
+            font-style: italic;
+            color: #6c757d;
+        }
 
         .features-list h4 {
             color: #2c3e50;
@@ -528,6 +590,18 @@
         <div id="controls" class="controls">
             <button id="muteBtn" class="btn">🔇 Mute</button>
             <button id="disconnectBtn" class="btn danger">📞 Disconnect</button>
+        </div>
+        
+        <!-- Live Transcript Display -->
+        <div id="transcript-container" class="transcript-container">
+            <div class="transcript-header">
+                <span>🎤 Live Transcript</span>
+                <span id="transcript-status">Listening...</span>
+            </div>
+            <div id="transcript-body" class="transcript-body">
+                <div id="interim-transcript" class="transcript-text interim"></div>
+                <div id="final-transcript" class="transcript-text final"></div>
+            </div>
         </div>
 
         <!-- Conversation Log will be dynamically added here -->

@@ -13,6 +13,11 @@ class DynamicVoiceAgent {
         this.detectedUserData = {};
         this.conversationLog = [];
         
+        // Transcript handling
+        this.interimTranscript = "";
+        this.finalTranscript = "";
+        this.lastTranscriptUpdate = Date.now();
+        
         this.bindEvents();
         this.updateDisplay();
     }
@@ -386,117 +391,125 @@ class DynamicVoiceAgent {
     }
     
     setupEnhancedRoomEvents() {
-        // Handle incoming audio (agent speaking)
-        this.room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
-            console.log('Track subscribed:', track.kind, 'from', participant.identity);
-            if (participant.sid === this.room.localParticipant.sid) return;
+        // Handle room state changes
+        this.room.on(LivekitClient.RoomEvent.Disconnected, () => {
+            this.isConnected = false;
+            this.showStatus('Disconnected from voice chat', 'info');
+            document.getElementById('controls').classList.remove('show');
+            document.getElementById('joinBtn').disabled = false;
+            document.getElementById('joinBtn').textContent = 'Reconnect';
             
-            if (track.kind === LivekitClient.Track.Kind.Audio) {
-                console.log('Setting up agent audio...');
-                const audioElement = track.attach();
-                audioElement.style.display = 'none';
-                audioElement.volume = 1.0;
-                document.body.appendChild(audioElement);
-                
-                const playAudio = async () => {
-                    try {
-                        await audioElement.play();
-                        console.log('Agent audio is playing successfully');
-                    } catch (e) {
-                        console.error('Audio play failed:', e);
-                        if (e.name === 'NotAllowedError') {
-                            this.showStatus('⚠️ Please click anywhere to enable audio playback', 'warning');
-                            document.addEventListener('click', async () => {
-                                try {
-                                    await audioElement.play();
-                                    console.log('Audio started after user interaction');
-                                } catch (err) {
-                                    console.warn('Audio still failed after interaction:', err);
-                                }
-                            }, { once: true });
-                        }
-                    }
-                };
-                
-                playAudio();
-            }
-        });
-        
-        // Handle data messages (for intent updates from agent)
-        this.room.on(LivekitClient.RoomEvent.DataReceived, (payload, participant) => {
-            try {
-                const data = JSON.parse(new TextDecoder().decode(payload));
-                console.log('Received data from agent:', data);
-                
-                if (data.type === 'intent_detection') {
-                    console.log(`INTENT_LOG: Received intent detection from agent: ${data.intent}`);
-                    this.updateDetectedIntent(data.intent);
-                    this.addToConversationLog('System', `Intent detected: ${data.intent}`, data.intent);
-                }
-                
-                if (data.type === 'intent_update') {
-                    console.log(`INTENT_LOG: Received intent update from agent: ${data.intent}`);
-                    this.updateDetectedIntent(data.intent);
-                    this.addToConversationLog('System', `Intent updated: ${data.intent}`);
-                }
-                
-                if (data.type === 'user_data_extracted') {
-                    console.log('INTENT_LOG: User data extracted:', data.data);
-                    this.detectedUserData = { ...this.detectedUserData, ...data.data };
-                }
-                
-                if (data.type === 'transcript') {
-                    this.addToConversationLog(data.speaker, data.message);
-                }
-            } catch (e) {
-                console.warn('Failed to parse data message:', e);
-            }
+            // Hide transcript container
+            document.getElementById('transcript-container').classList.remove('show');
         });
         
         this.room.on(LivekitClient.RoomEvent.Connected, () => {
-            console.log('✅ Connected to dynamic room:', this.currentRoomName);
-            console.log('Local participant:', this.room.localParticipant.identity);
+            this.isConnected = true;
+            this.showStatus('Connected to Alive5 Dynamic Voice Support', 'connected');
+            document.getElementById('controls').classList.add('show');
+            document.getElementById('joinBtn').disabled = true;
+            
+            // Show and initialize transcript container
+            const transcriptContainer = document.getElementById('transcript-container');
+            transcriptContainer.classList.add('show');
+            document.getElementById('transcript-status').className = 'listening';
+            document.getElementById('interim-transcript').textContent = '';
+            document.getElementById('final-transcript').textContent = '';
+            
+            // Initialize transcript history
+            this.interimTranscript = "";
+            this.finalTranscript = "";
         });
         
-        this.room.on(LivekitClient.RoomEvent.Disconnected, (reason) => {
-            console.log('❌ Disconnected from room. Reason:', reason);
-            this.handleDisconnection();
-        });
-        
-        this.room.on(LivekitClient.RoomEvent.ParticipantConnected, (participant) => {
-            console.log('Participant connected:', participant.identity);
-            if (participant.identity.toLowerCase().includes('agent') || 
-                participant.identity.toLowerCase().includes('scott')) {
-                this.showStatus('🎤 Scott has joined with dynamic AI capabilities! Start talking - he will detect your intent automatically and show it with a toast notification!', 'connected');
-                this.addToConversationLog('System', 'Scott (AI Agent) has joined the conversation');
-            }
-        });
-        
-        this.room.on(LivekitClient.RoomEvent.ParticipantDisconnected, (participant) => {
-            console.log('❌ Participant disconnected:', participant.identity);
-            if (participant.identity.toLowerCase().includes('agent') || 
-                participant.identity.toLowerCase().includes('scott')) {
-                this.showStatus('⚠️ Scott has left the conversation. The session may have ended.', 'warning');
-                this.addToConversationLog('System', 'Scott has left the conversation');
-            }
-        });
-        
-        this.room.on(LivekitClient.RoomEvent.ConnectionQualityChanged, (quality, participant) => {
-            if (participant === this.room.localParticipant) {
-                console.log('Connection quality:', quality);
-                if (quality === 'poor') {
-                    this.showStatus('Connection quality is poor. Audio may be affected.', 'warning');
+        // Setup data channel for receiving transcripts
+        this.room.on(LivekitClient.RoomEvent.DataReceived, (payload) => {
+            try {
+                const data = JSON.parse(payload.data);
+                console.log('Received data:', data);
+                
+                // Handle transcript updates
+                if (data.type === 'transcript' || data.transcript) {
+                    this.updateTranscript(data);
                 }
+                
+                // Handle intent detection
+                if (data.intent) {
+                    this.handleIntentUpdate(data.intent, data.intentSource || 'AI');
+                }
+                
+                // Handle user data extraction
+                if (data.userData) {
+                    this.updateUserData(data.userData);
+                }
+                
+                // Handle system messages
+                if (data.system) {
+                    this.addLogEntry({
+                        speaker: 'System',
+                        message: data.system,
+                        type: 'system'
+                    });
+                }
+            } catch (e) {
+                console.error('Error processing received data:', e);
             }
         });
+    }
+    
+    updateTranscript(data) {
+        // Extract transcript information
+        let transcriptText = '';
+        let isFinal = false;
         
-        this.room.on(LivekitClient.RoomEvent.Reconnecting, () => {
-            this.showStatus('Connection lost. Reconnecting...', 'connecting');
-        });
+        // Handle different transcript data formats
+        if (data.transcript) {
+            if (typeof data.transcript === 'string') {
+                transcriptText = data.transcript;
+                isFinal = data.isFinal || data.final || false;
+            } else if (data.transcript.alternatives && data.transcript.alternatives.length > 0) {
+                transcriptText = data.transcript.alternatives[0].text;
+                isFinal = data.transcript.final || false;
+            }
+        } else if (data.text) {
+            transcriptText = data.text;
+            isFinal = data.isFinal || data.final || false;
+        }
         
-        this.room.on(LivekitClient.RoomEvent.Reconnected, () => {
-            this.showStatus('Reconnected successfully! Dynamic features restored.', 'connected');
-        });
+        if (!transcriptText || transcriptText.trim() === '') {
+            return;
+        }
+        
+        // Update appropriate transcript based on final flag
+        if (isFinal) {
+            this.finalTranscript += (this.finalTranscript ? ' ' : '') + transcriptText;
+            this.interimTranscript = '';
+            
+            // Log the final transcript as user message
+            this.addLogEntry({
+                speaker: this.participantName || 'You',
+                message: transcriptText,
+                type: 'user'
+            });
+        } else {
+            this.interimTranscript = transcriptText;
+        }
+        
+        // Update the UI
+        document.getElementById('interim-transcript').textContent = this.interimTranscript;
+        document.getElementById('final-transcript').textContent = this.finalTranscript;
+        
+        // Update the timestamp
+        this.lastTranscriptUpdate = Date.now();
+        
+        // Update transcript status
+        const status = document.getElementById('transcript-status');
+        if (this.interimTranscript) {
+            status.textContent = 'Transcribing...';
+            status.className = '';
+        } else {
+            status.textContent = 'Listening...';
+            status.className = 'listening';
+        }
     }
     
     handleDisconnection() {
