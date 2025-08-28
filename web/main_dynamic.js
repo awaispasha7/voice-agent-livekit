@@ -15,7 +15,6 @@ class DynamicVoiceAgent {
         
         this.bindEvents();
         this.updateDisplay();
-        this.initializeIntentButtons();
     }
     
     generateSessionId() {
@@ -43,6 +42,13 @@ class DynamicVoiceAgent {
             `;
             statusEl.className = 'status info';
             statusEl.style.display = 'block';
+        }
+        
+        // Enable the join button by default
+        const joinBtn = document.getElementById('joinBtn');
+        if (joinBtn) {
+            joinBtn.disabled = false;
+            joinBtn.textContent = 'Join Voice Chat';
         }
     }
     
@@ -115,7 +121,6 @@ class DynamicVoiceAgent {
             this.disconnect();
         });
         
-        // Add intent switching during conversation
         document.addEventListener('keydown', (e) => {
             if (e.key === 'r' && e.ctrlKey && !this.isConnected) {
                 e.preventDefault();
@@ -138,11 +143,6 @@ class DynamicVoiceAgent {
             return;
         }
         
-        if (!this.currentIntent) {
-            this.showStatus('Please select what you need help with', 'error');
-            return;
-        }
-        
         if (this.connectionAttempts >= this.maxConnectionAttempts) {
             this.showStatus('Maximum connection attempts reached. Please refresh the page.', 'error');
             return;
@@ -153,7 +153,7 @@ class DynamicVoiceAgent {
             this.showStatus('Connecting to Alive5 Support with dynamic intent detection...', 'connecting');
             document.getElementById('joinBtn').disabled = true;
             
-            // Get connection details with intent information
+            // Get connection details
             // const response = await fetch('http://localhost:8000/api/connection_details', {
             const response = await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/connection_details', {
             method: 'POST',
@@ -162,9 +162,7 @@ class DynamicVoiceAgent {
                 },
                 body: JSON.stringify({
                     participant_name: this.participantName,
-                    intent: this.currentIntent,
                     user_data: {
-                        initial_intent: this.currentIntent,
                         session_start: new Date().toISOString()
                     }
                 })
@@ -203,15 +201,8 @@ class DynamicVoiceAgent {
             this.isConnected = true;
             this.connectionAttempts = 0;
             
-            const intentLabels = {
-                sales: 'Sales Team',
-                support: 'Technical Support',
-                billing: 'Billing Department',
-                general: 'General Support'
-            };
-            
             this.showStatus(`
-                🔗 Connected to Alive5 ${intentLabels[this.currentIntent]}!<br>
+                🔗 Connected to Alive5 Support!<br>
                 Room: ${this.currentRoomName}<br>
                 ⏳ Scott is joining... (This may take 10-15 seconds)<br>
                 🤖 Dynamic intent detection is active
@@ -244,7 +235,7 @@ class DynamicVoiceAgent {
         logContainer.innerHTML = `
             <h4>Conversation Log</h4>
             <div class="intent-status">
-                <span class="current-intent">Current Intent: <strong>${this.currentIntent || 'Not detected'}</strong></span>
+                <span class="current-intent">Current Intent: <strong>${this.currentIntent || 'Not detected yet'}</strong></span>
                 <span class="auto-detection">🤖 Auto-detection active</span>
             </div>
             <div class="log-entries" id="logEntries"></div>
@@ -291,10 +282,65 @@ class DynamicVoiceAgent {
         });
     }
     
+    // Toast notification for intent changes
+    showToastNotification(message, type = 'info') {
+        // Create toast container if it doesn't exist
+        let toastContainer = document.getElementById('toast-container');
+        if (!toastContainer) {
+            toastContainer = document.createElement('div');
+            toastContainer.id = 'toast-container';
+            toastContainer.style.position = 'fixed';
+            toastContainer.style.top = '20px';
+            toastContainer.style.right = '20px';
+            toastContainer.style.zIndex = '9999';
+            document.body.appendChild(toastContainer);
+        }
+        
+        // Create toast element
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `
+            <div class="toast-icon">${type === 'intent-change' ? '🔄' : 'ℹ️'}</div>
+            <div class="toast-content">${message}</div>
+        `;
+        
+        // Style the toast
+        toast.style.backgroundColor = type === 'intent-change' ? '#4a6da7' : '#444';
+        toast.style.color = 'white';
+        toast.style.padding = '12px 16px';
+        toast.style.borderRadius = '4px';
+        toast.style.marginBottom = '10px';
+        toast.style.boxShadow = '0 2px 10px rgba(0,0,0,0.2)';
+        toast.style.display = 'flex';
+        toast.style.alignItems = 'center';
+        toast.style.transition = 'all 0.3s ease';
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(50px)';
+        
+        // Add to container
+        toastContainer.appendChild(toast);
+        
+        // Animate in
+        setTimeout(() => {
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateX(0)';
+        }, 10);
+        
+        // Auto-remove after delay
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(50px)';
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 300);
+        }, 5000);
+    }
     
     updateDetectedIntent(newIntent) {
         if (newIntent !== this.currentIntent) {
             console.log(`INTENT_LOG: Intent changed from '${this.currentIntent || 'None'}' to '${newIntent}'`);
+            const oldIntent = this.currentIntent;
             this.currentIntent = newIntent;
             
             // Update UI
@@ -302,6 +348,9 @@ class DynamicVoiceAgent {
             if (intentStatus) {
                 intentStatus.innerHTML = `Current Intent: <strong>${newIntent}</strong> <span class="updated">✨ Updated</span>`;
             }
+            
+            // Show toast notification for intent changes
+            this.showToastNotification(`Intent changed to: ${newIntent}`, 'intent-change');
             
             // Send update to server
             this.updateSessionIntent(newIntent);
@@ -379,6 +428,12 @@ class DynamicVoiceAgent {
                     this.addToConversationLog('System', `Intent detected: ${data.intent}`, data.intent);
                 }
                 
+                if (data.type === 'intent_update') {
+                    console.log(`INTENT_LOG: Received intent update from agent: ${data.intent}`);
+                    this.updateDetectedIntent(data.intent);
+                    this.addToConversationLog('System', `Intent updated: ${data.intent}`);
+                }
+                
                 if (data.type === 'user_data_extracted') {
                     console.log('INTENT_LOG: User data extracted:', data.data);
                     this.detectedUserData = { ...this.detectedUserData, ...data.data };
@@ -406,7 +461,7 @@ class DynamicVoiceAgent {
             console.log('Participant connected:', participant.identity);
             if (participant.identity.toLowerCase().includes('agent') || 
                 participant.identity.toLowerCase().includes('scott')) {
-                this.showStatus('🎤 Scott has joined with dynamic AI capabilities! Start talking - he can detect your intent automatically!', 'connected');
+                this.showStatus('🎤 Scott has joined with dynamic AI capabilities! Start talking - he will detect your intent automatically and show it with a toast notification!', 'connected');
                 this.addToConversationLog('System', 'Scott (AI Agent) has joined the conversation');
             }
         });
