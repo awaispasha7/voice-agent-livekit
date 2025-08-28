@@ -423,6 +423,34 @@ class DynamicVoiceAgent {
             // Send a test data message to ensure data channels are working
             setTimeout(() => {
                 try {
+                    // Check for different possible ways DataPacketKind might be exposed
+                    let dataPacketKind;
+                    
+                    // Try different paths to find the RELIABLE constant
+                    if (LivekitClient.DataPacketKind && LivekitClient.DataPacketKind.RELIABLE) {
+                        dataPacketKind = LivekitClient.DataPacketKind.RELIABLE;
+                    } else if (LivekitClient.DataPacketKind) {
+                        // Some versions might use numeric values instead of named constants
+                        dataPacketKind = 1; // 1 is typically RELIABLE
+                    } else if (LivekitClient.Room && LivekitClient.Room.DataPacketKind) {
+                        dataPacketKind = LivekitClient.Room.DataPacketKind.RELIABLE;
+                    } else if (this.room.localParticipant && this.room.localParticipant.publishData) {
+                        // If we can't find the constant, try without specifying kind (will use default)
+                        this.room.localParticipant.publishData(
+                            JSON.stringify({
+                                type: 'client_info',
+                                client: 'web',
+                                version: '2.0',
+                                timestamp: new Date().toISOString()
+                            })
+                        );
+                        console.log('Sent client info data packet (default kind)');
+                        return;
+                    } else {
+                        console.warn('Could not find DataPacketKind, skipping test packet');
+                        return;
+                    }
+                    
                     this.room.localParticipant.publishData(
                         JSON.stringify({
                             type: 'client_info',
@@ -430,7 +458,7 @@ class DynamicVoiceAgent {
                             version: '2.0',
                             timestamp: new Date().toISOString()
                         }),
-                        LivekitClient.DataPacketKind.RELIABLE
+                        dataPacketKind
                     );
                     console.log('Sent client info data packet');
                 } catch (e) {
