@@ -467,78 +467,149 @@ class DynamicVoiceAgent {
             }, 2000);
         });
         
+        // Handle remote audio tracks (Scott's voice)
+        this.room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
+            console.log('Track subscribed:', track.kind, 'from participant:', participant.identity);
+            
+            if (track.kind === 'audio') {
+                // Create or get audio element for this participant
+                let audioElement = document.getElementById(`audio-${participant.sid}`);
+                if (!audioElement) {
+                    audioElement = document.createElement('audio');
+                    audioElement.id = `audio-${participant.sid}`;
+                    audioElement.autoplay = true;
+                    audioElement.controls = false; // Hide controls
+                    document.body.appendChild(audioElement);
+                    console.log('Created audio element for', participant.identity);
+                }
+                
+                // Attach track to audio element
+                track.attach(audioElement);
+                console.log('Attached audio track to element');
+                
+                // Set volume to ensure it's audible
+                audioElement.volume = 1.0;
+                
+                // Play audio - needed for some browsers
+                try {
+                    audioElement.play()
+                        .then(() => console.log('Audio playback started'))
+                        .catch(err => console.error('Audio playback failed:', err));
+                } catch (e) {
+                    console.warn('Audio play error:', e);
+                }
+            }
+        });
+        
+        // Handle track unsubscribed
+        this.room.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+            console.log('Track unsubscribed:', track.kind, 'from participant:', participant.identity);
+            
+            if (track.kind === 'audio') {
+                // Remove audio element
+                const audioElement = document.getElementById(`audio-${participant.sid}`);
+                if (audioElement) {
+                    track.detach(audioElement);
+                    audioElement.remove();
+                    console.log('Removed audio element for', participant.identity);
+                }
+            }
+        });
+        
         // Setup data channel for receiving transcripts
         this.room.on(LivekitClient.RoomEvent.DataReceived, (payload) => {
             try {
                 console.log('Received data packet:', payload);
                 let data;
                 
-                // Extract the actual data from the payload
-                let rawData = payload.data;
-                
-                // If payload itself is undefined, check if we can extract data from payload object
-                if (rawData === undefined) {
-                    console.log('Data is undefined, checking payload properties:', payload);
-                    if (payload.kind !== undefined && payload.payload) {
-                        rawData = payload.payload;
-                        console.log('Using payload.payload instead:', rawData);
-                    } else if (typeof payload === 'string') {
-                        rawData = payload;
-                        console.log('Using payload directly as string:', rawData);
-                    } else if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) {
-                        rawData = payload;
-                        console.log('Using payload directly as binary data');
-                    } else if (payload.toString) {
-                        // Last resort - try toString
-                        rawData = payload.toString();
-                        console.log('Using payload.toString():', rawData);
+                // Direct handling for Uint8Array payload (common case from server)
+                if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) {
+                    try {
+                        const decoder = new TextDecoder();
+                        const dataStr = decoder.decode(payload);
+                        console.log('Directly decoded binary payload:', dataStr);
+                        data = JSON.parse(dataStr);
+                        console.log('Successfully parsed JSON from direct binary payload:', data);
+                    } catch (directError) {
+                        console.warn('Failed to directly parse binary payload:', directError);
                     }
                 }
                 
-                // Now process rawData based on its type
-                if (rawData instanceof Uint8Array || rawData instanceof ArrayBuffer) {
-                    // Convert binary data to string
-                    const decoder = new TextDecoder();
-                    const dataStr = decoder.decode(rawData);
-                    console.log('Decoded binary data:', dataStr);
-                    try {
-                        data = JSON.parse(dataStr);
-                    } catch (jsonError) {
-                        console.warn('Received non-JSON data:', dataStr);
-                        // If it's a simple string, treat it as transcript
-                        if (dataStr.trim()) {
-                            data = { transcript: dataStr, final: true };
-                        } else {
-                            return; // Skip empty data
+                // If direct parsing didn't work, try extracting from payload object
+                if (!data) {
+                    // Extract the actual data from the payload
+                    let rawData = payload.data;
+                    
+                    // If payload.data is undefined, check if we can extract data from other payload properties
+                    if (rawData === undefined) {
+                        console.log('Data is undefined, checking payload properties:', payload);
+                        if (payload.kind !== undefined && payload.payload) {
+                            rawData = payload.payload;
+                            console.log('Using payload.payload instead:', rawData);
+                        } else if (typeof payload === 'string') {
+                            rawData = payload;
+                            console.log('Using payload directly as string:', rawData);
+                        } else if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) {
+                            rawData = payload;
+                            console.log('Using payload directly as binary data');
+                        } else if (payload.toString && typeof payload.toString === 'function') {
+                            // Last resort - try toString
+                            rawData = payload.toString();
+                            console.log('Using payload.toString():', rawData);
                         }
                     }
-                } else if (typeof rawData === 'string') {
-                    try {
-                        data = JSON.parse(rawData);
-                    } catch (jsonError) {
-                        console.warn('Received non-JSON string:', rawData);
-                        // If it's a simple string, treat it as transcript
-                        if (rawData.trim()) {
-                            data = { transcript: rawData, final: true };
-                        } else {
-                            return; // Skip empty data
+                    
+                    // Now process rawData based on its type
+                    if (rawData instanceof Uint8Array || rawData instanceof ArrayBuffer) {
+                        // Convert binary data to string
+                        const decoder = new TextDecoder();
+                        const dataStr = decoder.decode(rawData);
+                        console.log('Decoded binary data:', dataStr);
+                        try {
+                            data = JSON.parse(dataStr);
+                            console.log('Parsed JSON from binary data:', data);
+                        } catch (jsonError) {
+                            console.warn('Received non-JSON data:', dataStr);
+                            // If it's a simple string, treat it as transcript
+                            if (dataStr.trim()) {
+                                data = { transcript: dataStr, final: true };
+                            } else {
+                                console.log('Empty data string, skipping');
+                            }
                         }
-                    }
-                } else if (typeof rawData === 'object' && rawData !== null) {
-                    // Already an object
-                    data = rawData;
-                } else if (rawData === undefined || rawData === null) {
-                    console.warn('Empty data received, nothing to process');
-                    return;
-                } else {
-                    console.warn('Unhandled data format:', typeof rawData, rawData);
-                    // Try to convert to string as last resort
-                    const strData = String(rawData);
-                    if (strData && strData.trim()) {
-                        data = { transcript: strData, final: true };
-                        console.log('Converted to string as fallback:', data);
+                    } else if (typeof rawData === 'string') {
+                        try {
+                            data = JSON.parse(rawData);
+                            console.log('Parsed JSON from string data:', data);
+                        } catch (jsonError) {
+                            console.warn('Received non-JSON string:', rawData);
+                            // If it's a simple string, treat it as transcript
+                            if (rawData.trim()) {
+                                data = { transcript: rawData, final: true };
+                            } else {
+                                console.log('Empty string data, skipping');
+                            }
+                        }
+                    } else if (typeof rawData === 'object' && rawData !== null) {
+                        // Already an object
+                        data = rawData;
+                        console.log('Using raw object data directly:', data);
+                    } else if (rawData === undefined || rawData === null) {
+                        console.warn('Empty data received, nothing to process');
                     } else {
-                        return; // Can't process this format
+                        console.warn('Unhandled data format:', typeof rawData, rawData);
+                        // Try to convert to string as last resort
+                        try {
+                            const strData = String(rawData);
+                            if (strData && strData.trim()) {
+                                data = { transcript: strData, final: true };
+                                console.log('Converted to string as fallback:', data);
+                            } else {
+                                console.log('Empty converted string, skipping');
+                            }
+                        } catch (conversionError) {
+                            console.error('Failed to convert data to string:', conversionError);
+                        }
                     }
                 }
                 
@@ -712,9 +783,33 @@ class DynamicVoiceAgent {
         this.hideControls();
         this.currentRoomName = null;
         
-        // Cleanup audio elements
-        const audioElements = document.querySelectorAll('audio');
-        audioElements.forEach(el => el.remove());
+        // Cleanup audio elements more thoroughly
+        try {
+            // Find and remove all audio elements
+            const audioElements = document.querySelectorAll('audio');
+            console.log(`Cleaning up ${audioElements.length} audio elements`);
+            
+            audioElements.forEach(el => {
+                try {
+                    // Stop the audio playback first
+                    if (el.srcObject) {
+                        const tracks = el.srcObject.getTracks();
+                        tracks.forEach(track => track.stop());
+                    }
+                    
+                    // Clear the source and remove the element
+                    el.srcObject = null;
+                    el.remove();
+                } catch (e) {
+                    console.warn('Error cleaning up audio element:', e);
+                }
+            });
+            
+            // Cleanup any other media elements as well
+            document.querySelectorAll('video').forEach(el => el.remove());
+        } catch (e) {
+            console.error('Error during media cleanup:', e);
+        }
         
         // Show session summary
         const summary = this.generateSessionSummary();
