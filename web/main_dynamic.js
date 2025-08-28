@@ -521,6 +521,7 @@ class DynamicVoiceAgent {
             try {
                 console.log('Received data packet:', payload);
                 let data;
+                const self = this; // Preserve the 'this' context for callbacks
                 
                 // Direct handling for Uint8Array payload (common case from server)
                 if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) {
@@ -618,7 +619,7 @@ class DynamicVoiceAgent {
                 // Handle transcript updates
                 if (data && (data.type === 'transcript' || data.transcript || data.text)) {
                     try {
-                        this.updateTranscript(data);
+                        self.updateTranscript(data);
                         console.log('Transcript update processed successfully');
                     } catch (err) {
                         console.error('Error updating transcript:', err);
@@ -628,7 +629,7 @@ class DynamicVoiceAgent {
                 // Handle intent detection
                 if (data && data.intent) {
                     try {
-                        this.handleIntentUpdate(data.intent, data.intentSource || 'AI');
+                        self.handleIntentUpdate(data.intent, data.intentSource || 'AI');
                         console.log('Intent update processed successfully');
                     } catch (err) {
                         console.error('Error handling intent update:', err);
@@ -638,7 +639,7 @@ class DynamicVoiceAgent {
                 // Handle user data extraction
                 if (data && data.userData) {
                     try {
-                        this.updateUserData(data.userData);
+                        self.updateUserData(data.userData);
                         console.log('User data update processed successfully');
                     } catch (err) {
                         console.error('Error updating user data:', err);
@@ -648,7 +649,7 @@ class DynamicVoiceAgent {
                 // Handle system messages
                 if (data && data.system) {
                     try {
-                        this.addLogEntry({
+                        self.addLogEntry({
                             speaker: 'System',
                             message: data.system,
                             type: 'system'
@@ -673,6 +674,204 @@ class DynamicVoiceAgent {
         });
     }
     
+    // Add a new method to handle adding log entries
+    addLogEntry(entry) {
+        // Validate required fields
+        if (!entry || !entry.message) {
+            console.warn('Invalid log entry:', entry);
+            return;
+        }
+        
+        // Add timestamp if not provided
+        if (!entry.timestamp) {
+            entry.timestamp = new Date().toISOString();
+        }
+        
+        // Store in conversation history
+        this.conversationLog.push(entry);
+        
+        // Create or get the conversation log container
+        let logContainer = document.querySelector('.conversation-log');
+        if (!logContainer) {
+            logContainer = document.createElement('div');
+            logContainer.className = 'conversation-log';
+            logContainer.innerHTML = `
+                <h4>Conversation History</h4>
+                <div class="intent-status">
+                    <div class="current-intent">Current intent: <span id="current-intent">Detecting...</span></div>
+                    <div class="auto-detection" id="intent-detection-status">Auto-detection active</div>
+                </div>
+                <div class="log-entries"></div>
+            `;
+            
+            // Insert it after the transcript container
+            const transcriptContainer = document.getElementById('transcript-container');
+            if (transcriptContainer && transcriptContainer.parentNode) {
+                transcriptContainer.parentNode.insertBefore(logContainer, transcriptContainer.nextSibling);
+            } else {
+                // Fallback - append to container
+                document.querySelector('.container').appendChild(logContainer);
+            }
+        }
+        
+        // Get the log entries container
+        const logEntries = logContainer.querySelector('.log-entries');
+        if (!logEntries) {
+            console.warn('Log entries container not found');
+            return;
+        }
+        
+        // Create the log entry element
+        const logEntryEl = document.createElement('div');
+        logEntryEl.className = `log-entry ${entry.type || ''}`;
+        
+        // Format timestamp
+        let displayTime;
+        try {
+            const entryTime = new Date(entry.timestamp);
+            displayTime = entryTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch (e) {
+            displayTime = 'now';
+        }
+        
+        // Set the content
+        logEntryEl.innerHTML = `
+            <div class="log-header">
+                <span class="speaker">${entry.speaker || 'Unknown'}</span>
+                <span class="timestamp">${displayTime}</span>
+            </div>
+            <div class="log-message">${entry.message}</div>
+        `;
+        
+        // Add intent change indicator if provided
+        if (entry.intent) {
+            const intentSpan = document.createElement('span');
+            intentSpan.className = 'intent-change';
+            intentSpan.textContent = `Intent: ${entry.intent}`;
+            logEntryEl.querySelector('.log-header').appendChild(intentSpan);
+        }
+        
+        // Add to the log
+        logEntries.appendChild(logEntryEl);
+        
+        // Scroll to bottom
+        logEntries.scrollTop = logEntries.scrollHeight;
+        
+        return logEntryEl;
+    }
+    
+    // Handle intent updates
+    handleIntentUpdate(intent, source) {
+        if (!intent) return;
+        
+        // Update the current intent
+        this.currentIntent = intent;
+        
+        // Update the UI
+        const intentElement = document.getElementById('current-intent');
+        if (intentElement) {
+            const intentLabels = {
+                sales: 'Sales & Pricing',
+                support: 'Technical Support',
+                billing: 'Billing & Account',
+                general: 'General Inquiry'
+            };
+            
+            intentElement.textContent = intentLabels[intent] || intent;
+            intentElement.classList.add('updated');
+            
+            // Remove the updated class after animation
+            setTimeout(() => {
+                intentElement.classList.remove('updated');
+            }, 2000);
+        }
+        
+        // Update the detection status
+        const detectionStatus = document.getElementById('intent-detection-status');
+        if (detectionStatus) {
+            detectionStatus.textContent = `Detected by ${source}`;
+            detectionStatus.classList.add('updated');
+            
+            // Remove the updated class after animation
+            setTimeout(() => {
+                detectionStatus.classList.remove('updated');
+            }, 2000);
+        }
+        
+        // Log the intent change
+        this.addLogEntry({
+            speaker: 'System',
+            message: `Intent changed to: ${intent}`,
+            type: 'system',
+            intent: intent
+        });
+        
+        // Show a toast notification
+        this.showToast(`Intent detected: ${intent}`, 'intent-change');
+    }
+    
+    // Show a toast notification
+    showToast(message, type = '') {
+        // Create toast container if it doesn't exist
+        let toastContainer = document.getElementById('toast-container');
+        if (!toastContainer) {
+            toastContainer = document.createElement('div');
+            toastContainer.id = 'toast-container';
+            document.body.appendChild(toastContainer);
+        }
+        
+        // Create toast element
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `
+            <span class="toast-icon">ℹ️</span>
+            <span class="toast-message">${message}</span>
+        `;
+        
+        // Add to container
+        toastContainer.appendChild(toast);
+        
+        // Remove after 3 seconds
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            setTimeout(() => {
+                toast.remove();
+            }, 300);
+        }, 3000);
+    }
+    
+    // Update user data extracted from conversation
+    updateUserData(userData) {
+        if (!userData || typeof userData !== 'object') return;
+        
+        // Merge with existing data
+        this.detectedUserData = { ...this.detectedUserData, ...userData };
+        
+        // Build a message with the extracted data
+        const dataPoints = [];
+        for (const [key, value] of Object.entries(userData)) {
+            if (value) {
+                // Format key for display (camelCase to Title Case)
+                const formattedKey = key
+                    .replace(/([A-Z])/g, ' $1')
+                    .replace(/^./, str => str.toUpperCase());
+                
+                dataPoints.push(`<strong>${formattedKey}:</strong> ${value}`);
+            }
+        }
+        
+        if (dataPoints.length > 0) {
+            // Add to conversation log
+            this.addLogEntry({
+                speaker: 'System',
+                message: `User information detected:<br>${dataPoints.join('<br>')}`,
+                type: 'system'
+            });
+            
+            // Show toast notification
+            this.showToast('User information updated', 'user-data');
+        }
+    }
     updateTranscript(data) {
         // Extract transcript information
         let transcriptText = '';
