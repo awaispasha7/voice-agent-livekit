@@ -241,9 +241,15 @@ class DynamicVoiceAgent {
             <div class="log-entries" id="logEntries"></div>
         `;
         
-        const controls = document.getElementById('controls');
-        if (controls) {
-            controls.appendChild(logContainer);
+        // Add a divider before the conversation log
+        const divider = document.createElement('hr');
+        divider.className = 'log-divider';
+        
+        // Add to container instead of controls for separate row layout
+        const container = document.querySelector('.container');
+        if (container) {
+            container.appendChild(divider);
+            container.appendChild(logContainer);
         }
     }
     

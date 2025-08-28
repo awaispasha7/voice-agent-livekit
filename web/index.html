@@ -31,6 +31,8 @@
             width: 90%;
             max-width: 600px;
             margin: 2rem;
+            display: flex;
+            flex-direction: column;
         }
 
         .header {
@@ -228,6 +230,14 @@
             margin-right: 10px;
             font-size: 1.2em;
         }
+        
+        .log-divider {
+            margin: 1.5rem 0;
+            border: 0;
+            height: 1px;
+            background-image: linear-gradient(to right, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0));
+            width: 100%;
+        }
 
         .updated {
             background-color: #16a085;
@@ -282,21 +292,27 @@
 
         .controls {
             display: none;
+            margin-top: 1.5rem;
             gap: 1rem;
-            margin-top: 1rem;
+            order: 2; /* Place it before the conversation log but after the form */
         }
 
         .controls.show {
             display: flex;
-        }
-
-        .conversation-log {
+        }        .conversation-log {
             background: #f8f9fa;
             border-radius: 12px;
             padding: 1rem;
-            margin-top: 1rem;
+            margin-top: 1.5rem;
             max-height: 300px;
             overflow-y: auto;
+            border: 1px solid #e9ecef;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            clear: both;
+            order: 3; /* Ensure it appears after other elements */
         }
 
         .conversation-log h4 {
@@ -320,6 +336,7 @@
             background: white;
             border-radius: 8px;
             border: 1px solid #e9ecef;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         }
 
         .current-intent {
@@ -344,6 +361,10 @@
         .log-entries {
             max-height: 200px;
             overflow-y: auto;
+            padding-right: 0.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
         }
 
         .log-entry {
@@ -352,6 +373,7 @@
             background: white;
             border-radius: 8px;
             border-left: 4px solid #dee2e6;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         }
 
         .log-entry.user {
