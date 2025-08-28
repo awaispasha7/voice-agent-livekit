@@ -244,7 +244,7 @@ class DynamicVoiceAgent {
         logContainer.innerHTML = `
             <h4>Conversation Log</h4>
             <div class="intent-status">
-                <span class="current-intent">Current Intent: <strong>${this.currentIntent}</strong></span>
+                <span class="current-intent">Current Intent: <strong>${this.currentIntent || 'Not detected'}</strong></span>
                 <span class="auto-detection">🤖 Auto-detection active</span>
             </div>
             <div class="log-entries" id="logEntries"></div>
@@ -291,10 +291,11 @@ class DynamicVoiceAgent {
         });
     }
     
+    
     updateDetectedIntent(newIntent) {
         if (newIntent !== this.currentIntent) {
+            console.log(`INTENT_LOG: Intent changed from '${this.currentIntent || 'None'}' to '${newIntent}'`);
             this.currentIntent = newIntent;
-            console.log("New Intent detected:", newIntent);
             
             // Update UI
             const intentStatus = document.querySelector('.current-intent');
@@ -304,8 +305,8 @@ class DynamicVoiceAgent {
             
             // Send update to server
             this.updateSessionIntent(newIntent);
-            
-            console.log(`Intent updated to: ${newIntent}`);
+        } else {
+            console.log(`INTENT_LOG: Intent confirmed as '${newIntent}'`);
         }
     }
     
@@ -373,13 +374,14 @@ class DynamicVoiceAgent {
                 console.log('Received data from agent:', data);
                 
                 if (data.type === 'intent_detection') {
+                    console.log(`INTENT_LOG: Received intent detection from agent: ${data.intent}`);
                     this.updateDetectedIntent(data.intent);
                     this.addToConversationLog('System', `Intent detected: ${data.intent}`, data.intent);
                 }
                 
                 if (data.type === 'user_data_extracted') {
+                    console.log('INTENT_LOG: User data extracted:', data.data);
                     this.detectedUserData = { ...this.detectedUserData, ...data.data };
-                    console.log('User data extracted:', this.detectedUserData);
                 }
                 
                 if (data.type === 'transcript') {
