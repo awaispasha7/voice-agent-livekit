@@ -447,9 +447,7 @@ class DynamicVoiceAgent {
         this.showStatus('Conversation ended. Disconnecting...', 'info');
         
         // Disconnect after a short delay to allow farewell message to be heard
-        console.log('🔚 Setting timeout for disconnect in 3 seconds...');
         setTimeout(() => {
-            console.log('🔚 Timeout reached - calling disconnect(true)...');
             this.disconnect(true);
         }, 3000); // 3 second delay for polite farewell
     }
@@ -968,31 +966,22 @@ class DynamicVoiceAgent {
     }
     
     async disconnect(showMessage = true) {
-        console.log('🔚 disconnect() called with showMessage:', showMessage, 'room exists:', !!this.room, 'isConnected:', this.isConnected);
-        
-        if (!this.room) {
-            console.log('🔚 No room to disconnect from');
-            return;
-        }
+        if (!this.room) return;
         
         try {
             if (this.isConnected) {
-                console.log('🔚 Calling room.disconnect()...');
                 await this.room.disconnect();
-                console.log('🔚 Successfully disconnected from room:', this.currentRoomName);
+                console.log('Disconnected from room:', this.currentRoomName);
                 
                 if (this.currentRoomName) {
                     fetch(`https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/rooms/${this.currentRoomName}`, {
                         method: 'DELETE'
                     }).catch(e => console.warn('Session cleanup notification failed:', e));
                 }
-            } else {
-                console.log('🔚 Room exists but isConnected is false');
             }
         } catch (error) {
-            console.error('🔚 Error during disconnect:', error);
+            console.error('Error during disconnect:', error);
         } finally {
-            console.log('🔚 Setting room to null and calling handleDisconnection if showMessage is true');
             this.room = null;
             if (showMessage) {
                 this.handleDisconnection();
@@ -1001,7 +990,6 @@ class DynamicVoiceAgent {
     }
     
     handleDisconnection() {
-        console.log('🔚 handleDisconnection() called');
         this.isConnected = false;
         this.hideControls();
         this.currentRoomName = null;
