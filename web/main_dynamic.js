@@ -233,15 +233,39 @@ class DynamicVoiceAgent {
         this.room.registerTextStreamHandler('lk.transcription', async (reader, participantInfo) => {
             try {
                 const message = await reader.readAll();
-                console.log('Transcription received:', { message, participantInfo, attributes: reader.info.attributes });
+                console.log('📝 Transcription received:', { 
+                    message, 
+                    participantInfo: participantInfo.identity, 
+                    attributes: reader.info.attributes,
+                    myName: this.participantName 
+                });
                 
-                // Check if this is a user transcription (has transcribed_track_id attribute)
-                if (reader.info.attributes && reader.info.attributes['lk.transcribed_track_id']) {
-                    // This is a user's speech transcription - show it in real-time
+                // More robust check for user vs agent transcription
+                const isUserTranscript = reader.info.attributes && reader.info.attributes['lk.transcribed_track_id'];
+                const isAgentIdentity = participantInfo.identity && (
+                    participantInfo.identity.includes('agent') || 
+                    participantInfo.identity.includes('Scott') ||
+                    participantInfo.identity === 'Scott_AI_Agent'
+                );
+                
+                console.log('🔍 Transcript analysis:', { 
+                    isUserTranscript, 
+                    isAgentIdentity, 
+                    participantIdentity: participantInfo.identity,
+                    decision: isUserTranscript && !isAgentIdentity ? 'USER' : 'SKIP/AGENT'
+                });
+                
+                if (isUserTranscript && !isAgentIdentity) {
+                    // This is definitely a user's speech transcription
+                    console.log('👤 Processing as USER transcript:', message);
                     this.handleUserTranscription(message, participantInfo, reader.info.attributes);
+                } else if (isAgentIdentity || (!isUserTranscript && participantInfo.identity !== this.participantName)) {
+                    // This is likely agent speech - but we'll handle it via our custom agent transcript stream
+                    console.log('🤖 Skipping potential agent transcript (will be handled by custom stream):', message);
                 } else {
-                    // This is agent's speech transcription (synchronized with TTS)
-                    this.handleAgentTranscription(message, participantInfo);
+                    // Fallback - check content or other attributes
+                    console.log('❓ Ambiguous transcript, treating as user:', message);
+                    this.handleUserTranscription(message, participantInfo, reader.info.attributes);
                 }
             } catch (error) {
                 console.error('Error processing transcription:', error);
@@ -264,6 +288,45 @@ class DynamicVoiceAgent {
                 console.error('Error processing chat message:', error);
             }
         });
+
+        // ENHANCED: Register handler for agent transcript messages
+        this.room.registerTextStreamHandler('lk.agent.transcript', async (reader, participantInfo) => {
+            try {
+                const data = await reader.readAll();
+                console.log('Agent transcript data received:', data, 'from:', participantInfo.identity);
+                
+                try {
+                    // Try to parse as JSON first (data format)
+                    const parsed = JSON.parse(data);
+                    if (parsed.type === 'agent_transcript') {
+                        this.handleAgentTranscription(parsed.message, { identity: parsed.speaker });
+                        return;
+                    }
+                } catch (e) {
+                    // If not JSON, treat as plain text
+                    this.handleAgentTranscription(data, { identity: 'Scott_AI_Agent' });
+                }
+            } catch (error) {
+                console.error('Error processing agent transcript:', error);
+            }
+        });
+
+        // Also register data handler for agent transcripts (fallback)
+        this.room.on(LivekitClient.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+            if (topic === 'lk.agent.transcript') {
+                try {
+                    const data = JSON.parse(new TextDecoder().decode(payload));
+                    if (data.type === 'agent_transcript') {
+                        console.log('🤖 Agent transcript via data received:', data);
+                        this.handleAgentTranscription(data.message, { identity: data.speaker });
+                    }
+                } catch (error) {
+                    console.error('Error processing agent transcript data:', error);
+                }
+            } else if (topic) {
+                console.log('📨 Other data received:', { topic, participant: participant?.identity, data: new TextDecoder().decode(payload) });
+            }
+        });
     }
     
     handleUserTranscription(transcriptText, participantInfo, attributes = {}) {
@@ -277,9 +340,9 @@ class DynamicVoiceAgent {
         
         // Only add to conversation log and send for intent detection if it's final
         if (isFinal && transcriptText.trim()) {
-            // Add to conversation log
+            // Add to conversation log with clear user identification
             this.addLogEntry({
-                speaker: this.participantName || 'You',
+                speaker: `👤 ${this.participantName || 'You'}`,
                 message: transcriptText,
                 type: 'user'
             });
@@ -292,9 +355,14 @@ class DynamicVoiceAgent {
     handleAgentTranscription(transcriptText, participantInfo) {
         console.log('Agent transcription:', transcriptText, 'from:', participantInfo.identity);
         
-        // Add agent response to conversation log with enhanced formatting
+        // Ensure this is clearly marked as coming from the agent, not the user
+        const agentIdentity = participantInfo.identity === 'Scott_AI_Agent' ? '🤖 Scott (AI)' : 
+                             participantInfo.identity && participantInfo.identity.includes('Scott') ? '🤖 Scott (AI)' : 
+                             '🤖 AI Assistant';
+        
+        // Add agent response to conversation log with clear agent identification
         this.addLogEntry({
-            speaker: participantInfo.identity === this.room.localParticipant.identity ? 'You' : '🤖 Scott',
+            speaker: agentIdentity,
             message: transcriptText,
             type: 'agent'
         });
@@ -302,10 +370,20 @@ class DynamicVoiceAgent {
         // Update transcript display to show agent's speech
         const status = document.getElementById('transcript-status');
         if (status) {
-            status.textContent = 'Scott speaking...';
+            status.textContent = 'Scott responding...';
             status.className = 'agent-speaking';
             status.style.background = '#e3f2fd';
             status.style.color = '#1565c0';
+            
+            // Reset status after agent finishes speaking
+            setTimeout(() => {
+                if (status) {
+                    status.textContent = 'Listening...';
+                    status.className = 'listening';
+                    status.style.background = '#e8f5e8';
+                    status.style.color = '#2d5a2d';
+                }
+            }, 3000);
         }
     }
     
