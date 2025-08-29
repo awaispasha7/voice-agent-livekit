@@ -59,6 +59,10 @@ voice-agent
 - The worker processes voice data and manages connections using the VoicePipelineAgent.
 - The token server generates and serves tokens for authentication with LiveKit.
 - The web interface allows users to interact with the voice agent and manage voice data.
+- for testing the worker: 
+```
+python worker/main_dynamic.py test
+```
 
 ## Contributing
 
