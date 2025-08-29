@@ -229,7 +229,7 @@ class DynamicVoiceAgent {
             }
         });
         
-        // CORRECT WAY: Register text stream handler for transcriptions
+        // ENHANCED: Register text stream handler for transcriptions with better real-time handling
         this.room.registerTextStreamHandler('lk.transcription', async (reader, participantInfo) => {
             try {
                 const message = await reader.readAll();
@@ -237,8 +237,8 @@ class DynamicVoiceAgent {
                 
                 // Check if this is a user transcription (has transcribed_track_id attribute)
                 if (reader.info.attributes && reader.info.attributes['lk.transcribed_track_id']) {
-                    // This is a user's speech transcription
-                    this.handleUserTranscription(message, participantInfo);
+                    // This is a user's speech transcription - show it in real-time
+                    this.handleUserTranscription(message, participantInfo, reader.info.attributes);
                 } else {
                     // This is agent's speech transcription (synchronized with TTS)
                     this.handleAgentTranscription(message, participantInfo);
@@ -266,32 +266,47 @@ class DynamicVoiceAgent {
         });
     }
     
-    handleUserTranscription(transcriptText, participantInfo) {
+    handleUserTranscription(transcriptText, participantInfo, attributes = {}) {
         console.log('User transcription:', transcriptText, 'from:', participantInfo.identity);
         
-        // Update transcript display
-        this.updateTranscriptDisplay(transcriptText, true); // true = final
+        // Check if this is a final transcript or interim
+        const isFinal = attributes['lk.transcript.final'] === 'true' || !attributes['lk.transcript.interim'];
         
-        // Add to conversation log
-        this.addLogEntry({
-            speaker: this.participantName || 'You',
-            message: transcriptText,
-            type: 'user'
-        });
+        // Update transcript display with proper interim/final handling
+        this.updateTranscriptDisplay(transcriptText, isFinal);
         
-        // Send transcript to backend for intent detection
-        this.sendTranscriptForIntentDetection(transcriptText);
+        // Only add to conversation log and send for intent detection if it's final
+        if (isFinal && transcriptText.trim()) {
+            // Add to conversation log
+            this.addLogEntry({
+                speaker: this.participantName || 'You',
+                message: transcriptText,
+                type: 'user'
+            });
+            
+            // Send transcript to backend for intent detection
+            this.sendTranscriptForIntentDetection(transcriptText);
+        }
     }
     
     handleAgentTranscription(transcriptText, participantInfo) {
         console.log('Agent transcription:', transcriptText, 'from:', participantInfo.identity);
         
-        // Add agent response to conversation log
+        // Add agent response to conversation log with enhanced formatting
         this.addLogEntry({
-            speaker: participantInfo.identity === this.room.localParticipant.identity ? 'You' : 'Scott',
+            speaker: participantInfo.identity === this.room.localParticipant.identity ? 'You' : '🤖 Scott',
             message: transcriptText,
             type: 'agent'
         });
+        
+        // Update transcript display to show agent's speech
+        const status = document.getElementById('transcript-status');
+        if (status) {
+            status.textContent = 'Scott speaking...';
+            status.className = 'agent-speaking';
+            status.style.background = '#e3f2fd';
+            status.style.color = '#1565c0';
+        }
     }
     
     async sendTranscriptForIntentDetection(transcript) {
@@ -336,21 +351,50 @@ class DynamicVoiceAgent {
         }
         
         if (isFinal) {
-            this.finalTranscript += (this.finalTranscript ? ' ' : '') + transcriptText;
+            // Add final transcript with smooth transition
+            const newFinalText = this.finalTranscript + (this.finalTranscript ? ' ' : '') + transcriptText;
+            this.finalTranscript = newFinalText;
             this.interimTranscript = '';
             
             finalElement.textContent = this.finalTranscript;
             interimElement.textContent = '';
+            
+            // Add visual feedback for completed speech
+            finalElement.classList.add('updated');
+            setTimeout(() => finalElement.classList.remove('updated'), 1000);
         } else {
+            // Show interim transcript with typing effect
             this.interimTranscript = transcriptText;
             interimElement.textContent = this.interimTranscript;
+            interimElement.classList.add('typing');
         }
         
-        // Update status
+        // Update status with better feedback
         const status = document.getElementById('transcript-status');
         if (status) {
-            status.textContent = this.interimTranscript ? 'Transcribing...' : 'Listening...';
-            status.className = this.interimTranscript ? 'transcribing' : 'listening';
+            if (!isFinal && transcriptText.trim()) {
+                status.textContent = 'Speaking...';
+                status.className = 'transcribing';
+            } else if (isFinal) {
+                status.textContent = 'Processing...';
+                status.className = 'processing';
+                // Reset to listening after a short delay
+                setTimeout(() => {
+                    if (status) {
+                        status.textContent = 'Listening...';
+                        status.className = 'listening';
+                    }
+                }, 1500);
+            } else {
+                status.textContent = 'Listening...';
+                status.className = 'listening';
+            }
+        }
+        
+        // Auto-scroll transcript container
+        const transcriptBody = document.getElementById('transcript-body');
+        if (transcriptBody) {
+            transcriptBody.scrollTop = transcriptBody.scrollHeight;
         }
         
         this.lastTranscriptUpdate = Date.now();
@@ -364,16 +408,58 @@ class DynamicVoiceAgent {
         const container = document.createElement('div');
         container.id = 'transcript-container';
         container.className = 'transcript-container show';
-        container.style.display = 'block';
+        container.style.cssText = `
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            padding: 1rem;
+            margin: 1rem 0;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            border: 1px solid #e1e8ed;
+            transition: all 0.3s ease;
+        `;
         
         container.innerHTML = `
-            <div class="transcript-header">
-                <span>🎤 Live Transcript</span>
-                <span id="transcript-status" class="listening">Listening...</span>
+            <div class="transcript-header" style="
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 0.75rem;
+                padding-bottom: 0.5rem;
+                border-bottom: 1px solid #e1e8ed;
+            ">
+                <span style="font-weight: 600; color: #2c3e50;">🎤 Live Transcript</span>
+                <span id="transcript-status" class="listening" style="
+                    font-size: 0.85rem;
+                    padding: 0.25rem 0.5rem;
+                    border-radius: 12px;
+                    background: #e8f5e8;
+                    color: #2d5a2d;
+                    font-weight: 500;
+                ">Listening...</span>
             </div>
-            <div id="transcript-body" class="transcript-body">
-                <div id="interim-transcript" class="transcript-text interim"></div>
-                <div id="final-transcript" class="transcript-text final"></div>
+            <div id="transcript-body" class="transcript-body" style="
+                max-height: 150px;
+                overflow-y: auto;
+                padding: 0.5rem;
+                background: #f8f9fa;
+                border-radius: 8px;
+                border: 1px solid #e9ecef;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+                line-height: 1.5;
+            ">
+                <div id="final-transcript" class="transcript-text final" style="
+                    color: #2c3e50;
+                    margin-bottom: 0.5rem;
+                    transition: all 0.3s ease;
+                "></div>
+                <div id="interim-transcript" class="transcript-text interim" style="
+                    color: #6c757d;
+                    font-style: italic;
+                    opacity: 0.8;
+                    border-left: 3px solid #007bff;
+                    padding-left: 0.5rem;
+                    transition: all 0.3s ease;
+                "></div>
             </div>
         `;
         
@@ -384,7 +470,41 @@ class DynamicVoiceAgent {
             document.querySelector('.container').appendChild(container);
         }
         
-        console.log('Transcript container created');
+        // Add dynamic styles
+        const style = document.createElement('style');
+        style.textContent = `
+            .transcript-text.updated {
+                background-color: #e8f5e8 !important;
+                transform: scale(1.02);
+            }
+            
+            .transcript-text.typing {
+                animation: pulse 1.5s infinite;
+            }
+            
+            @keyframes pulse {
+                0%, 100% { opacity: 0.8; }
+                50% { opacity: 1; }
+            }
+            
+            #transcript-status.transcribing {
+                background: #fff3cd !important;
+                color: #856404 !important;
+            }
+            
+            #transcript-status.processing {
+                background: #d1ecf1 !important;
+                color: #0c5460 !important;
+            }
+            
+            #transcript-status.listening {
+                background: #e8f5e8 !important;
+                color: #2d5a2d !important;
+            }
+        `;
+        document.head.appendChild(style);
+        
+        console.log('Enhanced transcript container created');
     }
     
     initializeConversationLog() {
@@ -392,19 +512,18 @@ class DynamicVoiceAgent {
         logContainer.id = 'conversationLog';
         logContainer.className = 'conversation-log';
         logContainer.innerHTML = `
-            <h4>Conversation Log</h4>
+            <h4>🎯 Conversation Analytics</h4>
             <div class="intent-status">
                 <span class="current-intent">Current Intent: <strong id="current-intent-display">${this.currentIntent || 'Detecting...'}</strong></span>
-                <span class="auto-detection">🤖 Auto-detection active</span>
+                <span class="auto-detection">🤖 Live detection</span>
             </div>
             <div class="log-entries" id="logEntries"></div>
         `;
         
         const container = document.querySelector('.container');
         if (container) {
-            const divider = document.createElement('hr');
-            divider.className = 'log-divider';
-            container.appendChild(divider);
+            // Add margin instead of divider for cleaner look
+            logContainer.style.marginTop = '2rem';
             container.appendChild(logContainer);
         }
     }
@@ -433,31 +552,71 @@ class DynamicVoiceAgent {
         const logEntryEl = document.createElement('div');
         logEntryEl.className = `log-entry ${entry.type || ''}`;
         
+        // Enhanced styling based on entry type
+        const entryStyles = {
+            user: 'background: #e3f2fd; border-left: 4px solid #2196f3; margin: 0.5rem 0; padding: 0.75rem; border-radius: 8px;',
+            agent: 'background: #f3e5f5; border-left: 4px solid #9c27b0; margin: 0.5rem 0; padding: 0.75rem; border-radius: 8px;',
+            system: 'background: #fff3e0; border-left: 4px solid #ff9800; margin: 0.5rem 0; padding: 0.5rem; border-radius: 6px; font-size: 0.9rem;',
+            chat: 'background: #e8f5e8; border-left: 4px solid #4caf50; margin: 0.5rem 0; padding: 0.75rem; border-radius: 8px;'
+        };
+        
+        logEntryEl.style.cssText = entryStyles[entry.type] || entryStyles.user;
+        
         let displayTime;
         try {
             const entryTime = new Date(entry.timestamp);
-            displayTime = entryTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            displayTime = entryTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         } catch (e) {
             displayTime = 'now';
         }
         
         logEntryEl.innerHTML = `
-            <div class="log-header">
-                <span class="speaker">${entry.speaker || 'Unknown'}</span>
-                <span class="timestamp">${displayTime}</span>
+            <div class="log-header" style="
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 0.5rem;
+                font-size: 0.85rem;
+                opacity: 0.8;
+            ">
+                <span class="speaker" style="font-weight: 600; color: #2c3e50;">${entry.speaker || 'Unknown'}</span>
+                <span class="timestamp" style="color: #6c757d;">${displayTime}</span>
             </div>
-            <div class="log-message">${entry.message}</div>
+            <div class="log-message" style="
+                color: #2c3e50;
+                line-height: 1.4;
+                word-wrap: break-word;
+            ">${entry.message}</div>
         `;
         
         if (entry.intent) {
             const intentSpan = document.createElement('span');
             intentSpan.className = 'intent-change';
+            intentSpan.style.cssText = `
+                background: #4caf50;
+                color: white;
+                padding: 0.2rem 0.5rem;
+                border-radius: 12px;
+                font-size: 0.75rem;
+                margin-left: 0.5rem;
+            `;
             intentSpan.textContent = `Intent: ${entry.intent}`;
             logEntryEl.querySelector('.log-header').appendChild(intentSpan);
         }
         
         logEntries.appendChild(logEntryEl);
-        logEntries.scrollTop = logEntries.scrollHeight;
+        
+        // Smooth scroll to new entry
+        logEntryEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        
+        // Fade in animation
+        logEntryEl.style.opacity = '0';
+        logEntryEl.style.transform = 'translateY(10px)';
+        setTimeout(() => {
+            logEntryEl.style.transition = 'all 0.3s ease';
+            logEntryEl.style.opacity = '1';
+            logEntryEl.style.transform = 'translateY(0)';
+        }, 10);
         
         return logEntryEl;
     }
@@ -773,6 +932,7 @@ class DynamicVoiceAgent {
         const transcriptContainer = document.getElementById('transcript-container');
         if (transcriptContainer) {
             transcriptContainer.classList.remove('show');
+            transcriptContainer.style.display = 'none';
         }
     }
 }
