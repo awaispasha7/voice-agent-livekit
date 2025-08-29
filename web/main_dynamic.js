@@ -49,67 +49,11 @@ class DynamicVoiceAgent {
             statusEl.style.display = 'block';
         }
         
-        // Enable the join button by default
         const joinBtn = document.getElementById('joinBtn');
         if (joinBtn) {
             joinBtn.disabled = false;
             joinBtn.textContent = 'Join Voice Chat';
         }
-    }
-    
-    initializeIntentButtons() {
-        // Create intent selection buttons
-        const intentContainer = document.createElement('div');
-        intentContainer.id = 'intentSelection';
-        intentContainer.className = 'intent-selection';
-        intentContainer.innerHTML = `
-            <h3>What can we help you with today?</h3>
-            <div class="intent-buttons">
-                <button class="intent-btn" data-intent="sales">💰 Sales & Pricing</button>
-                <button class="intent-btn" data-intent="support">🔧 Technical Support</button>
-                <button class="intent-btn" data-intent="billing">💳 Billing & Account</button>
-                <button class="intent-btn" data-intent="general">💬 General Inquiry</button>
-            </div>
-            <p class="intent-help">Select your topic or just start talking - our AI will detect your intent automatically!</p>
-        `;
-        
-        // Insert before the form
-        const form = document.getElementById('joinForm');
-        if (form) {
-            form.parentNode.insertBefore(intentContainer, form);
-        }
-        
-        // Add event listeners for intent buttons
-        document.querySelectorAll('.intent-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                this.selectIntent(btn.dataset.intent);
-            });
-        });
-    }
-    
-    selectIntent(intent) {
-        this.currentIntent = intent;
-        
-        // Update UI to show selected intent
-        document.querySelectorAll('.intent-btn').forEach(btn => {
-            btn.classList.remove('selected');
-        });
-        document.querySelector(`[data-intent="${intent}"]`).classList.add('selected');
-        
-        // Update status
-        const intentLabels = {
-            sales: 'Sales & Pricing Inquiry',
-            support: 'Technical Support Request',
-            billing: 'Billing & Account Question',
-            general: 'General Inquiry'
-        };
-        
-        this.showStatus(`Selected: ${intentLabels[intent]}. Ready to connect!`, 'info');
-        
-        // Enable the join button
-        document.getElementById('joinBtn').disabled = false;
-        document.getElementById('joinBtn').textContent = `Connect for ${intentLabels[intent]}`;
     }
     
     bindEvents() {
@@ -159,9 +103,8 @@ class DynamicVoiceAgent {
             document.getElementById('joinBtn').disabled = true;
             
             // Get connection details
-            // const response = await fetch('http://localhost:8000/api/connection_details', {
             const response = await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/connection_details', {
-            method: 'POST',
+                method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
@@ -175,11 +118,11 @@ class DynamicVoiceAgent {
             
             if (!response.ok) throw new Error('Failed to get connection details');
             const connectionDetails = await response.json();
-            console.log('Enhanced connection details:', connectionDetails);
+            console.log('Connection details received:', connectionDetails);
             
             this.currentRoomName = connectionDetails.roomName;
             
-            // Create room with enhanced settings
+            // Create room with proper configuration
             this.room = new LivekitClient.Room({
                 adaptiveStream: true,
                 dynacast: true,
@@ -190,14 +133,13 @@ class DynamicVoiceAgent {
                     },
                     maxRetries: 5,
                 },
-                // Enable data channels for intent updates
                 publishDefaults: {
                     videoSimulcastLayers: [],
                     audioPreset: LivekitClient.AudioPresets.speech,
                 }
             });
             
-            this.setupEnhancedRoomEvents();
+            this.setupRoomEvents();
             
             // Connect to room
             await this.room.connect(connectionDetails.serverUrl, connectionDetails.participantToken);
@@ -207,10 +149,10 @@ class DynamicVoiceAgent {
             this.connectionAttempts = 0;
             
             this.showStatus(`
-                🔗 Connected to Alive5 Support!<br>
+                Connected to Alive5 Support!<br>
                 Room: ${this.currentRoomName}<br>
-                ⏳ Scott is joining... (This may take 10-15 seconds)<br>
-                🤖 Dynamic intent detection is active
+                Scott is joining... (This may take 10-15 seconds)<br>
+                Dynamic intent detection is active
             `, 'connected');
             
             this.showControls();
@@ -232,148 +174,335 @@ class DynamicVoiceAgent {
         }
     }
     
+    setupRoomEvents() {
+        // Handle connection state
+        this.room.on(LivekitClient.RoomEvent.Connected, () => {
+            this.isConnected = true;
+            this.showStatus('Connected to Alive5 Dynamic Voice Support', 'connected');
+            document.getElementById('controls').classList.add('show');
+            document.getElementById('joinBtn').disabled = true;
+            
+            this.createTranscriptContainer();
+            console.log('Room connected - transcript container created');
+        });
+        
+        this.room.on(LivekitClient.RoomEvent.Disconnected, () => {
+            this.isConnected = false;
+            this.handleDisconnection();
+        });
+        
+        // Handle audio tracks from agent
+        this.room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
+            console.log('Track subscribed:', track.kind, 'from participant:', participant.identity);
+            
+            if (track.kind === 'audio') {
+                let audioElement = document.getElementById(`audio-${participant.sid}`);
+                if (!audioElement) {
+                    audioElement = document.createElement('audio');
+                    audioElement.id = `audio-${participant.sid}`;
+                    audioElement.autoplay = true;
+                    audioElement.controls = false;
+                    document.body.appendChild(audioElement);
+                    console.log('Created audio element for', participant.identity);
+                }
+                
+                track.attach(audioElement);
+                audioElement.volume = 1.0;
+                
+                try {
+                    audioElement.play()
+                        .then(() => console.log('Audio playback started'))
+                        .catch(err => console.error('Audio playback failed:', err));
+                } catch (e) {
+                    console.warn('Audio play error:', e);
+                }
+            }
+        });
+        
+        this.room.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+            if (track.kind === 'audio') {
+                const audioElement = document.getElementById(`audio-${participant.sid}`);
+                if (audioElement) {
+                    track.detach(audioElement);
+                    audioElement.remove();
+                }
+            }
+        });
+        
+        // CORRECT WAY: Register text stream handler for transcriptions
+        this.room.registerTextStreamHandler('lk.transcription', async (reader, participantInfo) => {
+            try {
+                const message = await reader.readAll();
+                console.log('Transcription received:', { message, participantInfo, attributes: reader.info.attributes });
+                
+                // Check if this is a user transcription (has transcribed_track_id attribute)
+                if (reader.info.attributes && reader.info.attributes['lk.transcribed_track_id']) {
+                    // This is a user's speech transcription
+                    this.handleUserTranscription(message, participantInfo);
+                } else {
+                    // This is agent's speech transcription (synchronized with TTS)
+                    this.handleAgentTranscription(message, participantInfo);
+                }
+            } catch (error) {
+                console.error('Error processing transcription:', error);
+            }
+        });
+        
+        // Register handler for chat messages (text input)
+        this.room.registerTextStreamHandler('lk.chat', async (reader, participantInfo) => {
+            try {
+                const message = await reader.readAll();
+                console.log('Chat message received:', message, 'from:', participantInfo.identity);
+                
+                // Handle chat messages if needed
+                this.addLogEntry({
+                    speaker: participantInfo.identity,
+                    message: message,
+                    type: 'chat'
+                });
+            } catch (error) {
+                console.error('Error processing chat message:', error);
+            }
+        });
+    }
+    
+    handleUserTranscription(transcriptText, participantInfo) {
+        console.log('User transcription:', transcriptText, 'from:', participantInfo.identity);
+        
+        // Update transcript display
+        this.updateTranscriptDisplay(transcriptText, true); // true = final
+        
+        // Add to conversation log
+        this.addLogEntry({
+            speaker: this.participantName || 'You',
+            message: transcriptText,
+            type: 'user'
+        });
+        
+        // Send transcript to backend for intent detection
+        this.sendTranscriptForIntentDetection(transcriptText);
+    }
+    
+    handleAgentTranscription(transcriptText, participantInfo) {
+        console.log('Agent transcription:', transcriptText, 'from:', participantInfo.identity);
+        
+        // Add agent response to conversation log
+        this.addLogEntry({
+            speaker: participantInfo.identity === this.room.localParticipant.identity ? 'You' : 'Scott',
+            message: transcriptText,
+            type: 'agent'
+        });
+    }
+    
+    async sendTranscriptForIntentDetection(transcript) {
+        try {
+            // Send transcript to backend for intent processing
+            const response = await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/process_transcript', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    room_name: this.currentRoomName,
+                    transcript: transcript,
+                    session_id: this.sessionId
+                })
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.intent && result.intent !== this.currentIntent) {
+                    this.handleIntentUpdate(result.intent, 'AI');
+                }
+                if (result.userData) {
+                    this.updateUserData(result.userData);
+                }
+            }
+        } catch (error) {
+            console.warn('Failed to send transcript for intent detection:', error);
+        }
+    }
+    
+    updateTranscriptDisplay(transcriptText, isFinal) {
+        if (!transcriptText || transcriptText.trim() === '') return;
+        
+        const interimElement = document.getElementById('interim-transcript');
+        const finalElement = document.getElementById('final-transcript');
+        
+        if (!interimElement || !finalElement) {
+            console.warn('Transcript elements not found');
+            this.createTranscriptContainer();
+            return;
+        }
+        
+        if (isFinal) {
+            this.finalTranscript += (this.finalTranscript ? ' ' : '') + transcriptText;
+            this.interimTranscript = '';
+            
+            finalElement.textContent = this.finalTranscript;
+            interimElement.textContent = '';
+        } else {
+            this.interimTranscript = transcriptText;
+            interimElement.textContent = this.interimTranscript;
+        }
+        
+        // Update status
+        const status = document.getElementById('transcript-status');
+        if (status) {
+            status.textContent = this.interimTranscript ? 'Transcribing...' : 'Listening...';
+            status.className = this.interimTranscript ? 'transcribing' : 'listening';
+        }
+        
+        this.lastTranscriptUpdate = Date.now();
+    }
+    
+    createTranscriptContainer() {
+        if (document.getElementById('transcript-container')) {
+            return; // Already exists
+        }
+        
+        const container = document.createElement('div');
+        container.id = 'transcript-container';
+        container.className = 'transcript-container show';
+        container.style.display = 'block';
+        
+        container.innerHTML = `
+            <div class="transcript-header">
+                <span>🎤 Live Transcript</span>
+                <span id="transcript-status" class="listening">Listening...</span>
+            </div>
+            <div id="transcript-body" class="transcript-body">
+                <div id="interim-transcript" class="transcript-text interim"></div>
+                <div id="final-transcript" class="transcript-text final"></div>
+            </div>
+        `;
+        
+        const controls = document.getElementById('controls');
+        if (controls && controls.parentNode) {
+            controls.parentNode.insertBefore(container, controls.nextSibling);
+        } else {
+            document.querySelector('.container').appendChild(container);
+        }
+        
+        console.log('Transcript container created');
+    }
+    
     initializeConversationLog() {
-        // Create conversation log UI
         const logContainer = document.createElement('div');
         logContainer.id = 'conversationLog';
         logContainer.className = 'conversation-log';
         logContainer.innerHTML = `
             <h4>Conversation Log</h4>
             <div class="intent-status">
-                <span class="current-intent">Current Intent: <strong>${this.currentIntent || 'Not detected yet'}</strong></span>
+                <span class="current-intent">Current Intent: <strong id="current-intent-display">${this.currentIntent || 'Detecting...'}</strong></span>
                 <span class="auto-detection">🤖 Auto-detection active</span>
             </div>
             <div class="log-entries" id="logEntries"></div>
         `;
         
-        // Add a divider before the conversation log
-        const divider = document.createElement('hr');
-        divider.className = 'log-divider';
-        
-        // Add to container instead of controls for separate row layout
         const container = document.querySelector('.container');
         if (container) {
+            const divider = document.createElement('hr');
+            divider.className = 'log-divider';
             container.appendChild(divider);
             container.appendChild(logContainer);
         }
     }
     
-    addToConversationLog(speaker, message, intent = null) {
-        const logEntries = document.getElementById('logEntries');
+    addLogEntry(entry) {
+        if (!entry || !entry.message) {
+            console.warn('Invalid log entry:', entry);
+            return;
+        }
+        
+        if (!entry.timestamp) {
+            entry.timestamp = new Date().toISOString();
+        }
+        
+        this.conversationLog.push(entry);
+        
+        let logContainer = document.querySelector('.conversation-log');
+        if (!logContainer) {
+            this.initializeConversationLog();
+            logContainer = document.querySelector('.conversation-log');
+        }
+        
+        const logEntries = logContainer.querySelector('.log-entries');
         if (!logEntries) return;
         
-        const timestamp = new Date().toLocaleTimeString();
-        const entry = document.createElement('div');
-        entry.className = `log-entry ${speaker.toLowerCase()}`;
+        const logEntryEl = document.createElement('div');
+        logEntryEl.className = `log-entry ${entry.type || ''}`;
         
-        let intentBadge = '';
-        if (intent && intent !== this.currentIntent) {
-            intentBadge = `<span class="intent-change">Intent detected: ${intent}</span>`;
-            this.updateDetectedIntent(intent);
+        let displayTime;
+        try {
+            const entryTime = new Date(entry.timestamp);
+            displayTime = entryTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch (e) {
+            displayTime = 'now';
         }
         
-        entry.innerHTML = `
+        logEntryEl.innerHTML = `
             <div class="log-header">
-                <span class="speaker">${speaker}:</span>
-                <span class="timestamp">${timestamp}</span>
-                ${intentBadge}
+                <span class="speaker">${entry.speaker || 'Unknown'}</span>
+                <span class="timestamp">${displayTime}</span>
             </div>
-            <div class="log-message">${message}</div>
+            <div class="log-message">${entry.message}</div>
         `;
         
-        logEntries.appendChild(entry);
+        if (entry.intent) {
+            const intentSpan = document.createElement('span');
+            intentSpan.className = 'intent-change';
+            intentSpan.textContent = `Intent: ${entry.intent}`;
+            logEntryEl.querySelector('.log-header').appendChild(intentSpan);
+        }
+        
+        logEntries.appendChild(logEntryEl);
         logEntries.scrollTop = logEntries.scrollHeight;
         
-        // Store in conversation log
-        this.conversationLog.push({
-            speaker,
-            message,
-            timestamp,
-            intent
-        });
+        return logEntryEl;
     }
     
-    // Toast notification for intent changes
-    showToastNotification(message, type = 'info') {
-        // Create toast container if it doesn't exist
-        let toastContainer = document.getElementById('toast-container');
-        if (!toastContainer) {
-            toastContainer = document.createElement('div');
-            toastContainer.id = 'toast-container';
-            toastContainer.style.position = 'fixed';
-            toastContainer.style.top = '20px';
-            toastContainer.style.right = '20px';
-            toastContainer.style.zIndex = '9999';
-            document.body.appendChild(toastContainer);
-        }
+    handleIntentUpdate(intent, source) {
+        if (!intent) return;
         
-        // Create toast element
-        const toast = document.createElement('div');
-        toast.className = `toast ${type}`;
-        toast.innerHTML = `
-            <div class="toast-icon">${type === 'intent-change' ? '🔄' : 'ℹ️'}</div>
-            <div class="toast-content">${message}</div>
-        `;
+        const oldIntent = this.currentIntent;
+        this.currentIntent = intent;
         
-        // Style the toast
-        toast.style.backgroundColor = type === 'intent-change' ? '#4a6da7' : '#444';
-        toast.style.color = 'white';
-        toast.style.padding = '12px 16px';
-        toast.style.borderRadius = '4px';
-        toast.style.marginBottom = '10px';
-        toast.style.boxShadow = '0 2px 10px rgba(0,0,0,0.2)';
-        toast.style.display = 'flex';
-        toast.style.alignItems = 'center';
-        toast.style.transition = 'all 0.3s ease';
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateX(50px)';
-        
-        // Add to container
-        toastContainer.appendChild(toast);
-        
-        // Animate in
-        setTimeout(() => {
-            toast.style.opacity = '1';
-            toast.style.transform = 'translateX(0)';
-        }, 10);
-        
-        // Auto-remove after delay
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateX(50px)';
+        const intentElement = document.getElementById('current-intent-display');
+        if (intentElement) {
+            const intentLabels = {
+                sales: 'Sales & Pricing',
+                support: 'Technical Support',
+                billing: 'Billing & Account',
+                general: 'General Inquiry'
+            };
+            
+            intentElement.textContent = intentLabels[intent] || intent;
+            intentElement.classList.add('updated');
             
             setTimeout(() => {
-                toast.remove();
-            }, 300);
-        }, 5000);
-    }
-    
-    updateDetectedIntent(newIntent) {
-        if (newIntent !== this.currentIntent) {
-            console.log(`INTENT_LOG: Intent changed from '${this.currentIntent || 'None'}' to '${newIntent}'`);
-            const oldIntent = this.currentIntent;
-            this.currentIntent = newIntent;
-            
-            // Update UI
-            const intentStatus = document.querySelector('.current-intent');
-            if (intentStatus) {
-                intentStatus.innerHTML = `Current Intent: <strong>${newIntent}</strong> <span class="updated">✨ Updated</span>`;
-            }
-            
-            // Show toast notification for intent changes
-            this.showToastNotification(`Intent changed to: ${newIntent}`, 'intent-change');
-            
-            // Send update to server
-            this.updateSessionIntent(newIntent);
-        } else {
-            console.log(`INTENT_LOG: Intent confirmed as '${newIntent}'`);
+                intentElement.classList.remove('updated');
+            }, 2000);
         }
+        
+        if (oldIntent !== intent) {
+            this.addLogEntry({
+                speaker: 'System',
+                message: `Intent detected: ${intent} (by ${source})`,
+                type: 'system',
+                intent: intent
+            });
+            
+            this.showToast(`Intent detected: ${intent}`, 'intent-change');
+        }
+        
+        // Update session on backend
+        this.updateSessionIntent(intent);
     }
     
     async updateSessionIntent(intent) {
         try {
-            // await fetch('http://localhost:8000/api/sessions/update', {
-                await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/sessions/update', {
+            await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/sessions/update', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -390,492 +519,14 @@ class DynamicVoiceAgent {
         }
     }
     
-    setupEnhancedRoomEvents() {
-        // Handle room state changes
-        this.room.on(LivekitClient.RoomEvent.Disconnected, () => {
-            this.isConnected = false;
-            this.showStatus('Disconnected from voice chat', 'info');
-            document.getElementById('controls').classList.remove('show');
-            document.getElementById('joinBtn').disabled = false;
-            document.getElementById('joinBtn').textContent = 'Reconnect';
-            
-            // Hide transcript container
-            document.getElementById('transcript-container').classList.remove('show');
-        });
-        
-        this.room.on(LivekitClient.RoomEvent.Connected, () => {
-            this.isConnected = true;
-            this.showStatus('Connected to Alive5 Dynamic Voice Support', 'connected');
-            document.getElementById('controls').classList.add('show');
-            document.getElementById('joinBtn').disabled = true;
-            
-            // Show and initialize transcript container
-            // First make sure the container exists
-            this.createTranscriptContainer();
-            
-            const transcriptContainer = document.getElementById('transcript-container');
-            if (transcriptContainer) {
-                transcriptContainer.style.display = 'block';
-                transcriptContainer.classList.add('show');
-                
-                const status = document.getElementById('transcript-status');
-                if (status) status.className = 'listening';
-                
-                const interimElement = document.getElementById('interim-transcript');
-                if (interimElement) interimElement.textContent = '';
-                
-                const finalElement = document.getElementById('final-transcript');
-                if (finalElement) finalElement.textContent = '';
-                
-                console.log('Transcript container initialized and shown');
-            } else {
-                console.error('Failed to find or create transcript container');
-            }
-            
-            // Initialize transcript history
-            this.interimTranscript = "";
-            this.finalTranscript = "";
-            
-            // Send a test data message to ensure data channels are working
-            setTimeout(() => {
-                try {
-                    // Check for different possible ways DataPacketKind might be exposed
-                    let dataPacketKind;
-                    
-                    // Try different paths to find the RELIABLE constant
-                    if (LivekitClient.DataPacketKind && LivekitClient.DataPacketKind.RELIABLE) {
-                        dataPacketKind = LivekitClient.DataPacketKind.RELIABLE;
-                    } else if (LivekitClient.DataPacketKind) {
-                        // Some versions might use numeric values instead of named constants
-                        dataPacketKind = 1; // 1 is typically RELIABLE
-                    } else if (LivekitClient.Room && LivekitClient.Room.DataPacketKind) {
-                        dataPacketKind = LivekitClient.Room.DataPacketKind.RELIABLE;
-                    } else if (this.room.localParticipant && this.room.localParticipant.publishData) {
-                        // If we can't find the constant, try without specifying kind (will use default)
-                        this.room.localParticipant.publishData(
-                            JSON.stringify({
-                                type: 'client_info',
-                                client: 'web',
-                                version: '2.0',
-                                timestamp: new Date().toISOString()
-                            })
-                        );
-                        console.log('Sent client info data packet (default kind)');
-                        return;
-                    } else {
-                        console.warn('Could not find DataPacketKind, skipping test packet');
-                        return;
-                    }
-                    
-                    this.room.localParticipant.publishData(
-                        JSON.stringify({
-                            type: 'client_info',
-                            client: 'web',
-                            version: '2.0',
-                            timestamp: new Date().toISOString()
-                        }),
-                        dataPacketKind
-                    );
-                    console.log('Sent client info data packet');
-                } catch (e) {
-                    console.error('Failed to send test data packet:', e);
-                }
-            }, 2000);
-        });
-        
-        // Handle remote audio tracks (Scott's voice)
-        this.room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
-            console.log('Track subscribed:', track.kind, 'from participant:', participant.identity);
-            
-            if (track.kind === 'audio') {
-                // Create or get audio element for this participant
-                let audioElement = document.getElementById(`audio-${participant.sid}`);
-                if (!audioElement) {
-                    audioElement = document.createElement('audio');
-                    audioElement.id = `audio-${participant.sid}`;
-                    audioElement.autoplay = true;
-                    audioElement.controls = false; // Hide controls
-                    document.body.appendChild(audioElement);
-                    console.log('Created audio element for', participant.identity);
-                }
-                
-                // Attach track to audio element
-                track.attach(audioElement);
-                console.log('Attached audio track to element');
-                
-                // Set volume to ensure it's audible
-                audioElement.volume = 1.0;
-                
-                // Play audio - needed for some browsers
-                try {
-                    audioElement.play()
-                        .then(() => console.log('Audio playback started'))
-                        .catch(err => console.error('Audio playback failed:', err));
-                } catch (e) {
-                    console.warn('Audio play error:', e);
-                }
-            }
-        });
-        
-        // Handle track unsubscribed
-        this.room.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
-            console.log('Track unsubscribed:', track.kind, 'from participant:', participant.identity);
-            
-            if (track.kind === 'audio') {
-                // Remove audio element
-                const audioElement = document.getElementById(`audio-${participant.sid}`);
-                if (audioElement) {
-                    track.detach(audioElement);
-                    audioElement.remove();
-                    console.log('Removed audio element for', participant.identity);
-                }
-            }
-        });
-        
-        // Setup data channel for receiving transcripts
-        this.room.on(LivekitClient.RoomEvent.DataReceived, (payload) => {
-            try {
-                console.log('Received data packet:', payload);
-                let data;
-                const self = this; // Preserve the 'this' context for callbacks
-                
-                // Direct handling for Uint8Array payload (common case from server)
-                if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) {
-                    try {
-                        const decoder = new TextDecoder();
-                        const dataStr = decoder.decode(payload);
-                        console.log('Directly decoded binary payload:', dataStr);
-                        data = JSON.parse(dataStr);
-                        console.log('Successfully parsed JSON from direct binary payload:', data);
-                    } catch (directError) {
-                        console.warn('Failed to directly parse binary payload:', directError);
-                    }
-                }
-                
-                // If direct parsing didn't work, try extracting from payload object
-                if (!data) {
-                    // Extract the actual data from the payload
-                    let rawData = payload.data;
-                    
-                    // If payload.data is undefined, check if we can extract data from other payload properties
-                    if (rawData === undefined) {
-                        console.log('Data is undefined, checking payload properties:', payload);
-                        if (payload.kind !== undefined && payload.payload) {
-                            rawData = payload.payload;
-                            console.log('Using payload.payload instead:', rawData);
-                        } else if (typeof payload === 'string') {
-                            rawData = payload;
-                            console.log('Using payload directly as string:', rawData);
-                        } else if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) {
-                            rawData = payload;
-                            console.log('Using payload directly as binary data');
-                        } else if (payload.toString && typeof payload.toString === 'function') {
-                            // Last resort - try toString
-                            rawData = payload.toString();
-                            console.log('Using payload.toString():', rawData);
-                        }
-                    }
-                    
-                    // Now process rawData based on its type
-                    if (rawData instanceof Uint8Array || rawData instanceof ArrayBuffer) {
-                        // Convert binary data to string
-                        const decoder = new TextDecoder();
-                        const dataStr = decoder.decode(rawData);
-                        console.log('Decoded binary data:', dataStr);
-                        try {
-                            data = JSON.parse(dataStr);
-                            console.log('Parsed JSON from binary data:', data);
-                        } catch (jsonError) {
-                            console.warn('Received non-JSON data:', dataStr);
-                            // If it's a simple string, treat it as transcript
-                            if (dataStr.trim()) {
-                                data = { transcript: dataStr, final: true };
-                            } else {
-                                console.log('Empty data string, skipping');
-                            }
-                        }
-                    } else if (typeof rawData === 'string') {
-                        try {
-                            data = JSON.parse(rawData);
-                            console.log('Parsed JSON from string data:', data);
-                        } catch (jsonError) {
-                            console.warn('Received non-JSON string:', rawData);
-                            // If it's a simple string, treat it as transcript
-                            if (rawData.trim()) {
-                                data = { transcript: rawData, final: true };
-                            } else {
-                                console.log('Empty string data, skipping');
-                            }
-                        }
-                    } else if (typeof rawData === 'object' && rawData !== null) {
-                        // Already an object
-                        data = rawData;
-                        console.log('Using raw object data directly:', data);
-                    } else if (rawData === undefined || rawData === null) {
-                        console.warn('Empty data received, nothing to process');
-                    } else {
-                        console.warn('Unhandled data format:', typeof rawData, rawData);
-                        // Try to convert to string as last resort
-                        try {
-                            const strData = String(rawData);
-                            if (strData && strData.trim()) {
-                                data = { transcript: strData, final: true };
-                                console.log('Converted to string as fallback:', data);
-                            } else {
-                                console.log('Empty converted string, skipping');
-                            }
-                        } catch (conversionError) {
-                            console.error('Failed to convert data to string:', conversionError);
-                        }
-                    }
-                }
-                
-        console.log('Processed data:', data);
-                
-                // Handle transcript updates
-                if (data && (data.type === 'transcript' || data.transcript || data.text)) {
-                    try {
-                        console.log('TRANSCRIPT DATA RECEIVED:', data);
-                        self.updateTranscript(data);
-                        console.log('Transcript update processed successfully');
-                        
-                        // Make transcript container visible
-                        const container = document.getElementById('transcript-container');
-                        if (container) {
-                            container.classList.add('show');
-                            console.log('Transcript container shown due to transcript update');
-                        }
-                    } catch (err) {
-                        console.error('Error updating transcript:', err);
-                    }
-                }
-                
-                // Handle intent detection
-                if (data && data.intent) {
-                    try {
-                        self.handleIntentUpdate(data.intent, data.intentSource || 'AI');
-                        console.log('Intent update processed successfully');
-                    } catch (err) {
-                        console.error('Error handling intent update:', err);
-                    }
-                }
-                
-                // Handle user data extraction
-                if (data && data.userData) {
-                    try {
-                        self.updateUserData(data.userData);
-                        console.log('User data update processed successfully');
-                    } catch (err) {
-                        console.error('Error updating user data:', err);
-                    }
-                }
-                
-                // Handle system messages
-                if (data && data.system) {
-                    try {
-                        self.addLogEntry({
-                            speaker: 'System',
-                            message: data.system,
-                            type: 'system'
-                        });
-                        console.log('System message processed successfully:', data.system);
-                        
-                        // Show transcript container when we receive the initialization message
-                        if (data.system.includes('Transcript capture initialized')) {
-                            const container = document.getElementById('transcript-container');
-                            if (container) {
-                                container.classList.add('show');
-                                console.log('Transcript container shown due to initialization message');
-                            }
-                        }
-                    } catch (err) {
-                        console.error('Error handling system message:', err);
-                    }
-                }
-            } catch (e) {
-                console.error('Error processing received data:', e);
-            }
-        });
-    }
-    
-    // Add a new method to handle adding log entries
-    addLogEntry(entry) {
-        // Validate required fields
-        if (!entry || !entry.message) {
-            console.warn('Invalid log entry:', entry);
-            return;
-        }
-        
-        // Add timestamp if not provided
-        if (!entry.timestamp) {
-            entry.timestamp = new Date().toISOString();
-        }
-        
-        // Store in conversation history
-        this.conversationLog.push(entry);
-        
-        // Create or get the conversation log container
-        let logContainer = document.querySelector('.conversation-log');
-        if (!logContainer) {
-            logContainer = document.createElement('div');
-            logContainer.className = 'conversation-log';
-            logContainer.innerHTML = `
-                <h4>Conversation History</h4>
-                <div class="intent-status">
-                    <div class="current-intent">Current intent: <span id="current-intent">Detecting...</span></div>
-                    <div class="auto-detection" id="intent-detection-status">Auto-detection active</div>
-                </div>
-                <div class="log-entries"></div>
-            `;
-            
-            // Insert it after the transcript container
-            const transcriptContainer = document.getElementById('transcript-container');
-            if (transcriptContainer && transcriptContainer.parentNode) {
-                transcriptContainer.parentNode.insertBefore(logContainer, transcriptContainer.nextSibling);
-            } else {
-                // Fallback - append to container
-                document.querySelector('.container').appendChild(logContainer);
-            }
-        }
-        
-        // Get the log entries container
-        const logEntries = logContainer.querySelector('.log-entries');
-        if (!logEntries) {
-            console.warn('Log entries container not found');
-            return;
-        }
-        
-        // Create the log entry element
-        const logEntryEl = document.createElement('div');
-        logEntryEl.className = `log-entry ${entry.type || ''}`;
-        
-        // Format timestamp
-        let displayTime;
-        try {
-            const entryTime = new Date(entry.timestamp);
-            displayTime = entryTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        } catch (e) {
-            displayTime = 'now';
-        }
-        
-        // Set the content
-        logEntryEl.innerHTML = `
-            <div class="log-header">
-                <span class="speaker">${entry.speaker || 'Unknown'}</span>
-                <span class="timestamp">${displayTime}</span>
-            </div>
-            <div class="log-message">${entry.message}</div>
-        `;
-        
-        // Add intent change indicator if provided
-        if (entry.intent) {
-            const intentSpan = document.createElement('span');
-            intentSpan.className = 'intent-change';
-            intentSpan.textContent = `Intent: ${entry.intent}`;
-            logEntryEl.querySelector('.log-header').appendChild(intentSpan);
-        }
-        
-        // Add to the log
-        logEntries.appendChild(logEntryEl);
-        
-        // Scroll to bottom
-        logEntries.scrollTop = logEntries.scrollHeight;
-        
-        return logEntryEl;
-    }
-    
-    // Handle intent updates
-    handleIntentUpdate(intent, source) {
-        if (!intent) return;
-        
-        // Update the current intent
-        this.currentIntent = intent;
-        
-        // Update the UI
-        const intentElement = document.getElementById('current-intent');
-        if (intentElement) {
-            const intentLabels = {
-                sales: 'Sales & Pricing',
-                support: 'Technical Support',
-                billing: 'Billing & Account',
-                general: 'General Inquiry'
-            };
-            
-            intentElement.textContent = intentLabels[intent] || intent;
-            intentElement.classList.add('updated');
-            
-            // Remove the updated class after animation
-            setTimeout(() => {
-                intentElement.classList.remove('updated');
-            }, 2000);
-        }
-        
-        // Update the detection status
-        const detectionStatus = document.getElementById('intent-detection-status');
-        if (detectionStatus) {
-            detectionStatus.textContent = `Detected by ${source}`;
-            detectionStatus.classList.add('updated');
-            
-            // Remove the updated class after animation
-            setTimeout(() => {
-                detectionStatus.classList.remove('updated');
-            }, 2000);
-        }
-        
-        // Log the intent change
-        this.addLogEntry({
-            speaker: 'System',
-            message: `Intent changed to: ${intent}`,
-            type: 'system',
-            intent: intent
-        });
-        
-        // Show a toast notification
-        this.showToast(`Intent detected: ${intent}`, 'intent-change');
-    }
-    
-    // Show a toast notification
-    showToast(message, type = '') {
-        // Create toast container if it doesn't exist
-        let toastContainer = document.getElementById('toast-container');
-        if (!toastContainer) {
-            toastContainer = document.createElement('div');
-            toastContainer.id = 'toast-container';
-            document.body.appendChild(toastContainer);
-        }
-        
-        // Create toast element
-        const toast = document.createElement('div');
-        toast.className = `toast ${type}`;
-        toast.innerHTML = `
-            <span class="toast-icon">ℹ️</span>
-            <span class="toast-message">${message}</span>
-        `;
-        
-        // Add to container
-        toastContainer.appendChild(toast);
-        
-        // Remove after 3 seconds
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            setTimeout(() => {
-                toast.remove();
-            }, 300);
-        }, 3000);
-    }
-    
-    // Update user data extracted from conversation
     updateUserData(userData) {
         if (!userData || typeof userData !== 'object') return;
         
-        // Merge with existing data
         this.detectedUserData = { ...this.detectedUserData, ...userData };
         
-        // Build a message with the extracted data
         const dataPoints = [];
         for (const [key, value] of Object.entries(userData)) {
             if (value) {
-                // Format key for display (camelCase to Title Case)
                 const formattedKey = key
                     .replace(/([A-Z])/g, ' $1')
                     .replace(/^./, str => str.toUpperCase());
@@ -885,187 +536,154 @@ class DynamicVoiceAgent {
         }
         
         if (dataPoints.length > 0) {
-            // Add to conversation log
             this.addLogEntry({
                 speaker: 'System',
                 message: `User information detected:<br>${dataPoints.join('<br>')}`,
                 type: 'system'
             });
             
-            // Show toast notification
-            this.showToast('User information updated', 'user-data');
-        }
-    }
-    updateTranscript(data) {
-        // Extract transcript information
-        let transcriptText = '';
-        let isFinal = false;
-        
-        // Log raw data to help with debugging
-        console.log('UpdateTranscript called with data:', JSON.stringify(data));
-        
-        try {
-            // Handle different transcript data formats
-            if (data.transcript !== undefined) {
-                if (typeof data.transcript === 'string') {
-                    transcriptText = data.transcript;
-                    isFinal = data.isFinal || data.final || false;
-                    console.log('Using string transcript:', transcriptText);
-                } else if (data.transcript && data.transcript.alternatives && data.transcript.alternatives.length > 0) {
-                    transcriptText = data.transcript.alternatives[0].text;
-                    isFinal = data.transcript.final || false;
-                    console.log('Using structured transcript:', transcriptText);
-                } else if (data.transcript === null || data.transcript === '') {
-                    console.log('Empty transcript received, skipping');
-                    return;
-                }
-            } else if (data.text !== undefined) {
-                transcriptText = data.text;
-                isFinal = data.isFinal || data.final || false;
-                console.log('Using text field:', transcriptText);
-            } else if (typeof data === 'string') {
-                // Direct string transcript
-                transcriptText = data;
-                isFinal = true; // Assume final for direct strings
-                console.log('Using direct string:', transcriptText);
-            } else {
-                console.warn('No recognized transcript format in data:', data);
-                return;
-            }
-        } catch (error) {
-            console.error('Error extracting transcript text:', error);
-            return;
-        }
-        
-        if (!transcriptText || transcriptText.trim() === '') {
-            console.log('Empty transcript text after processing, skipping update');
-            return;
-        }
-        
-        console.log(`Transcript update: "${transcriptText}" (final: ${isFinal})`);
-        
-        try {
-            // Update appropriate transcript based on final flag
-            if (isFinal) {
-                this.finalTranscript += (this.finalTranscript ? ' ' : '') + transcriptText;
-                this.interimTranscript = '';
-                
-                console.log('Updated final transcript:', this.finalTranscript);
-                
-                // Log the final transcript as user message
-                this.addLogEntry({
-                    speaker: this.participantName || 'You',
-                    message: transcriptText,
-                    type: 'user'
-                });
-                console.log('Added final transcript to conversation log');
-            } else {
-                this.interimTranscript = transcriptText;
-                console.log('Updated interim transcript:', this.interimTranscript);
-            }
-            
-            // Make sure DOM elements exist before attempting to update them
-            const interimElement = document.getElementById('interim-transcript');
-            const finalElement = document.getElementById('final-transcript');
-            
-            // Debug element existence
-            console.log('Transcript elements exist:', {
-                interimElement: !!interimElement,
-                finalElement: !!finalElement
-            });
-            
-            if (interimElement && finalElement) {
-                // Update the content
-                interimElement.textContent = this.interimTranscript;
-                finalElement.textContent = this.finalTranscript;
-                
-                console.log('Updated DOM with transcript text:', {
-                    interim: this.interimTranscript,
-                    final: this.finalTranscript
-                });
-                
-                // Update the timestamp
-                this.lastTranscriptUpdate = Date.now();
-                
-                // Update transcript status
-                const status = document.getElementById('transcript-status');
-                if (status) {
-                    if (this.interimTranscript) {
-                        status.textContent = 'Transcribing...';
-                        status.className = '';
-                    } else {
-                        status.textContent = 'Listening...';
-                        status.className = 'listening';
-                    }
-                    console.log('Updated transcript status:', status.textContent);
-                }
-                
-                // Make sure transcript container is visible
-                const container = document.getElementById('transcript-container');
-                if (container) {
-                    container.style.display = 'block'; // Ensure it's visible with inline style
-                    if (!container.classList.contains('show')) {
-                        container.classList.add('show');
-                        console.log('Transcript container now visible');
-                    }
-                } else {
-                    console.warn('Transcript container element not found');
-                }
-            } else {
-                console.warn('Transcript UI elements not found. Creating them now...');
-                
-                // Try to create them if they don't exist
-                this.createTranscriptContainer();
-                
-                // Retry update after creating container
-                setTimeout(() => this.updateTranscript(data), 100);
-            }
-        } catch (uiError) {
-            console.error('Error updating transcript UI:', uiError);
+            this.showToast('User information detected', 'user-data');
         }
     }
     
-    // Helper method to create transcript container if it doesn't exist
-    createTranscriptContainer() {
-        try {
-            // Check if container already exists
-            if (document.getElementById('transcript-container')) {
-                console.log('Transcript container already exists');
-                return;
-            }
-            
-            console.log('Creating transcript container...');
-            
-            // Create container
-            const container = document.createElement('div');
-            container.id = 'transcript-container';
-            container.className = 'transcript-container show';
-            container.style.display = 'block';
-            
-            // Set HTML content
-            container.innerHTML = `
-                <div class="transcript-header">
-                    <span>🎤 Live Transcript</span>
-                    <span id="transcript-status">Listening...</span>
-                </div>
-                <div id="transcript-body" class="transcript-body">
-                    <div id="interim-transcript" class="transcript-text interim"></div>
-                    <div id="final-transcript" class="transcript-text final"></div>
-                </div>
+    showToast(message, type = 'info') {
+        let toastContainer = document.getElementById('toast-container');
+        if (!toastContainer) {
+            toastContainer = document.createElement('div');
+            toastContainer.id = 'toast-container';
+            toastContainer.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                z-index: 9999;
             `;
+            document.body.appendChild(toastContainer);
+        }
+        
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        
+        const iconMap = {
+            'intent-change': '🔄',
+            'user-data': '👤',
+            'info': 'ℹ️',
+            'error': '❌'
+        };
+        
+        toast.innerHTML = `
+            <div class="toast-icon">${iconMap[type] || iconMap.info}</div>
+            <div class="toast-content">${message}</div>
+        `;
+        
+        toast.style.cssText = `
+            background-color: ${type === 'intent-change' ? '#4a6da7' : type === 'error' ? '#d73027' : '#444'};
+            color: white;
+            padding: 12px 16px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s ease;
+            opacity: 0;
+            transform: translateX(50px);
+        `;
+        
+        toastContainer.appendChild(toast);
+        
+        // Animate in
+        setTimeout(() => {
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateX(0)';
+        }, 10);
+        
+        // Auto-remove
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(50px)';
+            setTimeout(() => toast.remove(), 300);
+        }, 5000);
+    }
+    
+    async enableMicrophone() {
+        try {
+            this.localAudioTrack = await LivekitClient.createLocalAudioTrack({
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 16000,
+            });
             
-            // Find a good place to insert it
-            const controls = document.getElementById('controls');
-            if (controls && controls.parentNode) {
-                controls.parentNode.insertBefore(container, controls.nextSibling);
-            } else {
-                // Fallback - just append to the container
-                document.querySelector('.container').appendChild(container);
-            }
-            
-            console.log('Transcript container created successfully');
+            await this.room.localParticipant.publishTrack(this.localAudioTrack);
+            console.log('Microphone enabled with speech optimization');
         } catch (error) {
-            console.error('Error creating transcript container:', error);
+            console.error('Failed to enable microphone:', error);
+            throw new Error('Microphone access denied. Please allow microphone access and try again.');
+        }
+    }
+    
+    toggleMute() {
+        if (!this.localAudioTrack || !this.isConnected) return;
+        
+        this.isMuted = !this.isMuted;
+        this.localAudioTrack.mute(this.isMuted);
+        
+        const btn = document.getElementById('muteBtn');
+        btn.textContent = this.isMuted ? '🔊 Unmute' : '🔇 Mute';
+        btn.classList.toggle('muted', this.isMuted);
+        
+        this.showStatus(
+            this.isMuted ? 'Microphone muted' : 'Microphone unmuted', 
+            this.isMuted ? 'warning' : 'connected'
+        );
+        
+        this.addLogEntry({
+            speaker: 'System',
+            message: this.isMuted ? 'Microphone muted' : 'Microphone unmuted',
+            type: 'system'
+        });
+    }
+    
+    async sendTextMessage(text) {
+        if (!this.room || !this.isConnected) return;
+        
+        try {
+            await this.room.localParticipant.sendText(text, {
+                topic: 'lk.chat'
+            });
+            
+            this.addLogEntry({
+                speaker: 'You',
+                message: text,
+                type: 'text-input'
+            });
+        } catch (error) {
+            console.error('Failed to send text message:', error);
+        }
+    }
+    
+    async disconnect(showMessage = true) {
+        if (!this.room) return;
+        
+        try {
+            if (this.isConnected) {
+                await this.room.disconnect();
+                console.log('Manually disconnected from room:', this.currentRoomName);
+                
+                if (this.currentRoomName) {
+                    fetch(`https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/rooms/${this.currentRoomName}`, {
+                        method: 'DELETE'
+                    }).catch(e => console.warn('Session cleanup notification failed:', e));
+                }
+            }
+        } catch (error) {
+            console.error('Error during disconnect:', error);
+        } finally {
+            this.room = null;
+            if (showMessage) {
+                this.handleDisconnection();
+            }
         }
     }
     
@@ -1074,35 +692,22 @@ class DynamicVoiceAgent {
         this.hideControls();
         this.currentRoomName = null;
         
-        // Cleanup audio elements more thoroughly
-        try {
-            // Find and remove all audio elements
-            const audioElements = document.querySelectorAll('audio');
-            console.log(`Cleaning up ${audioElements.length} audio elements`);
-            
-            audioElements.forEach(el => {
-                try {
-                    // Stop the audio playback first
-                    if (el.srcObject) {
-                        const tracks = el.srcObject.getTracks();
-                        tracks.forEach(track => track.stop());
-                    }
-                    
-                    // Clear the source and remove the element
-                    el.srcObject = null;
-                    el.remove();
-                } catch (e) {
-                    console.warn('Error cleaning up audio element:', e);
+        // Cleanup audio elements
+        document.querySelectorAll('audio').forEach(el => {
+            try {
+                if (el.srcObject) {
+                    const tracks = el.srcObject.getTracks();
+                    tracks.forEach(track => track.stop());
                 }
-            });
-            
-            // Cleanup any other media elements as well
-            document.querySelectorAll('video').forEach(el => el.remove());
-        } catch (e) {
-            console.error('Error during media cleanup:', e);
-        }
+                el.srcObject = null;
+                el.remove();
+            } catch (e) {
+                console.warn('Error cleaning up audio element:', e);
+            }
+        });
         
-        // Show session summary
+        document.querySelectorAll('video').forEach(el => el.remove());
+        
         const summary = this.generateSessionSummary();
         this.showStatus(`
             Session Ended<br>
@@ -1141,87 +746,6 @@ class DynamicVoiceAgent {
         }
     }
     
-    async enableMicrophone() {
-        try {
-            this.localAudioTrack = await LivekitClient.createLocalAudioTrack({
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                sampleRate: 16000, // Optimal for speech recognition
-            });
-            
-            await this.room.localParticipant.publishTrack(this.localAudioTrack);
-            console.log('Microphone enabled with speech optimization');
-        } catch (error) {
-            console.error('Failed to enable microphone:', error);
-            throw new Error('Microphone access denied. Please allow microphone access and try again.');
-        }
-    }
-    
-    toggleMute() {
-        if (!this.localAudioTrack || !this.isConnected) return;
-        
-        this.isMuted = !this.isMuted;
-        this.localAudioTrack.mute(this.isMuted);
-        
-        const btn = document.getElementById('muteBtn');
-        btn.textContent = this.isMuted ? '🔊 Unmute' : '🔇 Mute';
-        btn.classList.toggle('muted', this.isMuted);
-        
-        this.showStatus(
-            this.isMuted ? 'Microphone muted' : 'Microphone unmuted', 
-            this.isMuted ? 'warning' : 'connected'
-        );
-        
-        this.addToConversationLog('System', this.isMuted ? 'Microphone muted' : 'Microphone unmuted');
-    }
-    
-    async requestTransfer(department) {
-        try {
-            // const response = await fetch(`http://localhost:8000/api/sessions/${this.currentRoomName}/transfer`, {
-            const response = await fetch(`https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/sessions/${this.currentRoomName}/transfer`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ department })
-            });
-            
-            if (response.ok) {
-                this.showStatus(`Transfer to ${department} initiated. Please hold...`, 'info');
-                this.addToConversationLog('System', `Transfer to ${department} requested`);
-            }
-        } catch (error) {
-            console.error('Transfer request failed:', error);
-        }
-    }
-    
-    async disconnect(showMessage = true) {
-        if (!this.room) return;
-        
-        try {
-            if (this.isConnected) {
-                await this.room.disconnect();
-                console.log('Manually disconnected from room:', this.currentRoomName);
-                
-                // Notify backend about session completion
-                if (this.currentRoomName) {
-                    // fetch(`http://localhost:8000/api/rooms/${this.currentRoomName}`, {
-                    fetch(`https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/rooms/${this.currentRoomName}`, {
-                        method: 'DELETE'
-                    }).catch(e => console.warn('Session cleanup notification failed:', e));
-                }
-            }
-        } catch (error) {
-            console.error('Error during disconnect:', error);
-        } finally {
-            this.room = null;
-            if (showMessage) {
-                this.handleDisconnection();
-            }
-        }
-    }
-    
     showStatus(message, type) {
         const el = document.getElementById('status');
         el.innerHTML = message;
@@ -1241,10 +765,14 @@ class DynamicVoiceAgent {
         muteBtn.classList.remove('muted');
         this.isMuted = false;
         
-        // Remove conversation log
         const logContainer = document.getElementById('conversationLog');
         if (logContainer) {
             logContainer.remove();
+        }
+        
+        const transcriptContainer = document.getElementById('transcript-container');
+        if (transcriptContainer) {
+            transcriptContainer.classList.remove('show');
         }
     }
 }
