@@ -323,6 +323,16 @@ class DynamicVoiceAgent {
                 } catch (error) {
                     console.error('Error processing agent transcript data:', error);
                 }
+            } else if (topic === 'lk.conversation.control') {
+                try {
+                    const data = JSON.parse(new TextDecoder().decode(payload));
+                    if (data.type === 'conversation_end') {
+                        console.log('🔚 Conversation end signal received:', data);
+                        this.handleConversationEnd(data);
+                    }
+                } catch (error) {
+                    console.error('Error processing conversation control data:', error);
+                }
             } else if (topic) {
                 console.log('📨 Other data received:', { topic, participant: participant?.identity, data: new TextDecoder().decode(payload) });
             }
@@ -340,6 +350,9 @@ class DynamicVoiceAgent {
         
         // Only add to conversation log and send for intent detection if it's final
         if (isFinal && transcriptText.trim()) {
+            // Check if this looks like a farewell
+            const isFarewell = this.detectFarewell(transcriptText);
+            
             // Add to conversation log with clear user identification
             this.addLogEntry({
                 speaker: `👤 ${this.participantName || 'You'}`,
@@ -347,9 +360,34 @@ class DynamicVoiceAgent {
                 type: 'user'
             });
             
+            // Show farewell detection
+            if (isFarewell) {
+                console.log('👋 Farewell detected in user message:', transcriptText);
+                this.addLogEntry({
+                    speaker: 'System',
+                    message: '👋 Farewell detected - ending conversation...',
+                    type: 'system'
+                });
+                
+                this.showToast('Ending conversation...', 'info');
+            }
+            
             // Send transcript to backend for intent detection
             this.sendTranscriptForIntentDetection(transcriptText);
         }
+    }
+
+    detectFarewell(message) {
+        /**
+         * Simple farewell detection on frontend (backup to worker detection)
+         */
+        const messageLower = message.toLowerCase().trim();
+        const farewellKeywords = [
+            'bye', 'goodbye', 'see you', 'that\'s all', 'thats all', 'i\'m done', 
+            'im done', 'thank you bye', 'thanks bye', 'gotta go', 'have to go'
+        ];
+        
+        return farewellKeywords.some(keyword => messageLower.includes(keyword));
     }
     
     handleAgentTranscription(transcriptText, participantInfo) {
@@ -385,6 +423,28 @@ class DynamicVoiceAgent {
                 }
             }, 3000);
         }
+    }
+
+    handleConversationEnd(data) {
+        console.log('🔚 Handling conversation end:', data);
+        
+        // Add system message about conversation ending
+        this.addLogEntry({
+            speaker: 'System',
+            message: '👋 Conversation ended by user request. Disconnecting...',
+            type: 'system'
+        });
+        
+        // Show toast notification
+        this.showToast('Conversation ended. Disconnecting...', 'info');
+        
+        // Update status
+        this.showStatus('Conversation ended. Disconnecting...', 'info');
+        
+        // Disconnect after a short delay to allow farewell message to be heard
+        setTimeout(() => {
+            this.disconnect(true);
+        }, 3000); // 3 second delay for polite farewell
     }
     
     async sendTranscriptForIntentDetection(transcript) {
