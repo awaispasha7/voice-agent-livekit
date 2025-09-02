@@ -299,8 +299,18 @@ def update_session(request: SessionUpdateRequest):
     try:
         room_name = request.room_name
         
+        # Auto-create session if it doesn't exist
         if room_name not in active_sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
+            logger.warning(f"Session {room_name} not found, creating new session")
+            active_sessions[room_name] = {
+                "room_name": room_name,
+                "participant_name": "Unknown",
+                "created_at": time.time(),
+                "last_updated": time.time(),
+                "user_data": {},
+                "status": "active",
+                "intent": None
+            }
         
         session = active_sessions[room_name]
         

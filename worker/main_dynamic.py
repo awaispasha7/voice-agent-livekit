@@ -58,6 +58,7 @@ class SimplifiedAssistant(Agent):
         self.conversation_stage = "greeting"
         self.transcripts: list[str] = []
         self.full_transcript: str = ""
+        self.room = None  # Will be set by entrypoint
         
         super().__init__(instructions=self._get_instructions())
 
@@ -81,7 +82,7 @@ CONVERSATION FLOW:
 TONE: Professional, helpful, empathetic, and conversational
 VOICE: Clear, warm, engaging
 LANGUAGE: Simple, jargon-free, concise responses
-AVOID: Technical jargon, complex explanations, lengthy responses, and unnecessary characters like '*' or '&'.
+AVOID: Technical jargon, complex explanations, lengthy responses, and unnecessary characters like '*' or '&'. Donot pronounce them even if they are in the text.
 
 IMPORTANT RULES:
 - Always confirm you're listening when asked
@@ -108,11 +109,151 @@ Current conversation stage: {self.conversation_stage}
                 else:
                     self.full_transcript = f"User: {user_message}"
                 
+                # Check if user wants to end the conversation
+                if self.should_end_conversation(user_message):
+                    logger.info(f"END_CONVERSATION: User indicated they want to end the call: '{user_message}'")
+                    await self.handle_conversation_end(user_message)
+                
                 # Note: Intent detection is now handled by the backend via frontend calls
                 logger.info(f"SESSION_UPDATE: Message logged for session {self.session_id}")
+            
+            # Check if this is an assistant response
+            elif event.item.role == "assistant" and event.item.content:
+                assistant_message = event.item.content
+                logger.info(f"TRANSCRIPT: Assistant said: '{assistant_message}'")
+                
+                # Send assistant response as a separate transcription message
+                await self.send_agent_transcript(assistant_message)
                 
         except Exception as e:
             logger.error(f"Error processing conversation item: {e}")
+
+    def should_end_conversation(self, user_message: str) -> bool:
+        """Check if user message indicates they want to end the conversation"""
+        message_lower = user_message.lower().strip()
+        logger.info(f"FAREWELL_CHECK: Analyzing message: '{user_message}' -> '{message_lower}'")
+        
+        # Common farewell phrases
+        farewell_phrases = [
+            # Direct goodbyes
+            "bye", "goodbye", "good bye", "see you", "see ya", "later", "farewell",
+            "that's all", "thats all", "that is all", "that'll be all", "that will be all",
+            
+            # Completion phrases
+            "i'm done", "im done", "i am done", "we're done", "were done", "we are done",
+            "that's it", "thats it", "that is it", "that's everything", "thats everything",
+            "nothing else", "no more questions", "i'm good", "im good", "i am good",
+            
+            # Thank you + ending
+            "thank you, bye", "thanks, bye", "thank you goodbye", "thanks goodbye",
+            "thank you that's all", "thanks thats all", "appreciate it bye", "thanks for your help bye",
+            
+            # Explicit endings
+            "end call", "end the call", "hang up", "disconnect", "finish", "close",
+            "i have to go", "gotta go", "need to go", "have to run", "talk later",
+            
+            # Satisfied responses
+            "perfect thank you", "great thanks", "awesome thanks", "that helps thanks",
+            "got it thanks", "understood thanks", "ok bye", "okay bye", "alright bye"
+        ]
+        
+        # Check for exact matches or if the message starts with these phrases
+        for phrase in farewell_phrases:
+            if phrase in message_lower or message_lower.startswith(phrase):
+                logger.info(f"FAREWELL_DETECTED: Matched phrase: '{phrase}' in message: '{message_lower}'")
+                return True
+        
+        # Check for patterns like "thanks" + short response (likely ending)
+        if ("thank" in message_lower or "thanks" in message_lower) and len(message_lower.split()) <= 3:
+            logger.info(f"FAREWELL_DETECTED: Short thanks message: '{message_lower}'")
+            return True
+            
+        logger.info(f"FAREWELL_CHECK: No farewell detected in: '{message_lower}'")
+        return False
+
+    async def handle_conversation_end(self, user_message: str):
+        """Handle the end of conversation gracefully"""
+        try:
+            # Generate a polite farewell response
+            farewell_instructions = f"""
+The user has indicated they want to end the conversation by saying: "{user_message}"
+
+Please provide a brief, warm farewell response that:
+1. Acknowledges their request to end the call
+2. Thanks them for using Alive5
+3. Offers future assistance if needed
+4. Keeps it short and natural (1-2 sentences max)
+
+Examples:
+- "Thank you for contacting Alive5! Have a great day and feel free to reach out anytime."
+- "Perfect! Thanks for using Alive5 support. Take care!"
+- "You're all set! Thanks for calling Alive5 and have a wonderful day."
+"""
+            
+            # Send farewell message through the agent session
+            if hasattr(self, 'agent_session') and self.agent_session:
+                await self.agent_session.generate_reply(instructions=farewell_instructions)
+                logger.info(f"FAREWELL: Sent goodbye message for session {self.session_id}")
+                
+                # Wait a moment for the farewell to be delivered
+                await asyncio.sleep(2)
+            
+            # Signal for disconnection via data message
+            await self.send_disconnection_signal()
+            
+        except Exception as e:
+            logger.error(f"Error handling conversation end: {e}")
+
+    async def send_disconnection_signal(self):
+        """Send signal to frontend to disconnect"""
+        try:
+            if hasattr(self, 'room') and self.room:
+                await self.room.local_participant.publish_data(
+                    data=json.dumps({
+                        'type': 'conversation_end',
+                        'message': 'The conversation has ended. Disconnecting...',
+                        'timestamp': datetime.now().isoformat(),
+                        'reason': 'user_requested'
+                    }).encode(),
+                    topic="lk.conversation.control"
+                )
+                logger.info(f"DISCONNECT_SIGNAL: Sent disconnection signal for session {self.session_id}")
+        except Exception as e:
+            logger.error(f"Error sending disconnection signal: {e}")
+
+    async def generate_reply(self, instructions: str = None):
+        """Override generate_reply to capture agent responses"""
+        try:
+            # Call the parent generate_reply method
+            result = await super().generate_reply(instructions)
+            
+            # If we have a response, send it as agent transcript
+            if result and hasattr(result, 'content'):
+                await self.send_agent_transcript(result.content)
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error in generate_reply: {e}")
+            return None
+
+    async def send_agent_transcript(self, message: str):
+        """Send agent transcript as a separate message to distinguish from user speech"""
+        try:
+            # Send agent transcript through the transcription stream but with agent identity
+            if hasattr(self, 'room') and self.room:
+                # Send as data message for reliable delivery
+                await self.room.local_participant.publish_data(
+                    data=json.dumps({
+                        'type': 'agent_transcript',
+                        'message': message,
+                        'speaker': 'Scott_AI_Agent',
+                        'timestamp': datetime.now().isoformat()
+                    }).encode(),
+                    topic="lk.agent.transcript"
+                )
+                logger.info(f"AGENT_TRANSCRIPT: Sent agent message via data: '{message}'")
+        except Exception as e:
+            logger.error(f"Error sending agent transcript: {e}")
 
     def update_conversation_context(self, stage: str):
         """Update conversation stage"""
@@ -142,6 +283,10 @@ async def entrypoint(ctx: JobContext):
         await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
         logger.info(f"Connected to room {room_name}")
         
+        # Store room reference in assistant for transcript handling
+        assistant.room = ctx.room
+        assistant.agent_session = None  # Will be set after session starts
+        
         try:
             participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=600.0)
             logger.info(f"Participant {participant.identity} joined session {session_id}")
@@ -151,7 +296,7 @@ async def entrypoint(ctx: JobContext):
             logger.warning(f"No participant joined session {session_id} within timeout")
             return
 
-        # Create AgentSession with proper configuration
+        # Create AgentSession with proper configuration for distinct transcription
         agent_session = AgentSession(
             stt=deepgram.STT(
                 model="nova-2",
@@ -170,11 +315,11 @@ async def entrypoint(ctx: JobContext):
             ),
             vad=ctx.proc.userdata["vad"],
             turn_detection=MultilingualModel(),
-            # Enable transcription forwarding to frontend (enabled by default)
-            use_tts_aligned_transcript=True,  # Better transcript synchronization
+            # Disable TTS aligned transcript to prevent agent speech from appearing as user speech
+            # use_tts_aligned_transcript=False,  # This prevents agent TTS from being sent as user transcript
         )
         
-        # Start the session with proper room options
+        # Start the session with proper room options for distinct transcription
         await agent_session.start(
             room=ctx.room,
             agent=assistant,
@@ -184,9 +329,12 @@ async def entrypoint(ctx: JobContext):
             ),
             room_output_options=RoomOutputOptions(
                 transcription_enabled=True,  # Enable transcript output to frontend
-                sync_transcription=True,  # Synchronize transcripts with speech
+                sync_transcription=False,  # Disable sync to prevent mixing user/agent transcripts
             ),
         )
+        
+        # Store agent session reference in assistant for farewell handling
+        assistant.agent_session = agent_session
         
         logger.info(f"Dynamic agent session started for {session_id}")
         
