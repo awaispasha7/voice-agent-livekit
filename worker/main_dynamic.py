@@ -39,6 +39,11 @@ logging.basicConfig(
 logger = logging.getLogger("dynamic-voice-agent")
 logger.setLevel(logging.INFO)
 
+# Reduce noise from some verbose loggers to help identify IPC issues
+logging.getLogger("livekit.agents.utils.aio.duplex_unix").setLevel(logging.WARNING)
+logging.getLogger("livekit.agents.cli.watcher").setLevel(logging.WARNING)
+logging.getLogger("livekit.agents.ipc.channel").setLevel(logging.WARNING)
+
 # Verify environment variables
 required_vars = ["OPENAI_API_KEY", "DEEPGRAM_API_KEY", "CARTESIA_API_KEY", "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"]
 for var in required_vars:
@@ -295,6 +300,9 @@ async def entrypoint(ctx: JobContext):
         except asyncio.TimeoutError:
             logger.warning(f"No participant joined session {session_id} within timeout")
             return
+        except Exception as e:
+            logger.error(f"Error waiting for participant in session {session_id}: {e}")
+            return
 
         # Create AgentSession with proper configuration for distinct transcription
         agent_session = AgentSession(
@@ -348,31 +356,45 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"Initial greeting sent for session {session_id}")
         
         # Keep session alive while participants are connected
-        while ctx.room.remote_participants:
-            await asyncio.sleep(1)
-            logger.debug(f"Session {session_id} active - Participants connected")
+        try:
+            while ctx.room.remote_participants:
+                await asyncio.sleep(1)
+                logger.debug(f"Session {session_id} active - Participants connected")
+        except Exception as e:
+            logger.warning(f"Session monitoring interrupted for {session_id}: {e}")
         
     except Exception as e:
-        logger.error(f"Error in session {session_id}: {str(e)}")
-        raise
+        logger.error(f"Error in session {session_id}: {str(e)}", exc_info=True)
     finally:
-        # Cleanup
+        # Robust cleanup
+        logger.info(f"Starting cleanup for session {session_id}")
+        
+        # Clean up session tracking
         if room_name in active_sessions:
             del active_sessions[room_name]
+            logger.info(f"Removed session {session_id} from active sessions")
         
-        logger.info(f"Session {session_id} summary - Stage: {assistant.conversation_stage}")
-        
+        # Clean up agent session
         if agent_session:
             try:
-                await agent_session.aclose()
+                await asyncio.wait_for(agent_session.aclose(), timeout=10.0)
                 logger.info(f"Agent session {session_id} closed properly")
+            except asyncio.TimeoutError:
+                logger.warning(f"Agent session {session_id} close timed out")
             except Exception as e:
-                logger.error(f"Error closing session {session_id}: {e}")
+                logger.error(f"Error closing agent session {session_id}: {e}")
         
-        if ctx.room and ctx.room.connection_state == "connected":
-            await ctx.room.disconnect()
+        # Clean up room connection
+        try:
+            if ctx.room and ctx.room.connection_state == "connected":
+                await asyncio.wait_for(ctx.room.disconnect(), timeout=5.0)
+                logger.info(f"Room disconnected for session {session_id}")
+        except asyncio.TimeoutError:
+            logger.warning(f"Room disconnect timed out for session {session_id}")
+        except Exception as e:
+            logger.error(f"Error disconnecting room for session {session_id}: {e}")
             
-        logger.info(f"Dynamic session {session_id} ended and cleaned up")
+        logger.info(f"Dynamic session {session_id} cleanup completed")
 
 if __name__ == "__main__":
     import sys
