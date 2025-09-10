@@ -1,19 +1,23 @@
-# Voice Agent Project
+# Alive5 Voice Agent Project
 
-This project implements a voice agent using LiveKit and FastAPI. It consists of three main components: a worker that processes voice data, a token server for authentication, and a web interface for user interaction.
+This project implements a dynamic voice agent using LiveKit, FastAPI, and Alive5 flow integration. It consists of three main components: a worker that processes voice data, a token server for authentication and flow management, and a web interface for user interaction.
 
 ## Project Structure
 
 ```
 voice-agent
-├── worker
-│   ├── main.py              # LiveKit worker with VoicePipelineAgent
-├── token-server
-│   ├── main.py              # FastAPI token server
-├── web
-│   ├── index.html           # Main HTML file for the web interface
-│   └── main.js              # JavaScript code for the web application
-├── requirements.txt
+├── worker/
+│   ├── main_flow_based.py   # 🚀 Flow-based worker (RECOMMENDED)
+│   ├── main_dynamic.py      # Intent-based worker
+│   └── README.md            # Worker documentation
+├── token-server/
+│   ├── main_dynamic.py      # FastAPI server with flow management
+│   ├── Procfile             # Heroku deployment config
+│   └── requirements.txt     # Backend dependencies
+├── web/
+│   ├── index.html           # Main HTML file
+│   └── main_dynamic.js      # Frontend with flow processing
+├── requirements.txt         # Dependencies
 └── README.md                # Project documentation
 ```
 
@@ -27,25 +31,32 @@ voice-agent
 
 2. **pip install requirments.txt**
 
-3. **create a .env file in the voice agent folder, place your api keys in there**
+3. **Create a .env file in the voice agent folder with your API keys:**
 
-      OPENAI_API_KEY=
-      LIVEKIT_URL=
-      LIVEKIT_API_KEY=
-      LIVEKIT_API_SECRET=
-      DEEPGRAM_API_KEY=
-      CARTESIA_API_KEY=
+     ```
+     OPENAI_API_KEY=your_openai_key
+     LIVEKIT_URL=your_livekit_url
+     LIVEKIT_API_KEY=your_livekit_key
+     LIVEKIT_API_SECRET=your_livekit_secret
+     DEEPGRAM_API_KEY=your_deepgram_key
+     CARTESIA_API_KEY=your_cartesia_key
+     A5_BASE_URL=https://api-v2-stage.alive5.com
+     A5_API_KEY=your_alive5_key
+     ```
 
 4. **Run the services:**
-   - Start the worker:
+   - **Flow-based worker (recommended):**
      ```
-     python worker/main_dynamic.py download-files
-     python worker/main_dynamic.py dev
+     python worker/main_flow_based.py download-files
+     python worker/main_flow_based.py dev
      ```
-   - Start the token server:
+   - **Alternative worker:**
+     ```
+     python worker/main_dynamic.py dev    # Intent-based
+     ```
+   - **Start the token server:**
      ``` 
      python token-server/main_dynamic.py
-
      ```
 
 5. **Access the web interface:**
@@ -54,15 +65,25 @@ voice-agent
    npx serve -s . -l 5000
    ```
 
+## Features
+
+### 🚀 Flow-Based System (Recommended)
+- **Dynamic template loading** from Alive5 API
+- **Structured conversation flows** (pricing, support, billing, agent transfer)
+- **Real-time template updates** without code changes
+- **Fallback to FAQ bot** for general questions
+
+### 🔄 Intent-Based System
+- **AI-powered intent detection** (sales, support, billing)
+- **Dynamic conversation adaptation**
+- **User data extraction** and session tracking
+
 ## Usage
 
-- The worker processes voice data and manages connections using the VoicePipelineAgent.
-- The token server generates and serves tokens for authentication with LiveKit.
-- The web interface allows users to interact with the voice agent and manage voice data.
-- for testing the worker: 
-```
-python worker/main_dynamic.py test
-```
+- **Flow-based worker**: Follows client-defined conversation templates
+- **Token server**: Generates authentication tokens and manages flow processing
+- **Web interface**: Real-time voice interaction with live transcript display
+- **Testing**: `python worker/main_flow_based.py test`
 
 ## Contributing
 

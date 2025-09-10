@@ -14,11 +14,12 @@ import json
 import logging
 import re
 import openai
+import httpx
 
 # Load environment variables
 load_dotenv(dotenv_path="../.env")
 
-app = FastAPI()
+app = FastAPI(title="Alive5 Voice Agent Server", version="2.0")
 logger = logging.getLogger("token-server")
 
 # Add CORS middleware
@@ -35,12 +36,16 @@ LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+A5_BASE_URL = os.getenv("A5_BASE_URL")
+A5_API_KEY = os.getenv("A5_API_KEY")
 
 print(f"Loaded credentials:")
 print(f"API_KEY: {LIVEKIT_API_KEY}")
 print(f"API_SECRET: {LIVEKIT_API_SECRET[:10] if LIVEKIT_API_SECRET else 'None'}...")
 print(f"URL: {LIVEKIT_URL}")
 print(f"OPENAI_KEY: {OPENAI_API_KEY[:10] if OPENAI_API_KEY else 'None'}...")
+print(f"A5_BASE_URL: {A5_BASE_URL}")
+print(f"A5_API_KEY: {A5_API_KEY}")
 
 # Intent descriptions for LLM-based detection
 INTENT_DESCRIPTIONS = {
@@ -51,6 +56,10 @@ INTENT_DESCRIPTIONS = {
 
 # Session tracking for analytics
 active_sessions: Dict[str, Dict[str, Any]] = {}
+
+# Flow management
+bot_template = None
+flow_states: Dict[str, FlowState] = {}
 
 # Request models
 class ConnectionRequest(BaseModel):
@@ -69,6 +78,27 @@ class SessionUpdateRequest(BaseModel):
     intent: Optional[str] = None
     user_data: Optional[Dict[str, Any]] = None
     status: Optional[str] = None
+
+# Alive5 API request models
+class GenerateTemplateRequest(BaseModel):
+    botchain_name: str
+    org_name: str
+
+class GetFAQResponseRequest(BaseModel):
+    bot_id: str
+    faq_question: str
+
+# Flow management models
+class FlowState(BaseModel):
+    current_flow: Optional[str] = None
+    current_step: Optional[str] = None
+    flow_data: Optional[Dict[str, Any]] = None
+    user_responses: Optional[Dict[str, str]] = None
+
+class FlowResponse(BaseModel):
+    room_name: str
+    user_message: str
+    current_flow_state: Optional[FlowState] = None
 
 async def detect_intent_with_llm(user_message: str) -> Optional[str]:
     """Detect user intent using OpenAI LLM"""
@@ -170,8 +200,12 @@ def generate_truly_unique_room_name(participant_name: str = None, intent: str = 
 def read_root():
     return {
         "message": "Alive5 Dynamic Token Server is running",
-        "features": ["Intent-based routing", "Session tracking", "Dynamic agent assignment"],
-        "version": "2.0"
+        "features": ["Intent-based routing", "Session tracking", "Dynamic agent assignment", "Alive5 API integration"],
+        "version": "2.0",
+        "alive5_endpoints": [
+            "/api/alive5/generate-template",
+            "/api/alive5/get-faq-bot-response"
+        ]
     }
 
 @app.get("/health")
@@ -505,6 +539,370 @@ async def process_transcript(request: TranscriptRequest):
     except Exception as e:
         logger.error(f"Error processing transcript: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Alive5 API Integration Endpoints
+@app.post("/api/alive5/generate-template")
+async def generate_template(request: GenerateTemplateRequest):
+    """
+    Generate a template using the Alive5 API
+    """
+    try:
+        logger.info(f"ALIVE5_API: Generating template for {request.botchain_name} in org {request.org_name}")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{A5_BASE_URL}/1.0/org-botchain/generate-template",
+                headers={
+                    "X-A5-APIKEY": A5_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "botchain_name": request.botchain_name,
+                    "org_name": request.org_name
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            logger.info(f"ALIVE5_API: Template generation successful")
+            return result
+    except httpx.HTTPError as e:
+        logger.error(f"ALIVE5_API: HTTP error in template generation: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Alive5 API request failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"ALIVE5_API: Error in template generation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/api/alive5/get-faq-bot-response")
+async def get_faq_bot_response(request: GetFAQResponseRequest):
+    """
+    Get FAQ bot response using the Alive5 API
+    """
+    try:
+        logger.info(f"ALIVE5_API: Getting FAQ response for bot {request.bot_id} with question: {request.faq_question}")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{A5_BASE_URL}/public/1.0/get-faq-bot-response-by-bot-id",
+                headers={
+                    "X-A5-APIKEY": A5_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "bot_id": request.bot_id,
+                    "faq_question": request.faq_question
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            logger.info(f"ALIVE5_API: FAQ response retrieved successfully")
+            return result
+    except httpx.HTTPError as e:
+        logger.error(f"ALIVE5_API: HTTP error in FAQ response: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Alive5 API request failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"ALIVE5_API: Error in FAQ response: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+# Flow Management Functions
+async def initialize_bot_template():
+    """Initialize the bot template on startup"""
+    global bot_template
+    try:
+        logger.info("FLOW_MANAGEMENT: Initializing bot template...")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{A5_BASE_URL}/1.0/org-botchain/generate-template",
+                headers={
+                    "X-A5-APIKEY": A5_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "botchain_name": "dustin-gpt",
+                    "org_name": "alive5stage0"
+                }
+            )
+            response.raise_for_status()
+            bot_template = response.json()
+            logger.info("FLOW_MANAGEMENT: Bot template initialized successfully")
+            return bot_template
+    except Exception as e:
+        logger.error(f"FLOW_MANAGEMENT: Failed to initialize bot template: {str(e)}")
+        return None
+
+def find_matching_intent(user_message: str) -> Optional[Dict[str, Any]]:
+    """Find matching intent in the bot template based on user message"""
+    if not bot_template or not bot_template.get("data"):
+        return None
+    
+    user_lower = user_message.lower()
+    
+    # Check each flow for intent matches
+    for flow_key, flow_data in bot_template["data"].items():
+        if flow_data.get("type") == "intent_bot":
+            intent_text = flow_data.get("text", "").lower()
+            if intent_text in user_lower or any(word in user_lower for word in intent_text.split()):
+                logger.info(f"FLOW_MANAGEMENT: Found matching intent: {intent_text}")
+                return {
+                    "flow_key": flow_key,
+                    "flow_data": flow_data,
+                    "intent": intent_text
+                }
+    
+    return None
+
+def get_next_flow_step(current_flow_state: FlowState, user_response: str = None) -> Optional[Dict[str, Any]]:
+    """Get the next step in the current flow - fully dynamic"""
+    if not current_flow_state.current_flow or not bot_template:
+        return None
+    
+    flow_data = bot_template["data"].get(current_flow_state.current_flow)
+    if not flow_data:
+        return None
+    
+    # If we have a user response, store it
+    if user_response and current_flow_state.current_step:
+        if not current_flow_state.user_responses:
+            current_flow_state.user_responses = {}
+        current_flow_state.user_responses[current_flow_state.current_step] = user_response
+    
+    # Navigate through the flow
+    current_step_data = flow_data
+    if current_flow_state.current_step:
+        # Find the current step in the flow
+        current_step_data = find_step_in_flow(flow_data, current_flow_state.current_step)
+    
+    if not current_step_data:
+        return None
+    
+    # Check if current step has answers and user provided a response
+    if user_response and current_step_data.get("answers"):
+        # Find matching answer - more flexible matching
+        for answer_key, answer_data in current_step_data["answers"].items():
+            if answer_key.lower() in user_response.lower() or user_response.lower() in answer_key.lower():
+                if answer_data.get("next_flow"):
+                    return {
+                        "type": "next_step",
+                        "step_data": answer_data["next_flow"],
+                        "step_name": answer_data["name"]
+                    }
+    
+    # Check for next_flow
+    if current_step_data.get("next_flow"):
+        return {
+            "type": "next_step",
+            "step_data": current_step_data["next_flow"],
+            "step_name": current_step_data["next_flow"].get("name")
+        }
+    
+    return None
+
+def find_step_in_flow(flow_data: Dict[str, Any], step_name: str) -> Optional[Dict[str, Any]]:
+    """Recursively find a step in the flow"""
+    if flow_data.get("name") == step_name:
+        return flow_data
+    
+    if flow_data.get("next_flow"):
+        result = find_step_in_flow(flow_data["next_flow"], step_name)
+        if result:
+            return result
+    
+    if flow_data.get("answers"):
+        for answer_data in flow_data["answers"].values():
+            if answer_data.get("next_flow"):
+                result = find_step_in_flow(answer_data["next_flow"], step_name)
+                if result:
+                    return result
+    
+    return None
+
+async def process_flow_message(room_name: str, user_message: str) -> Dict[str, Any]:
+    """Process user message through the flow system"""
+    logger.info(f"FLOW_MANAGEMENT: Processing message for room {room_name}: '{user_message}'")
+    
+    # Get or create flow state for this room
+    if room_name not in flow_states:
+        flow_states[room_name] = FlowState()
+    
+    flow_state = flow_states[room_name]
+    
+    # If no current flow, try to find matching intent
+    if not flow_state.current_flow:
+        matching_intent = find_matching_intent(user_message)
+        if matching_intent:
+            flow_state.current_flow = matching_intent["flow_key"]
+            flow_state.current_step = matching_intent["flow_data"]["name"]
+            flow_state.flow_data = matching_intent["flow_data"]
+            
+            logger.info(f"FLOW_MANAGEMENT: Started flow {flow_state.current_flow} for intent: {matching_intent['intent']}")
+            
+            return {
+                "type": "flow_started",
+                "flow_name": matching_intent["intent"],
+                "response": matching_intent["flow_data"].get("text", ""),
+                "next_step": matching_intent["flow_data"].get("next_flow")
+            }
+        else:
+            # No matching intent, use FAQ bot
+            logger.info("FLOW_MANAGEMENT: No matching intent found, using FAQ bot")
+            return await get_faq_response(user_message)
+    
+    # We're in a flow, get next step
+    next_step = get_next_flow_step(flow_state, user_message)
+    if next_step:
+        flow_state.current_step = next_step["step_name"]
+        step_data = next_step["step_data"]
+        step_type = step_data.get("type", "unknown")
+        
+        # Dynamic response handling - works with any flow type
+        response_data = {
+            "type": step_type,
+            "response": step_data.get("text", ""),
+            "flow_state": flow_state
+        }
+        
+        # Add type-specific data dynamically
+        if step_type == "question" and step_data.get("answers"):
+            response_data["answers"] = step_data["answers"]
+        elif step_type == "agent":
+            response_data["response"] = "Transferring you to a human agent..."
+        elif step_type == "faq":
+            # Handle FAQ steps dynamically
+            response_data["faq_bot_id"] = step_data.get("bot_id", "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e")
+        
+        return response_data
+    
+    # Flow ended or no next step, use FAQ bot
+    logger.info("FLOW_MANAGEMENT: Flow ended, using FAQ bot")
+    return await get_faq_response(user_message)
+
+async def get_faq_response(user_message: str, bot_id: str = None) -> Dict[str, Any]:
+    """Get response from FAQ bot - supports dynamic bot IDs"""
+    try:
+        # Use provided bot_id or default from template or fallback
+        default_bot_id = "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"
+        if not bot_id:
+            # Try to get default FAQ bot ID from template
+            if bot_template and bot_template.get("data"):
+                for flow_data in bot_template["data"].values():
+                    if flow_data.get("type") == "faq":
+                        default_bot_id = flow_data.get("name", default_bot_id)
+                        break
+            bot_id = default_bot_id
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{A5_BASE_URL}/public/1.0/get-faq-bot-response-by-bot-id",
+                headers={
+                    "X-A5-APIKEY": A5_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "bot_id": bot_id,
+                    "faq_question": user_message
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            return {
+                "type": "faq_response",
+                "response": result["data"]["answer"],
+                "urls": result["data"].get("urls", []),
+                "bot_id": bot_id
+            }
+    except Exception as e:
+        logger.error(f"FLOW_MANAGEMENT: FAQ bot error: {str(e)}")
+        return {
+            "type": "error",
+            "response": "I'm sorry, I'm having trouble processing your request. Let me connect you to a human agent."
+        }
+
+# New Flow-based Processing Endpoint
+@app.post("/api/process_flow_message")
+async def process_flow_message_endpoint(request: FlowResponse):
+    """Process user message through the new flow system"""
+    try:
+        room_name = request.room_name
+        user_message = request.user_message
+        
+        if not room_name or not user_message:
+            raise HTTPException(status_code=400, detail="Missing room_name or user_message")
+        
+        logger.info(f"FLOW_PROCESSING: Room {room_name}, Message: '{user_message}'")
+        
+        # Process through flow system
+        flow_result = await process_flow_message(room_name, user_message)
+        
+        # Update session if we have one
+        if room_name in active_sessions:
+            session = active_sessions[room_name]
+            session["last_updated"] = time.time()
+            session["flow_state"] = flow_result.get("flow_state")
+        
+        # Prepare response
+        response_data = {
+            'status': 'processed',
+            'room_name': room_name,
+            'user_message': user_message,
+            'flow_result': flow_result
+        }
+        
+        logger.info(f"FLOW_RESPONSE: {response_data}")
+        return response_data
+        
+    except Exception as e:
+        logger.error(f"Error processing flow message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Template Management Endpoints
+@app.post("/api/refresh_template")
+async def refresh_template():
+    """Refresh the bot template from Alive5 API"""
+    try:
+        global bot_template
+        new_template = await initialize_bot_template()
+        if new_template:
+            return {
+                "status": "success",
+                "message": "Template refreshed successfully",
+                "template_version": new_template.get("code", "unknown")
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to refresh template")
+    except Exception as e:
+        logger.error(f"Template refresh error: {e}")
+        raise HTTPException(status_code=500, detail=f"Template refresh failed: {str(e)}")
+
+@app.get("/api/template_info")
+async def get_template_info():
+    """Get current template information"""
+    if not bot_template:
+        return {"status": "no_template", "message": "No template loaded"}
+    
+    # Extract flow information
+    flows = []
+    if bot_template.get("data"):
+        for flow_key, flow_data in bot_template["data"].items():
+            flows.append({
+                "key": flow_key,
+                "type": flow_data.get("type"),
+                "text": flow_data.get("text"),
+                "name": flow_data.get("name")
+            })
+    
+    return {
+        "status": "loaded",
+        "template_version": bot_template.get("code", "unknown"),
+        "flows": flows,
+        "total_flows": len(flows)
+    }
+
+# Initialize bot template on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize bot template on startup"""
+    await initialize_bot_template()
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

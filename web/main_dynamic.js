@@ -377,8 +377,8 @@ class DynamicVoiceAgent {
                 }, 3000); // 3 second delay to allow agent to respond with farewell
             }
             
-            // Send transcript to backend for intent detection
-            this.sendTranscriptForIntentDetection(transcriptText);
+            // Send transcript to backend for flow processing
+            this.sendTranscriptForFlowProcessing(transcriptText);
         }
     }
 
@@ -452,32 +452,51 @@ class DynamicVoiceAgent {
         }, 3000); // 3 second delay for polite farewell
     }
     
-    async sendTranscriptForIntentDetection(transcript) {
+    async sendTranscriptForFlowProcessing(transcript) {
         try {
-            // Send transcript to backend for intent processing
-            const response = await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/process_transcript', {
+            // Send transcript to backend for flow processing
+            const response = await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/process_flow_message', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
                     room_name: this.currentRoomName,
-                    transcript: transcript,
-                    session_id: this.sessionId
+                    user_message: transcript
                 })
             });
             
             if (response.ok) {
                 const result = await response.json();
-                if (result.intent && result.intent !== this.currentIntent) {
-                    this.handleIntentUpdate(result.intent, 'AI');
-                }
-                if (result.userData) {
-                    this.updateUserData(result.userData);
+                console.log('Flow processing result:', result);
+                
+                // Handle flow result
+                if (result.flow_result) {
+                    this.handleFlowResult(result.flow_result);
                 }
             }
         } catch (error) {
-            console.warn('Failed to send transcript for intent detection:', error);
+            console.warn('Failed to send transcript for flow processing:', error);
+        }
+    }
+    
+    handleFlowResult(flowResult) {
+        const flowType = flowResult.type;
+        const response = flowResult.response;
+        
+        console.log('Handling flow result:', flowType, response);
+        
+        // Add flow information to conversation log
+        this.addLogEntry({
+            speaker: 'System',
+            message: `Flow: ${flowType} - ${response}`,
+            type: 'system'
+        });
+        
+        // Update intent display if flow started
+        if (flowType === 'flow_started') {
+            const flowName = flowResult.flow_name || 'Unknown';
+            this.handleIntentUpdate(flowName, 'Flow System');
         }
     }
     
