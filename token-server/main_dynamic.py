@@ -59,7 +59,7 @@ active_sessions: Dict[str, Dict[str, Any]] = {}
 
 # Flow management
 bot_template = None
-flow_states: Dict[str, FlowState] = {}
+flow_states: Dict[str, Any] = {}
 
 # Request models
 class ConnectionRequest(BaseModel):
