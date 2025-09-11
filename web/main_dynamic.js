@@ -13,6 +13,11 @@ class DynamicVoiceAgent {
         this.detectedUserData = {};
         this.conversationLog = [];
         
+        // Track processed messages to prevent duplicates
+        this.processedMessages = new Set();
+        this.lastProcessedMessage = null;
+        this.lastProcessedTime = 0;
+        
         // Transcript handling
         this.interimTranscript = "";
         this.finalTranscript = "";
@@ -26,6 +31,36 @@ class DynamicVoiceAgent {
         const timestamp = Date.now();
         const random = Math.random().toString(36).substring(2, 8);
         return `session_${timestamp}_${random}`;
+    }
+    
+    hashMessage(message) {
+        // Simple hash function for message deduplication
+        let hash = 0;
+        const str = message.toLowerCase().trim();
+        for (let i = 0; i < str.length; i++) {
+            const char = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32-bit integer
+        }
+        return hash.toString();
+    }
+    
+    isIncompleteTranscript(message) {
+        // Check if transcript looks incomplete
+        const trimmed = message.trim();
+        
+        // Very short messages might be incomplete
+        if (trimmed.length < 3) return true;
+        
+        // Messages ending with common incomplete patterns
+        const incompletePatterns = [
+            /^(hey|hi|hello|can you|i want|i need|tell me|what is|how do|where is|when is|why is|who is)\s*$/i,
+            /^(can you|tell me|what|how|where|when|why|who)\s*$/i,
+            /^(i think|i believe|i want|i need|i would|i should|i could|i might)\s*$/i,
+            /^(sure|okay|yes|no|maybe|well|so|but|and|or)\s*$/i
+        ];
+        
+        return incompletePatterns.some(pattern => pattern.test(trimmed));
     }
     
     updateDisplay() {
@@ -195,10 +230,16 @@ class DynamicVoiceAgent {
         this.room.on(LivekitClient.RoomEvent.ParticipantMetadataChanged, (metadata, participant) => {
             if (participant.isAgent) {
                 try {
+                    // Check if metadata is valid JSON string
+                    if (!metadata || metadata.trim() === '') {
+                        console.log('Empty worker metadata received');
+                        return;
+                    }
+                    
                     const statusData = JSON.parse(metadata);
                     this.handleWorkerStatus(statusData);
                 } catch (e) {
-                    console.warn('Failed to parse worker status metadata:', e);
+                    console.warn('Failed to parse worker status metadata:', e, 'Raw metadata:', metadata);
                 }
             }
         });
@@ -275,7 +316,16 @@ class DynamicVoiceAgent {
                 if (isUserTranscript && !isAgentIdentity) {
                     // This is definitely a user's speech transcription
                     console.log('👤 Processing as USER transcript:', message);
-                    this.handleUserTranscription(message, participantInfo, reader.info.attributes);
+                    
+                    // Check if this looks like an incomplete transcript
+                    const isIncomplete = this.isIncompleteTranscript(message);
+                    if (isIncomplete) {
+                        console.log('⏳ Incomplete transcript detected, waiting for completion:', message);
+                        // Still process it for display but mark as incomplete
+                        this.handleUserTranscription(message, participantInfo, { ...reader.info.attributes, incomplete: true });
+                    } else {
+                        this.handleUserTranscription(message, participantInfo, reader.info.attributes);
+                    }
                 } else if (isAgentIdentity || (!isUserTranscript && participantInfo.identity !== this.participantName)) {
                     // This is likely agent speech - but we'll handle it via our custom agent transcript stream
                     console.log('🤖 Skipping potential agent transcript (will be handled by custom stream):', message);
@@ -365,8 +415,31 @@ class DynamicVoiceAgent {
         // Update transcript display with proper interim/final handling
         this.updateTranscriptDisplay(transcriptText, isFinal);
         
-        // Only add to conversation log and send for intent detection if it's final
-        if (isFinal && transcriptText.trim()) {
+        // Only add to conversation log and send for intent detection if it's final and complete
+        if (isFinal && transcriptText.trim() && !attributes.incomplete) {
+            // Prevent duplicate processing of the same message
+            const messageHash = this.hashMessage(transcriptText);
+            const currentTime = Date.now();
+            
+            // Check if we've already processed this exact message recently (within 2 seconds)
+            if (this.processedMessages.has(messageHash) || 
+                (this.lastProcessedMessage === transcriptText && (currentTime - this.lastProcessedTime) < 2000)) {
+                console.log('🔄 Skipping duplicate message processing:', transcriptText);
+                return;
+            }
+            
+            // Mark this message as processed
+            this.processedMessages.add(messageHash);
+            this.lastProcessedMessage = transcriptText;
+            this.lastProcessedTime = currentTime;
+            
+            // Clean up old processed messages (keep only last 10)
+            if (this.processedMessages.size > 10) {
+                const messagesArray = Array.from(this.processedMessages);
+                this.processedMessages.clear();
+                // Keep the last 5 messages
+                messagesArray.slice(-5).forEach(msg => this.processedMessages.add(msg));
+            }
             // Check if this looks like a farewell
             const isFarewell = this.detectFarewell(transcriptText);
             
