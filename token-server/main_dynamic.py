@@ -1029,6 +1029,44 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             print_flow_status(room_name, flow_state, "❌ NO INTENT FOUND", "Using FAQ bot fallback")
             return await get_faq_response(user_message, flow_state=flow_state)
     
+    # If we're already in a flow, check if this is a response to a question
+    if flow_state.current_flow and flow_state.current_step:
+        logger.info(f"FLOW_MANAGEMENT: Already in flow {flow_state.current_flow}, step {flow_state.current_step}")
+        
+        # Check if current step is a question and user provided a response
+        current_step_data = flow_state.flow_data
+        if current_step_data and current_step_data.get("type") == "question":
+            logger.info(f"FLOW_MANAGEMENT: Current step is a question, processing user response: '{user_message}'")
+            
+            # Process the user response and move to next step
+            next_step = get_next_flow_step(flow_state, user_message)
+            if next_step:
+                logger.info(f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
+                old_step = flow_state.current_step
+                flow_state.current_step = next_step["step_name"]
+                flow_state.flow_data = next_step["step_data"]
+                step_type = next_step["step_data"].get("type", "unknown")
+                
+                logger.info(f"FLOW_MANAGEMENT: STEP TRANSITION - From: {old_step} → To: {next_step['step_name']} | Type: {step_type}")
+                print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION", 
+                                f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{next_step['step_data'].get('text', '')}'")
+                
+                # Handle different step types
+                response_text = next_step["step_data"].get("text", "")
+                add_agent_response_to_history(flow_state, response_text)
+                
+                return {
+                    "type": step_type,
+                    "response": response_text,
+                    "flow_state": flow_state
+                }
+            else:
+                logger.info("FLOW_MANAGEMENT: ❌ No next step found for question response")
+                print_flow_status(room_name, flow_state, "❌ NO NEXT STEP", "Using FAQ bot fallback")
+                return await get_faq_response(user_message, flow_state=flow_state)
+        else:
+            logger.info("FLOW_MANAGEMENT: Current step is not a question, checking for intent shift")
+    
     # Check for intent shift even when in a flow using LLM with conversation context
     print_flow_status(room_name, flow_state, "CHECKING FOR INTENT SHIFT", f"Current flow: {flow_state.current_flow}")
     matching_intent = await detect_flow_intent_with_llm_from_conversation(flow_state.conversation_history)
@@ -1055,53 +1093,10 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             "next_step": matching_intent["flow_data"].get("next_flow")
         }
     
-    # We're in a flow, get next step
-    print_flow_status(room_name, flow_state, "PROGRESSING IN FLOW", f"User response: '{user_message}'")
-    logger.info(f"FLOW_MANAGEMENT: Current flow: {flow_state.current_flow}, Current step: {flow_state.current_step}")
-    
-    next_step = get_next_flow_step(flow_state, user_message)
-    logger.info(f"FLOW_MANAGEMENT: Next step result: {next_step}")
-    
-    if next_step:
-        old_step = flow_state.current_step
-        flow_state.current_step = next_step["step_name"]
-        step_data = next_step["step_data"]
-        step_type = step_data.get("type", "unknown")
-        
-        print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION", 
-                        f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{step_data.get('text', '')}'")
-        
-        # Dynamic response handling - works with any flow type
-        response_text = step_data.get("text", "")
-        
-        # Handle type-specific responses
-        if step_type == "agent":
-            response_text = "Transferring you to a human agent..."
-            print_flow_status(room_name, flow_state, "👤 AGENT TRANSFER", "Transferring to human agent")
-        
-        # Add agent response to conversation history
-        add_agent_response_to_history(flow_state, response_text)
-        
-        response_data = {
-            "type": step_type,
-            "response": response_text,
-            "flow_state": flow_state
-        }
-        
-        # Add type-specific data dynamically
-        if step_type == "question" and step_data.get("answers"):
-            response_data["answers"] = step_data["answers"]
-            print(f"📋 Available answers: {list(step_data['answers'].keys())}")
-        elif step_type == "faq":
-            # Handle FAQ steps dynamically
-            response_data["faq_bot_id"] = step_data.get("bot_id", "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e")
-            print_flow_status(room_name, flow_state, "❓ FAQ STEP", f"Using FAQ bot: {response_data['faq_bot_id']}")
-        
-        return response_data
-    
-    # Flow ended or no next step, use FAQ bot
-    logger.info("FLOW_MANAGEMENT: Flow ended, using FAQ bot")
-    print_flow_status(room_name, flow_state, "🏁 FLOW ENDED", "No next step, using FAQ bot fallback")
+    # If we reach here, we're in a flow but no specific handling was done
+    # This should not happen with the new logic, but as a fallback
+    logger.info("FLOW_MANAGEMENT: Unexpected flow state, using FAQ bot as fallback")
+    print_flow_status(room_name, flow_state, "❌ UNEXPECTED STATE", "Using FAQ bot fallback")
     return await get_faq_response(user_message, flow_state=flow_state)
 
 async def get_faq_response(user_message: str, bot_id: str = None, flow_state: FlowState = None) -> Dict[str, Any]:

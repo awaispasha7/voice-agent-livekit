@@ -53,7 +53,7 @@ class DynamicVoiceAgent {
         const trimmed = message.trim();
         
         // Very short messages might be incomplete
-        if (trimmed.length < 5) return true;
+        if (trimmed.length < 8) return true;
         
         // Messages ending with common incomplete patterns
         const incompletePatterns = [
@@ -65,10 +65,16 @@ class DynamicVoiceAgent {
             /^(okay\.?\s*scott,?)\s*$/i,
             /^(okay\.?\s*scott,?\s*i\s*wanted\s*to\s*know\s*about)\s*$/i,
             /^(okay\.?\s*scott,?\s*i\s*wanted\s*to\s*know\s*about\s*the\s*weather\s*update)\s*$/i,
+            // Scott-specific patterns
+            /^(scott\.?\s*can\s*you\s*tell)\s*$/i,
+            /^(scott\.?\s*can\s*you\s*tell\s*me\s*the\s*weather\s*update)\s*$/i,
             // General patterns for incomplete sentences
             /^(okay\.?\s*[a-z]+,?\s*)$/i,
             /^(okay\.?\s*[a-z]+,?\s*i\s*wanted\s*to\s*know\s*about)\s*$/i,
-            /^(okay\.?\s*[a-z]+,?\s*i\s*wanted\s*to\s*know\s*about\s*[a-z]+\s*update)\s*$/i
+            /^(okay\.?\s*[a-z]+,?\s*i\s*wanted\s*to\s*know\s*about\s*[a-z]+\s*update)\s*$/i,
+            // More general incomplete patterns
+            /^(scott\.?\s*can\s*you\s*tell\s*me\s*the\s*[a-z]+\s*update)\s*$/i,
+            /^(scott\.?\s*can\s*you\s*tell\s*me\s*the\s*[a-z]+)\s*$/i
         ];
         
         return incompletePatterns.some(pattern => pattern.test(trimmed));
@@ -330,7 +336,7 @@ class DynamicVoiceAgent {
                 
                 if (isUserTranscript && !isAgentIdentity) {
                     // This is definitely a user's speech transcription
-                    console.log('👤 Processing as USER transcript:', message);
+                    console.log('👤 USER:', message);
                     
                     // Check if this looks like an incomplete transcript
                     const isIncomplete = this.isIncompleteTranscript(message);
@@ -343,7 +349,7 @@ class DynamicVoiceAgent {
                     }
                 } else if (isAgentIdentity || (!isUserTranscript && participantInfo.identity !== this.participantName)) {
                     // This is likely agent speech - but we'll handle it via our custom agent transcript stream
-                    console.log('🤖 Skipping potential agent transcript (will be handled by custom stream):', message);
+                    console.log('🤖 Scott:', message);
                     
                     // Clear worker timeout since agent is responding
                     this.clearWorkerTimeoutError();
@@ -425,7 +431,7 @@ class DynamicVoiceAgent {
     }
     
     handleUserTranscription(transcriptText, participantInfo, attributes = {}) {
-        console.log('User transcription:', transcriptText, 'from:', participantInfo.identity);
+        //console.log('User transcription:', transcriptText, 'from:', participantInfo.identity);
         
         // Check if this is a final transcript or interim
         const isFinal = attributes['lk.transcript.final'] === 'true' || !attributes['lk.transcript.interim'];
@@ -449,8 +455,17 @@ class DynamicVoiceAgent {
             // Also check if this is a partial version of a message we already processed
             if (this.lastProcessedMessage && 
                 this.lastProcessedMessage.includes(transcriptText) && 
-                (currentTime - this.lastProcessedTime) < 3000) {
+                (currentTime - this.lastProcessedTime) < 5000) {
                 console.log('🔄 Skipping partial message processing:', transcriptText);
+                return;
+            }
+            
+            // Also check if this transcript is a substring of a message we already processed
+            if (this.lastProcessedMessage && 
+                transcriptText.length < this.lastProcessedMessage.length &&
+                this.lastProcessedMessage.startsWith(transcriptText) &&
+                (currentTime - this.lastProcessedTime) < 5000) {
+                console.log('🔄 Skipping substring message processing:', transcriptText);
                 return;
             }
             
