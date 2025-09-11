@@ -306,12 +306,12 @@ class DynamicVoiceAgent {
         this.room.registerTextStreamHandler('lk.transcription', async (reader, participantInfo) => {
             try {
                 const message = await reader.readAll();
-                console.log('📝 Transcription received:', { 
-                    message, 
-                    participantInfo: participantInfo.identity, 
-                    attributes: reader.info.attributes,
-                    myName: this.participantName 
-                });
+                // console.log('📝 Transcription received:', { 
+                //     message, 
+                //     participantInfo: participantInfo.identity, 
+                //     attributes: reader.info.attributes,
+                //     myName: this.participantName 
+                // });
                 
                 // More robust check for user vs agent transcription
                 const isUserTranscript = reader.info.attributes && reader.info.attributes['lk.transcribed_track_id'];
@@ -321,12 +321,12 @@ class DynamicVoiceAgent {
                     participantInfo.identity === 'Scott_AI_Agent'
                 );
                 
-                console.log('🔍 Transcript analysis:', { 
-                    isUserTranscript, 
-                    isAgentIdentity, 
-                    participantIdentity: participantInfo.identity,
-                    decision: isUserTranscript && !isAgentIdentity ? 'USER' : 'SKIP/AGENT'
-                });
+                // console.log('🔍 Transcript analysis:', { 
+                //     isUserTranscript, 
+                //     isAgentIdentity, 
+                //     participantIdentity: participantInfo.identity,
+                //     decision: isUserTranscript && !isAgentIdentity ? 'USER' : 'SKIP/AGENT'
+                // });
                 
                 if (isUserTranscript && !isAgentIdentity) {
                     // This is definitely a user's speech transcription
@@ -442,7 +442,7 @@ class DynamicVoiceAgent {
             // Check if we've already processed this exact message recently (within 3 seconds)
             if (this.processedMessages.has(messageHash) || 
                 (this.lastProcessedMessage === transcriptText && (currentTime - this.lastProcessedTime) < 3000)) {
-                console.log('🔄 Skipping duplicate message processing:', transcriptText);
+                //console.log('🔄 Skipping duplicate message processing:', transcriptText);
                 return;
             }
             
