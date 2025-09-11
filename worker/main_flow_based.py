@@ -205,9 +205,9 @@ Current conversation stage: {self.conversation_stage}
                     return
                 
                 # Process through flow system
+                logger.info(f"FLOW_PROCESSING: Starting flow processing for: '{user_message}'")
                 await self.process_user_message_through_flow(user_message)
-                
-                logger.info(f"FLOW_PROCESSING: Message processed for session {self.session_id}")
+                logger.info(f"FLOW_PROCESSING: Completed flow processing for: '{user_message}'")
             
             # Check if this is an assistant response
             elif event.item.role == "assistant" and event.item.content:
@@ -453,14 +453,20 @@ Examples:
     async def generate_reply(self, instructions: str = None):
         """Override generate_reply to capture agent responses"""
         try:
-            # Call the parent generate_reply method
-            result = await super().generate_reply(instructions)
-            
-            # If we have a response, send it as agent transcript
-            if result and hasattr(result, 'content'):
-                await self.send_agent_transcript(result.content)
-            
-            return result
+            # Only generate replies when explicitly instructed by flow system
+            if instructions and ("You must say exactly this" in instructions or "Say exactly" in instructions):
+                logger.info(f"GENERATE_REPLY: Flow system requested response: '{instructions}'")
+                # Call the parent generate_reply method
+                result = await super().generate_reply(instructions)
+                
+                # If we have a response, send it as agent transcript
+                if result and hasattr(result, 'content'):
+                    await self.send_agent_transcript(result.content)
+                
+                return result
+            else:
+                logger.info(f"GENERATE_REPLY: Ignoring automatic response request: '{instructions}'")
+                return None
         except Exception as e:
             logger.error(f"Error in generate_reply: {e}")
             return None
