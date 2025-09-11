@@ -94,11 +94,13 @@ class FlowState(BaseModel):
     current_step: Optional[str] = None
     flow_data: Optional[Dict[str, Any]] = None
     user_responses: Optional[Dict[str, str]] = None
+    conversation_history: List[Dict[str, str]] = Field(default_factory=list)
 
 class FlowResponse(BaseModel):
     room_name: str
     user_message: str
     current_flow_state: Optional[FlowState] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None
 
 async def detect_intent_with_llm(user_message: str) -> Optional[str]:
     """Detect user intent using OpenAI LLM (Legacy - for backward compatibility)"""
@@ -152,10 +154,10 @@ Respond with ONLY one word (the intent): sales, support, or billing.
         logger.error(f"INTENT_DETECTION: Error using LLM: {e}")
         return None
 
-async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, Any]]:
-    """Detect user intent using OpenAI LLM and map to Alive5 template flows"""
-    if not user_message or user_message.strip() == "":
-        logger.warning("Empty user message, skipping flow intent detection")
+async def detect_flow_intent_with_llm_from_conversation(conversation_history: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    """Detect user intent using OpenAI LLM and map to Alive5 template flows based on full conversation context"""
+    if not conversation_history or len(conversation_history) == 0:
+        logger.warning("Empty conversation history, skipping flow intent detection")
         return None
     
     if not bot_template or not bot_template.get("data"):
@@ -181,23 +183,40 @@ async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, A
             logger.warning("No intent_bot flows found in template")
             return None
         
-        # Create LLM prompt with available intents
+        # Build conversation context for LLM
+        conversation_context = ""
+        for i, entry in enumerate(conversation_history):
+            role = entry.get("role", "user")
+            content = entry.get("content", "")
+            conversation_context += f"{role.upper()}: {content}\n"
+        
+        # Create LLM prompt with conversation context
         intent_list = ", ".join(available_intents)
         prompt = f"""
-You are an intent classifier for a customer service AI.
-Classify the following user message into exactly one of these available intents: {intent_list}
+You are an intent classifier for a customer service AI. Analyze the ENTIRE conversation to understand the user's true intent.
 
-User message: "{user_message}"
+Available intents: {intent_list}
+
+CONVERSATION HISTORY:
+{conversation_context}
+
+Based on the full conversation context, classify the user's intent into exactly one of these available intents: {intent_list}
+
+Consider:
+- The overall topic the user is discussing
+- Any questions they've asked
+- The context of their requests
+- How their intent might have evolved during the conversation
 
 Respond with ONLY the exact intent name from the list above, or "none" if no intent matches.
 """
         
-        logger.info(f"FLOW_INTENT_DETECTION: Analyzing message: '{user_message}' for intents: {intent_list}")
+        logger.info(f"CONVERSATION_INTENT_DETECTION: Analyzing conversation with {len(conversation_history)} messages for intents: {intent_list}")
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are an intent classifier. Respond with exactly one intent name or 'none'."},
+                {"role": "system", "content": "You are an intent classifier that analyzes full conversations. Respond with exactly one intent name or 'none'."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.0,
@@ -205,25 +224,25 @@ Respond with ONLY the exact intent name from the list above, or "none" if no int
         )
         
         detected_intent = response.choices[0].message.content.strip().lower()
-        logger.info(f"FLOW_INTENT_DETECTION: Raw response from OpenAI: '{detected_intent}'")
+        logger.info(f"CONVERSATION_INTENT_DETECTION: Raw response from OpenAI: '{detected_intent}'")
         
         # Check if detected intent matches any available intent
         for intent_name, intent_data in intent_mapping.items():
             if detected_intent == intent_name.lower() or detected_intent in intent_name.lower():
-                logger.info(f"FLOW_INTENT_DETECTION: Successfully detected '{intent_name}' from: '{user_message}'")
+                logger.info(f"CONVERSATION_INTENT_DETECTION: Successfully detected '{intent_name}' from conversation context")
                 return intent_data
         
         # If no exact match, try partial matching
         for intent_name, intent_data in intent_mapping.items():
             if any(word in detected_intent for word in intent_name.lower().split()):
-                logger.info(f"FLOW_INTENT_DETECTION: Partial match detected '{intent_name}' from: '{user_message}'")
+                logger.info(f"CONVERSATION_INTENT_DETECTION: Partial match detected '{intent_name}' from conversation context")
                 return intent_data
         
-        logger.info(f"FLOW_INTENT_DETECTION: No matching intent found for: '{user_message}'")
+        logger.info(f"CONVERSATION_INTENT_DETECTION: No matching intent found in conversation context")
         return None
             
     except Exception as e:
-        logger.error(f"FLOW_INTENT_DETECTION: Error using LLM: {e}")
+        logger.error(f"CONVERSATION_INTENT_DETECTION: Error using LLM: {e}")
         return None
 
 def extract_user_data(message: str) -> Dict[str, Any]:
@@ -792,6 +811,21 @@ def find_step_in_flow(flow_data: Dict[str, Any], step_name: str) -> Optional[Dic
     
     return None
 
+def add_agent_response_to_history(flow_state: FlowState, response_text: str):
+    """Add agent response to conversation history"""
+    if flow_state.conversation_history is None:
+        flow_state.conversation_history = []
+    
+    flow_state.conversation_history.append({
+        "role": "assistant",
+        "content": response_text,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    # Keep only last 10 messages to avoid token limits
+    if len(flow_state.conversation_history) > 10:
+        flow_state.conversation_history = flow_state.conversation_history[-10:]
+
 def print_flow_status(room_name: str, flow_state: FlowState, action: str, details: str = ""):
     """Print visual flow status to console"""
     print("\n" + "="*80)
@@ -805,7 +839,7 @@ def print_flow_status(room_name: str, flow_state: FlowState, action: str, detail
         print(f"📝 Details: {details}")
     print("="*80 + "\n")
 
-async def process_flow_message(room_name: str, user_message: str) -> Dict[str, Any]:
+async def process_flow_message(room_name: str, user_message: str, frontend_conversation_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
     """Process user message through the flow system"""
     logger.info(f"FLOW_MANAGEMENT: Processing message for room {room_name}: '{user_message}'")
     
@@ -816,10 +850,30 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
     
     flow_state = flow_states[room_name]
     
-    # If no current flow, try to find matching intent using LLM
+    # Initialize conversation history
+    if flow_state.conversation_history is None:
+        flow_state.conversation_history = []
+    
+    # Use frontend conversation history if provided (more complete)
+    if frontend_conversation_history and len(frontend_conversation_history) > 0:
+        flow_state.conversation_history = frontend_conversation_history.copy()
+        logger.info(f"CONVERSATION_HISTORY: Using frontend history with {len(frontend_conversation_history)} messages")
+    else:
+        # Fallback: add current user message to existing history
+        flow_state.conversation_history.append({
+            "role": "user",
+            "content": user_message,
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    # Keep only last 10 messages to avoid token limits
+    if len(flow_state.conversation_history) > 10:
+        flow_state.conversation_history = flow_state.conversation_history[-10:]
+    
+    # If no current flow, try to find matching intent using LLM with conversation context
     if not flow_state.current_flow:
-        print_flow_status(room_name, flow_state, "SEARCHING FOR INTENT", f"Analyzing: '{user_message}'")
-        matching_intent = await detect_flow_intent_with_llm(user_message)
+        print_flow_status(room_name, flow_state, "SEARCHING FOR INTENT", f"Analyzing conversation with {len(flow_state.conversation_history)} messages")
+        matching_intent = await detect_flow_intent_with_llm_from_conversation(flow_state.conversation_history)
         if matching_intent:
             flow_state.current_flow = matching_intent["flow_key"]
             flow_state.current_step = matching_intent["flow_data"]["name"]
@@ -829,21 +883,25 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
             print_flow_status(room_name, flow_state, "🎉 FLOW STARTED", 
                             f"Intent: {matching_intent['intent']} | Flow: {matching_intent['flow_key']} | Response: '{matching_intent['flow_data'].get('text', '')}'")
             
+            # Add agent response to conversation history
+            response_text = matching_intent["flow_data"].get("text", "")
+            add_agent_response_to_history(flow_state, response_text)
+            
             return {
                 "type": "flow_started",
                 "flow_name": matching_intent["intent"],
-                "response": matching_intent["flow_data"].get("text", ""),
+                "response": response_text,
                 "next_step": matching_intent["flow_data"].get("next_flow")
             }
         else:
             # No matching intent, use FAQ bot
             logger.info("FLOW_MANAGEMENT: LLM found no matching intent, using FAQ bot")
             print_flow_status(room_name, flow_state, "❌ NO INTENT FOUND", "Using FAQ bot fallback")
-            return await get_faq_response(user_message)
+            return await get_faq_response(user_message, flow_state=flow_state)
     
-    # Check for intent shift even when in a flow using LLM
+    # Check for intent shift even when in a flow using LLM with conversation context
     print_flow_status(room_name, flow_state, "CHECKING FOR INTENT SHIFT", f"Current flow: {flow_state.current_flow}")
-    matching_intent = await detect_flow_intent_with_llm(user_message)
+    matching_intent = await detect_flow_intent_with_llm_from_conversation(flow_state.conversation_history)
     if matching_intent and matching_intent["flow_key"] != flow_state.current_flow:
         # User shifted to a different intent - start new flow
         old_flow = flow_state.current_flow
@@ -856,10 +914,14 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
         print_flow_status(room_name, flow_state, "🔄 INTENT SHIFT DETECTED", 
                         f"From: {old_flow} → To: {matching_intent['flow_key']} | Intent: {matching_intent['intent']}")
         
+        # Add agent response to conversation history
+        response_text = f"I understand you want to know about {matching_intent['intent']}. {matching_intent['flow_data'].get('text', '')}"
+        add_agent_response_to_history(flow_state, response_text)
+        
         return {
             "type": "flow_started",
             "flow_name": matching_intent["intent"],
-            "response": f"I understand you want to know about {matching_intent['intent']}. {matching_intent['flow_data'].get('text', '')}",
+            "response": response_text,
             "next_step": matching_intent["flow_data"].get("next_flow")
         }
     
@@ -876,9 +938,19 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
                         f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{step_data.get('text', '')}'")
         
         # Dynamic response handling - works with any flow type
+        response_text = step_data.get("text", "")
+        
+        # Handle type-specific responses
+        if step_type == "agent":
+            response_text = "Transferring you to a human agent..."
+            print_flow_status(room_name, flow_state, "👤 AGENT TRANSFER", "Transferring to human agent")
+        
+        # Add agent response to conversation history
+        add_agent_response_to_history(flow_state, response_text)
+        
         response_data = {
             "type": step_type,
-            "response": step_data.get("text", ""),
+            "response": response_text,
             "flow_state": flow_state
         }
         
@@ -886,9 +958,6 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
         if step_type == "question" and step_data.get("answers"):
             response_data["answers"] = step_data["answers"]
             print(f"📋 Available answers: {list(step_data['answers'].keys())}")
-        elif step_type == "agent":
-            response_data["response"] = "Transferring you to a human agent..."
-            print_flow_status(room_name, flow_state, "👤 AGENT TRANSFER", "Transferring to human agent")
         elif step_type == "faq":
             # Handle FAQ steps dynamically
             response_data["faq_bot_id"] = step_data.get("bot_id", "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e")
@@ -899,9 +968,9 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
     # Flow ended or no next step, use FAQ bot
     logger.info("FLOW_MANAGEMENT: Flow ended, using FAQ bot")
     print_flow_status(room_name, flow_state, "🏁 FLOW ENDED", "No next step, using FAQ bot fallback")
-    return await get_faq_response(user_message)
+    return await get_faq_response(user_message, flow_state=flow_state)
 
-async def get_faq_response(user_message: str, bot_id: str = None) -> Dict[str, Any]:
+async def get_faq_response(user_message: str, bot_id: str = None, flow_state: FlowState = None) -> Dict[str, Any]:
     """Get response from FAQ bot - supports dynamic bot IDs"""
     try:
         # Use provided bot_id or default from template or fallback
@@ -934,6 +1003,10 @@ async def get_faq_response(user_message: str, bot_id: str = None) -> Dict[str, A
             
             print(f"✅ FAQ BOT RESPONSE: {result['data']['answer'][:100]}...")
             
+            # Add agent response to conversation history if flow_state is provided
+            if flow_state:
+                add_agent_response_to_history(flow_state, result["data"]["answer"])
+            
             return {
                 "type": "faq_response",
                 "response": result["data"]["answer"],
@@ -943,9 +1016,14 @@ async def get_faq_response(user_message: str, bot_id: str = None) -> Dict[str, A
     except Exception as e:
         logger.error(f"FLOW_MANAGEMENT: FAQ bot error: {str(e)}")
         print(f"❌ FAQ BOT ERROR: {str(e)}")
+        # Add error response to conversation history if flow_state is provided
+        error_response = "I'm sorry, I'm having trouble processing your request. Let me connect you to a human agent."
+        if flow_state:
+            add_agent_response_to_history(flow_state, error_response)
+        
         return {
             "type": "error",
-            "response": "I'm sorry, I'm having trouble processing your request. Let me connect you to a human agent."
+            "response": error_response
         }
 
 # New Flow-based Processing Endpoint
@@ -961,8 +1039,8 @@ async def process_flow_message_endpoint(request: FlowResponse):
         
         logger.info(f"FLOW_PROCESSING: Room {room_name}, Message: '{user_message}'")
         
-        # Process through flow system
-        flow_result = await process_flow_message(room_name, user_message)
+        # Process through flow system with conversation history
+        flow_result = await process_flow_message(room_name, user_message, request.conversation_history)
         
         # Update session if we have one
         if room_name in active_sessions:

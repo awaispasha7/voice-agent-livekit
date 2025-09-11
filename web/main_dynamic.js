@@ -18,6 +18,9 @@ class DynamicVoiceAgent {
         this.lastProcessedMessage = null;
         this.lastProcessedTime = 0;
         
+        // Track conversation history for intent detection
+        this.conversationHistory = [];
+        
         // Transcript handling
         this.interimTranscript = "";
         this.finalTranscript = "";
@@ -457,6 +460,18 @@ class DynamicVoiceAgent {
                 type: 'user'
             });
             
+            // Add to conversation history for intent detection
+            this.conversationHistory.push({
+                role: 'user',
+                content: transcriptText,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Keep only last 10 messages to avoid token limits
+            if (this.conversationHistory.length > 10) {
+                this.conversationHistory = this.conversationHistory.slice(-10);
+            }
+            
             // Show farewell detection
             if (isFarewell) {
                 console.log('👋 Farewell detected in user message:', transcriptText);
@@ -551,7 +566,7 @@ class DynamicVoiceAgent {
     
     async sendTranscriptForFlowProcessing(transcript) {
         try {
-            // Send transcript to backend for flow processing
+            // Send conversation history to backend for flow processing
             const response = await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/process_flow_message', {
                 method: 'POST',
                 headers: {
@@ -559,7 +574,8 @@ class DynamicVoiceAgent {
                 },
                 body: JSON.stringify({
                     room_name: this.currentRoomName,
-                    user_message: transcript
+                    user_message: transcript,
+                    conversation_history: this.conversationHistory
                 })
             });
             
@@ -585,6 +601,20 @@ class DynamicVoiceAgent {
         const response = flowResult.response;
         
         console.log('Handling flow result:', flowType, response);
+        
+        // Add agent response to conversation history
+        if (response && response.trim()) {
+            this.conversationHistory.push({
+                role: 'assistant',
+                content: response,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Keep only last 10 messages to avoid token limits
+            if (this.conversationHistory.length > 10) {
+                this.conversationHistory = this.conversationHistory.slice(-10);
+            }
+        }
         
         // Add flow information to conversation log
         this.addLogEntry({
