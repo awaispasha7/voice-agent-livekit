@@ -151,6 +151,7 @@ class FlowBasedAssistant(Agent):
         self.room = None  # Will be set by entrypoint
         self.current_flow_state = None
         self.retry_manager = None  # Will be set after room is available
+        self.backend_healthy = None  # Will be set during initialization
         
         super().__init__(instructions=self._get_instructions())
 
@@ -506,24 +507,25 @@ async def entrypoint(ctx: JobContext):
         logger.warning(f"Room {room_name} already has an active session. Skipping.")
         return
     
+    # Create assistant first
+    assistant = FlowBasedAssistant(session_id)
+    active_sessions[room_name] = session_id
+    logger.info(f"Starting flow-based agent session {session_id} in room: {room_name}")
+    
     # Check backend health before starting
     logger.info("🔍 Checking backend health before starting worker...")
     backend_healthy = await check_backend_health()
     if not backend_healthy:
         logger.error("❌ Backend is not accessible. Worker will start but may not function properly.")
         logger.error("💡 Please ensure the backend is running and accessible.")
-        # Signal backend down status
-        await assistant.signal_worker_status("backend_down", "Backend server is not accessible")
+        # Signal backend down status (will be sent after room connection)
+        assistant.backend_healthy = False
     else:
         logger.info("✅ Backend health check passed. Worker ready to start.")
-        # Signal worker ready status
-        await assistant.signal_worker_status("ready", "Worker is ready and backend is accessible")
-        
-    active_sessions[room_name] = session_id
-    logger.info(f"Starting flow-based agent session {session_id} in room: {room_name}")
+        # Signal worker ready status (will be sent after room connection)
+        assistant.backend_healthy = True
     
     agent_session = None
-    assistant = FlowBasedAssistant(session_id)
     
     try:
         await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
@@ -533,6 +535,12 @@ async def entrypoint(ctx: JobContext):
         assistant.room = ctx.room
         assistant.agent_session = None  # Will be set after session starts
         assistant.retry_manager = BackendRetryManager(assistant)
+        
+        # Send initial status signal now that room is connected
+        if assistant.backend_healthy:
+            await assistant.signal_worker_status("ready", "Worker is ready and backend is accessible")
+        else:
+            await assistant.signal_worker_status("backend_down", "Backend server is not accessible")
         
         try:
             participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=600.0)
