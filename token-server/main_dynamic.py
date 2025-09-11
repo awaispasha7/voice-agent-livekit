@@ -682,6 +682,9 @@ async def initialize_bot_template():
     """Initialize the bot template on startup"""
     global bot_template
     try:
+        print("\n" + "="*80)
+        print("🚀 INITIALIZING BOT TEMPLATE")
+        print("="*80)
         logger.info("FLOW_MANAGEMENT: Initializing bot template...")
         
         async with httpx.AsyncClient() as client:
@@ -697,11 +700,29 @@ async def initialize_bot_template():
                 }
             )
             response.raise_for_status()
-            bot_template = response.json()
-            logger.info("FLOW_MANAGEMENT: Bot template initialized successfully")
-            return bot_template
+            result = response.json()
+            bot_template = result
+            
+            if result.get("code") == 200 and result.get("data"):
+                logger.info("FLOW_MANAGEMENT: Bot template initialized successfully")
+                
+                # Print template structure
+                print("✅ TEMPLATE LOADED SUCCESSFULLY")
+                print(f"📊 Available Flows: {len(result['data'])}")
+                for flow_key, flow_data in result["data"].items():
+                    flow_type = flow_data.get("type", "unknown")
+                    flow_text = flow_data.get("text", "")
+                    print(f"   🔹 {flow_key}: {flow_type} - '{flow_text}'")
+                
+                print("="*80 + "\n")
+                return bot_template
+            else:
+                logger.error(f"FLOW_MANAGEMENT: Invalid template response: {result}")
+                print(f"❌ TEMPLATE LOAD FAILED: {result}")
+                return None
     except Exception as e:
         logger.error(f"FLOW_MANAGEMENT: Failed to initialize bot template: {str(e)}")
+        print(f"❌ TEMPLATE INITIALIZATION ERROR: {str(e)}")
         return None
 
 # Removed find_matching_intent - now using LLM-based detection
@@ -771,6 +792,19 @@ def find_step_in_flow(flow_data: Dict[str, Any], step_name: str) -> Optional[Dic
     
     return None
 
+def print_flow_status(room_name: str, flow_state: FlowState, action: str, details: str = ""):
+    """Print visual flow status to console"""
+    print("\n" + "="*80)
+    print(f"🎯 FLOW TRACKING - Room: {room_name}")
+    print(f"📋 Action: {action}")
+    print(f"📍 Current Flow: {flow_state.current_flow or 'None'}")
+    print(f"🔢 Current Step: {flow_state.current_step or 'None'}")
+    if flow_state.user_responses:
+        print(f"💬 User Responses: {flow_state.user_responses}")
+    if details:
+        print(f"📝 Details: {details}")
+    print("="*80 + "\n")
+
 async def process_flow_message(room_name: str, user_message: str) -> Dict[str, Any]:
     """Process user message through the flow system"""
     logger.info(f"FLOW_MANAGEMENT: Processing message for room {room_name}: '{user_message}'")
@@ -778,11 +812,13 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
     # Get or create flow state for this room
     if room_name not in flow_states:
         flow_states[room_name] = FlowState()
+        print_flow_status(room_name, flow_states[room_name], "NEW SESSION CREATED", f"User message: '{user_message}'")
     
     flow_state = flow_states[room_name]
     
     # If no current flow, try to find matching intent using LLM
     if not flow_state.current_flow:
+        print_flow_status(room_name, flow_state, "SEARCHING FOR INTENT", f"Analyzing: '{user_message}'")
         matching_intent = await detect_flow_intent_with_llm(user_message)
         if matching_intent:
             flow_state.current_flow = matching_intent["flow_key"]
@@ -790,6 +826,8 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
             flow_state.flow_data = matching_intent["flow_data"]
             
             logger.info(f"FLOW_MANAGEMENT: LLM started flow {flow_state.current_flow} for intent: {matching_intent['intent']}")
+            print_flow_status(room_name, flow_state, "🎉 FLOW STARTED", 
+                            f"Intent: {matching_intent['intent']} | Flow: {matching_intent['flow_key']} | Response: '{matching_intent['flow_data'].get('text', '')}'")
             
             return {
                 "type": "flow_started",
@@ -800,17 +838,23 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
         else:
             # No matching intent, use FAQ bot
             logger.info("FLOW_MANAGEMENT: LLM found no matching intent, using FAQ bot")
+            print_flow_status(room_name, flow_state, "❌ NO INTENT FOUND", "Using FAQ bot fallback")
             return await get_faq_response(user_message)
     
     # Check for intent shift even when in a flow using LLM
+    print_flow_status(room_name, flow_state, "CHECKING FOR INTENT SHIFT", f"Current flow: {flow_state.current_flow}")
     matching_intent = await detect_flow_intent_with_llm(user_message)
     if matching_intent and matching_intent["flow_key"] != flow_state.current_flow:
         # User shifted to a different intent - start new flow
+        old_flow = flow_state.current_flow
         logger.info(f"FLOW_MANAGEMENT: LLM detected intent shift from {flow_state.current_flow} to {matching_intent['flow_key']}")
         flow_state.current_flow = matching_intent["flow_key"]
         flow_state.current_step = matching_intent["flow_data"]["name"]
         flow_state.flow_data = matching_intent["flow_data"]
         flow_state.user_responses = {}  # Reset user responses for new flow
+        
+        print_flow_status(room_name, flow_state, "🔄 INTENT SHIFT DETECTED", 
+                        f"From: {old_flow} → To: {matching_intent['flow_key']} | Intent: {matching_intent['intent']}")
         
         return {
             "type": "flow_started",
@@ -820,11 +864,16 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
         }
     
     # We're in a flow, get next step
+    print_flow_status(room_name, flow_state, "PROGRESSING IN FLOW", f"User response: '{user_message}'")
     next_step = get_next_flow_step(flow_state, user_message)
     if next_step:
+        old_step = flow_state.current_step
         flow_state.current_step = next_step["step_name"]
         step_data = next_step["step_data"]
         step_type = step_data.get("type", "unknown")
+        
+        print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION", 
+                        f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{step_data.get('text', '')}'")
         
         # Dynamic response handling - works with any flow type
         response_data = {
@@ -836,16 +885,20 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
         # Add type-specific data dynamically
         if step_type == "question" and step_data.get("answers"):
             response_data["answers"] = step_data["answers"]
+            print(f"📋 Available answers: {list(step_data['answers'].keys())}")
         elif step_type == "agent":
             response_data["response"] = "Transferring you to a human agent..."
+            print_flow_status(room_name, flow_state, "👤 AGENT TRANSFER", "Transferring to human agent")
         elif step_type == "faq":
             # Handle FAQ steps dynamically
             response_data["faq_bot_id"] = step_data.get("bot_id", "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e")
+            print_flow_status(room_name, flow_state, "❓ FAQ STEP", f"Using FAQ bot: {response_data['faq_bot_id']}")
         
         return response_data
     
     # Flow ended or no next step, use FAQ bot
     logger.info("FLOW_MANAGEMENT: Flow ended, using FAQ bot")
+    print_flow_status(room_name, flow_state, "🏁 FLOW ENDED", "No next step, using FAQ bot fallback")
     return await get_faq_response(user_message)
 
 async def get_faq_response(user_message: str, bot_id: str = None) -> Dict[str, Any]:
@@ -862,6 +915,8 @@ async def get_faq_response(user_message: str, bot_id: str = None) -> Dict[str, A
                         break
             bot_id = default_bot_id
         
+        print(f"🤖 FAQ BOT CALL: Bot ID: {bot_id} | Question: '{user_message}'")
+        
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{A5_BASE_URL}/public/1.0/get-faq-bot-response-by-bot-id",
@@ -877,6 +932,8 @@ async def get_faq_response(user_message: str, bot_id: str = None) -> Dict[str, A
             response.raise_for_status()
             result = response.json()
             
+            print(f"✅ FAQ BOT RESPONSE: {result['data']['answer'][:100]}...")
+            
             return {
                 "type": "faq_response",
                 "response": result["data"]["answer"],
@@ -885,6 +942,7 @@ async def get_faq_response(user_message: str, bot_id: str = None) -> Dict[str, A
             }
     except Exception as e:
         logger.error(f"FLOW_MANAGEMENT: FAQ bot error: {str(e)}")
+        print(f"❌ FAQ BOT ERROR: {str(e)}")
         return {
             "type": "error",
             "response": "I'm sorry, I'm having trouble processing your request. Let me connect you to a human agent."
@@ -968,6 +1026,38 @@ async def get_template_info():
         "template_version": bot_template.get("code", "unknown"),
         "flows": flows,
         "total_flows": len(flows)
+    }
+
+@app.get("/api/flow_states")
+def get_flow_states():
+    """Get all current flow states for debugging"""
+    states = {}
+    for room_name, flow_state in flow_states.items():
+        states[room_name] = {
+            "current_flow": flow_state.current_flow,
+            "current_step": flow_state.current_step,
+            "user_responses": flow_state.user_responses,
+            "flow_data": flow_state.flow_data
+        }
+    return {
+        "active_flows": len(states),
+        "flow_states": states
+    }
+
+@app.get("/api/flow_debug/{room_name}")
+def get_flow_debug(room_name: str):
+    """Get detailed flow debug information for a specific room"""
+    if room_name not in flow_states:
+        return {"error": "Room not found"}
+    
+    flow_state = flow_states[room_name]
+    return {
+        "room_name": room_name,
+        "current_flow": flow_state.current_flow,
+        "current_step": flow_state.current_step,
+        "user_responses": flow_state.user_responses,
+        "flow_data": flow_state.flow_data,
+        "template_available": bot_template is not None
     }
 
 # Initialize bot template on startup
