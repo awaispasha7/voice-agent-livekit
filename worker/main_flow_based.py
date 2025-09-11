@@ -160,35 +160,25 @@ class FlowBasedAssistant(Agent):
         return f"""
 You are Scott, the AI voice assistant for Alive5 Support (Session: {self.session_id}). 
 
-You are now using a flow-based system that follows specific conversation patterns:
+CRITICAL: You are now using a FLOW-BASED system. DO NOT respond to user messages automatically.
 
-CONVERSATION FLOW:
-1. Start with a warm greeting asking how you can help
-2. Listen for user intent (pricing, support, billing, agent transfer)
-3. Follow the specific flow for that intent with structured questions
-4. If no intent matches, use the FAQ bot for general questions
-5. Provide helpful information and collect necessary details
-6. Offer escalation to human agents when needed
+RESPONSE PROTOCOL:
+- ONLY respond when you receive explicit instructions starting with "You must say exactly this"
+- DO NOT generate your own responses to user questions
+- WAIT for the flow system to provide the exact response
+- When given explicit instructions, say exactly what you're told
 
-FLOW TYPES:
-- PRICING: Ask about phone lines, text volume, special needs
-- SUPPORT: Technical troubleshooting and how-to questions
-- BILLING: Account management, payments, invoices
-- AGENT: Transfer to human agent
-- FAQ: General questions using the knowledge base
+FLOW SYSTEM:
+- The backend processes user messages and determines the correct response
+- You will receive specific instructions for each response
+- Follow these instructions exactly without adding your own content
 
-TONE: Professional, helpful, empathetic, and conversational
+TONE: Professional, helpful, empathetic, and conversational when instructed
 VOICE: Clear, warm, engaging
 LANGUAGE: Simple, jargon-free, concise responses
-AVOID: Technical jargon, complex explanations, lengthy responses, and unnecessary characters like '*' or '&'. Do not pronounce them even if they are in the text.
+AVOID: Automatic responses, adding extra content, technical jargon
 
-IMPORTANT RULES:
-- Always confirm you're listening when asked
-- Be honest about limitations and offer human escalation when needed
-- Keep responses focused and conversational
-- Follow the flow structure strictly
-- End calls gracefully when resolution is achieved
-- Never make promises about pricing or technical capabilities you're unsure about
+IMPORTANT: Do not respond to user questions on your own. Wait for explicit instructions.
 
 Current conversation stage: {self.conversation_stage}
 """
@@ -286,6 +276,8 @@ Current conversation stage: {self.conversation_stage}
             response_text = flow_data.get("response", "")
             
             logger.info(f"FLOW_HANDLER: Processing flow type: {flow_type}")
+            logger.info(f"FLOW_HANDLER: Response text: '{response_text}'")
+            logger.info(f"FLOW_HANDLER: Full flow result: {flow_result}")
             
             # Dynamic flow type handling - works with any flow type
             if flow_type == "flow_started":
@@ -313,7 +305,9 @@ Current conversation stage: {self.conversation_stage}
             
             # Generate response for any flow type that has text
             if response_text:
+                logger.info(f"FLOW_HANDLER: About to call generate_flow_response with: '{response_text}'")
                 await self.generate_flow_response(response_text)
+                logger.info(f"FLOW_HANDLER: generate_flow_response completed")
             else:
                 logger.warning(f"FLOW_HANDLER: No response text for flow type: {flow_type}")
                     
@@ -324,9 +318,10 @@ Current conversation stage: {self.conversation_stage}
         """Generate a response using the flow text"""
         try:
             if hasattr(self, 'agent_session') and self.agent_session:
-                # Use the agent session to generate the response
+                logger.info(f"FLOW_RESPONSE: About to generate response: '{response_text}'")
+                # Use a more direct instruction to ensure the exact text is spoken
                 await self.agent_session.generate_reply(
-                    instructions=f"Say exactly: '{response_text}'"
+                    instructions=f"You must say exactly this and nothing else: '{response_text}'. Do not add any additional context or explanations."
                 )
                 logger.info(f"FLOW_RESPONSE: Generated response: '{response_text}'")
             else:
