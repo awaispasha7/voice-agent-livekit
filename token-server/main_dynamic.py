@@ -891,6 +891,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         
         matching_intent = await detect_flow_intent_with_llm(user_message)
         logger.info(f"FLOW_MANAGEMENT: Intent detection result: {matching_intent}")
+        print(f"🔍 INTENT DETECTION: '{user_message}' -> {matching_intent}")
         
         if matching_intent:
             logger.info(f"FLOW_MANAGEMENT: ✅ INTENT DETECTED - {matching_intent['intent']} -> {matching_intent['flow_key']}")
@@ -953,6 +954,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             # No matching intent, use FAQ bot
             logger.info("FLOW_MANAGEMENT: ❌ LLM found no matching intent, using FAQ bot")
             print_flow_status(room_name, flow_state, "❌ NO INTENT FOUND", "Using FAQ bot fallback")
+            print(f"🚨 FAQ BOT CALLED: No intent found for '{user_message}'")
             return await get_faq_response(user_message, flow_state=flow_state)
     
     # If we're already in a flow, check if this is a response to a question

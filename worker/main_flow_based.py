@@ -451,11 +451,11 @@ Examples:
             logger.error(f"Error sending disconnection signal: {e}")
 
     async def generate_reply(self, instructions: str = None):
-        """Override generate_reply to capture agent responses"""
+        """Override generate_reply to COMPLETELY BLOCK automatic responses"""
         try:
-            # Only generate replies when explicitly instructed by flow system
+            # Only allow responses from flow system with specific keywords
             if instructions and ("You must say exactly this" in instructions or "Say exactly" in instructions):
-                logger.info(f"GENERATE_REPLY: Flow system requested response: '{instructions}'")
+                logger.info(f"GENERATE_REPLY: ✅ FLOW SYSTEM REQUEST: '{instructions}'")
                 # Call the parent generate_reply method
                 result = await super().generate_reply(instructions)
                 
@@ -465,7 +465,8 @@ Examples:
                 
                 return result
             else:
-                logger.info(f"GENERATE_REPLY: Ignoring automatic response request: '{instructions}'")
+                # COMPLETELY BLOCK all automatic responses
+                logger.info(f"GENERATE_REPLY: 🚫 BLOCKED AUTOMATIC RESPONSE: '{instructions}'")
                 return None
         except Exception as e:
             logger.error(f"Error in generate_reply: {e}")
