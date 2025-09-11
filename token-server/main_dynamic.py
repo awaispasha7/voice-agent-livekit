@@ -155,150 +155,80 @@ Respond with ONLY one word (the intent): sales, support, or billing.
         logger.error(f"INTENT_DETECTION: Error using LLM: {e}")
         return None
 
-async def detect_flow_intent_with_llm_from_conversation(conversation_history: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
-    """Detect user intent using OpenAI LLM and map to Alive5 template flows based on full conversation context"""
-    if not conversation_history or len(conversation_history) == 0:
-        logger.warning("Empty conversation history, skipping flow intent detection")
-        return None
-    
-    if not bot_template or not bot_template.get("data"):
-        logger.warning("No bot template available for flow intent detection")
-        return None
-        
+async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, Any]]:
+    """Detect flow intent using LLM - simple and direct approach"""
     try:
-        # Build available intents from template
+        if not bot_template or not bot_template.get("data"):
+            logger.warning("INTENT_DETECTION: No bot template available")
+            return None
+        
+        # Extract available intents from template
         available_intents = []
         intent_mapping = {}
         
         for flow_key, flow_data in bot_template["data"].items():
             if flow_data.get("type") == "intent_bot":
-                intent_text = flow_data.get("text", "")
-                available_intents.append(intent_text)
-                intent_mapping[intent_text.lower()] = {
-                    "flow_key": flow_key,
-                    "flow_data": flow_data,
-                    "intent": intent_text
-                }
+                intent_name = flow_data.get("text", "")
+                if intent_name:
+                    available_intents.append(intent_name)
+                    intent_mapping[intent_name] = {
+                        "flow_key": flow_key,
+                        "flow_data": flow_data,
+                        "intent": intent_name
+                    }
         
         if not available_intents:
-            logger.warning("No intent_bot flows found in template")
+            logger.warning("INTENT_DETECTION: No intents found in template")
             return None
         
-        # Build conversation context for LLM
-        conversation_context = ""
-        for i, entry in enumerate(conversation_history):
-            role = entry.get("role", "user")
-            content = entry.get("content", "")
-            conversation_context += f"{role.upper()}: {content}\n"
-        
-        # Create LLM prompt with conversation context
+        # Simple prompt - just compare user message with available intents
         intent_list = ", ".join(available_intents)
         
-        # Build dynamic intent descriptions for the LLM - completely generic
-        intent_descriptions = []
-        for intent_name in available_intents:
-            # Generic description for any intent - no hardcoded keywords
-            description = f'   - "{intent_name}" intent: Look for keywords and phrases related to {intent_name.lower()}'
-            intent_descriptions.append(description)
-        
-        intent_descriptions_text = "\n".join(intent_descriptions)
-        
         prompt = f"""
-You are an intent classifier for a customer service AI. Analyze the ENTIRE conversation to understand the user's true intent.
+You are an intent classifier. Compare the user's message with the available intents and find the best match.
 
 Available intents: {intent_list}
 
-CONVERSATION HISTORY:
-{conversation_context}
+User message: "{user_message}"
 
-Based on the full conversation context, classify the user's intent into exactly one of these available intents: {intent_list}
+Instructions:
+1. Look at the user's message and compare it with each available intent
+2. Find the intent that best matches what the user is asking about
+3. Consider synonyms and related terms
+4. Be flexible with matching - partial matches are okay
 
-IMPORTANT RULES:
-1. Look for keywords related to each intent:
-{intent_descriptions_text}
+Respond with ONLY the exact intent name from the list above, or "none" if no intent matches.
 
-2. Consider the overall topic the user is discussing
-3. Look at any questions they've asked
-4. Consider the context of their requests
-5. How their intent might have evolved during the conversation
-6. Match the user's request to the most appropriate intent based on the intent name and context
-
-
- Respond with ONLY the exact intent name from the list above, or "none" if no intent matches.
+Examples:
+- User says "weather" or "weather today" → match with "weather" intent
+- User says "pricing" or "cost" → match with "Pricing" intent  
+- User says "agent" or "human" → match with "Agent" intent
 """
         
-        logger.info(f"CONVERSATION_INTENT_DETECTION: Analyzing conversation with {len(conversation_history)} messages for intents: {intent_list}")
-        logger.info(f"CONVERSATION_INTENT_DETECTION: Available intents: {available_intents}")
-        logger.info(f"CONVERSATION_INTENT_DETECTION: Intent mapping: {intent_mapping}")
-        logger.info(f"CONVERSATION_INTENT_DETECTION: Conversation context:\n{conversation_context}")
-        logger.info(f"CONVERSATION_INTENT_DETECTION: Full prompt:\n{prompt}")
-        
+        logger.info(f"INTENT_DETECTION: Analyzing message '{user_message}' for intents: {intent_list}")
+
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are an intent classifier that analyzes full conversations. Respond with exactly one intent name or 'none'."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.0,
-            max_tokens=20
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=20,
+            temperature=0.1
         )
         
-        detected_intent = response.choices[0].message.content.strip().lower()
-        logger.info(f"CONVERSATION_INTENT_DETECTION: Raw response from OpenAI: '{detected_intent}'")
+        detected_intent = response.choices[0].message.content.strip()
+        logger.info(f"INTENT_DETECTION: LLM response: '{detected_intent}'")
         
-        # Dynamic intent matching - works with any intent names
-        def calculate_similarity(text1, text2):
-            """Calculate similarity between two text strings"""
-            text1_lower = text1.lower().strip()
-            text2_lower = text2.lower().strip()
-            
-            # Exact match
-            if text1_lower == text2_lower:
-                return 1.0
-            
-            # One contains the other
-            if text1_lower in text2_lower or text2_lower in text1_lower:
-                return 0.8
-            
-            # Word overlap
-            words1 = set(text1_lower.split())
-            words2 = set(text2_lower.split())
-            if words1 and words2:
-                overlap = len(words1.intersection(words2))
-                return overlap / max(len(words1), len(words2))
-            
-            return 0.0
-        
-        # Try exact matches first
+        # Find matching intent
         for intent_name, intent_data in intent_mapping.items():
-            if detected_intent == intent_name.lower():
-                logger.info(f"CONVERSATION_INTENT_DETECTION: Exact match detected '{intent_name}' from conversation context")
+            if detected_intent.lower() == intent_name.lower():
+                logger.info(f"INTENT_DETECTION: ✅ Intent found: '{intent_name}'")
                 return intent_data
         
-        # Try similarity matching
-        best_match = None
-        best_similarity = 0.0
-        similarity_threshold = 0.2  # Lowered threshold for better matching
-        
-        for intent_name, intent_data in intent_mapping.items():
-            similarity = calculate_similarity(detected_intent, intent_name)
-            logger.info(f"CONVERSATION_INTENT_DETECTION: Similarity between '{detected_intent}' and '{intent_name}': {similarity}")
-            
-            
-            if similarity > best_similarity and similarity >= similarity_threshold:
-                best_similarity = similarity
-                best_match = intent_data
-        
-        if best_match:
-            logger.info(f"CONVERSATION_INTENT_DETECTION: Best match detected with similarity {best_similarity}")
-            return best_match
-        
-        logger.info(f"CONVERSATION_INTENT_DETECTION: No matching intent found in conversation context")
+        logger.info(f"INTENT_DETECTION: ❌ No intent found, will use FAQ bot")
         return None
             
     except Exception as e:
-        logger.error(f"CONVERSATION_INTENT_DETECTION: Error using LLM: {e}")
+        logger.error(f"INTENT_DETECTION: Error using LLM: {e}")
         return None
 
 def extract_user_data(message: str) -> Dict[str, Any]:
@@ -948,9 +878,9 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     if len(flow_state.conversation_history) > 10:
         flow_state.conversation_history = flow_state.conversation_history[-10:]
     
-    # If no current flow, try to find matching intent using LLM with conversation context
+    # If no current flow, try to find matching intent using LLM
     if not flow_state.current_flow:
-        print_flow_status(room_name, flow_state, "SEARCHING FOR INTENT", f"Analyzing conversation with {len(flow_state.conversation_history)} messages")
+        print_flow_status(room_name, flow_state, "SEARCHING FOR INTENT", f"Analyzing message: '{user_message}'")
         logger.info(f"FLOW_MANAGEMENT: Bot template available: {bot_template is not None}")
         if bot_template:
             logger.info(f"FLOW_MANAGEMENT: Bot template data keys: {list(bot_template.get('data', {}).keys())}")
@@ -959,7 +889,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 if flow_data.get('type') == 'intent_bot':
                     logger.info(f"FLOW_MANAGEMENT: Available intent '{flow_data.get('text', '')}' in flow {flow_key}")
         
-        matching_intent = await detect_flow_intent_with_llm_from_conversation(flow_state.conversation_history)
+        matching_intent = await detect_flow_intent_with_llm(user_message)
         logger.info(f"FLOW_MANAGEMENT: Intent detection result: {matching_intent}")
         
         if matching_intent:
@@ -1006,6 +936,10 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 if not response_text or response_text == "N/A":
                     response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
                     logger.warning(f"FLOW_MANAGEMENT: Intent response was empty or N/A, using generic fallback")
+                
+                # Ensure we have a valid response
+                if not response_text or response_text.strip() == "":
+                    response_text = f"I can help you with {matching_intent['intent']}. What would you like to know?"
                 
                 add_agent_response_to_history(flow_state, response_text)
                 
@@ -1060,9 +994,9 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         else:
             logger.info(f"FLOW_MANAGEMENT: Current step is not a question (type: {current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift")
     
-    # Check for intent shift even when in a flow using LLM with conversation context
+    # Check for intent shift even when in a flow using LLM
     print_flow_status(room_name, flow_state, "CHECKING FOR INTENT SHIFT", f"Current flow: {flow_state.current_flow}")
-    matching_intent = await detect_flow_intent_with_llm_from_conversation(flow_state.conversation_history)
+    matching_intent = await detect_flow_intent_with_llm(user_message)
     if matching_intent and matching_intent["flow_key"] != flow_state.current_flow:
         # User shifted to a different intent - start new flow
         old_flow = flow_state.current_flow
@@ -1089,6 +1023,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     # If we reach here, we're in a flow but no specific handling was done
     # This should not happen with the new logic, but as a fallback
     logger.info("FLOW_MANAGEMENT: Unexpected flow state, using FAQ bot as fallback")
+    logger.info(f"FLOW_MANAGEMENT: Current flow state - flow: {flow_state.current_flow}, step: {flow_state.current_step}")
     print_flow_status(room_name, flow_state, "❌ UNEXPECTED STATE", "Using FAQ bot fallback")
     return await get_faq_response(user_message, flow_state=flow_state)
 
