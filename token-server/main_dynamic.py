@@ -200,9 +200,9 @@ async def detect_flow_intent_with_llm_from_conversation(conversation_history: Li
             # Create a more descriptive prompt based on the intent name
             intent_lower = intent_name.lower()
             if any(word in intent_lower for word in ['weather', 'climate', 'forecast']):
-                description = f'   - "{intent_name}" intent: Look for weather-related keywords like weather, temperature, forecast, climate, rain, snow, sunny, etc.'
+                description = f'   - "{intent_name}" intent: Look for weather-related keywords like weather, temperature, forecast, climate, rain, snow, sunny, weather updates, etc.'
             elif any(word in intent_lower for word in ['price', 'cost', 'billing', 'plan']):
-                description = f'   - "{intent_name}" intent: Look for pricing-related keywords like price, cost, billing, plan, subscription, etc.'
+                description = f'   - "{intent_name}" intent: Look for pricing-related keywords like price, cost, billing, plan, subscription, pricing, etc.'
             elif any(word in intent_lower for word in ['agent', 'human', 'representative', 'support']):
                 description = f'   - "{intent_name}" intent: Look for agent-related keywords like agent, human, representative, speak to someone, talk to someone, etc.'
             else:
@@ -288,11 +288,16 @@ Respond with ONLY the exact intent name from the list above, or "none" if no int
         # Try similarity matching
         best_match = None
         best_similarity = 0.0
-        similarity_threshold = 0.3  # Adjust this threshold as needed
+        similarity_threshold = 0.2  # Lowered threshold for better matching
         
         for intent_name, intent_data in intent_mapping.items():
             similarity = calculate_similarity(detected_intent, intent_name)
             logger.info(f"CONVERSATION_INTENT_DETECTION: Similarity between '{detected_intent}' and '{intent_name}': {similarity}")
+            
+            # Special handling for weather-related terms
+            if any(word in detected_intent for word in ['weather', 'temperature', 'forecast', 'climate', 'rain', 'snow', 'sunny']) and 'weather' in intent_name.lower():
+                similarity = max(similarity, 0.8)  # Boost weather similarity
+                logger.info(f"CONVERSATION_INTENT_DETECTION: Weather boost applied, new similarity: {similarity}")
             
             if similarity > best_similarity and similarity >= similarity_threshold:
                 best_similarity = similarity
@@ -812,48 +817,70 @@ async def initialize_bot_template():
 
 def get_next_flow_step(current_flow_state: FlowState, user_response: str = None) -> Optional[Dict[str, Any]]:
     """Get the next step in the current flow - fully dynamic"""
+    logger.info(f"FLOW_NAVIGATION: Getting next step for flow {current_flow_state.current_flow}, step {current_flow_state.current_step}")
+    logger.info(f"FLOW_NAVIGATION: User response: '{user_response}'")
+    
     if not current_flow_state.current_flow or not bot_template:
+        logger.info("FLOW_NAVIGATION: ❌ No current flow or bot template")
         return None
     
     flow_data = bot_template["data"].get(current_flow_state.current_flow)
     if not flow_data:
+        logger.info(f"FLOW_NAVIGATION: ❌ Flow data not found for {current_flow_state.current_flow}")
         return None
+    
+    logger.info(f"FLOW_NAVIGATION: Flow data type: {flow_data.get('type')}, text: '{flow_data.get('text')}'")
     
     # If we have a user response, store it
     if user_response and current_flow_state.current_step:
         if not current_flow_state.user_responses:
             current_flow_state.user_responses = {}
         current_flow_state.user_responses[current_flow_state.current_step] = user_response
+        logger.info(f"FLOW_NAVIGATION: Stored user response for step {current_flow_state.current_step}")
     
     # Navigate through the flow
     current_step_data = flow_data
     if current_flow_state.current_step:
         # Find the current step in the flow
         current_step_data = find_step_in_flow(flow_data, current_flow_state.current_step)
+        logger.info(f"FLOW_NAVIGATION: Found current step data: {current_step_data}")
     
     if not current_step_data:
+        logger.info("FLOW_NAVIGATION: ❌ Current step data not found")
         return None
+    
+    logger.info(f"FLOW_NAVIGATION: Current step type: {current_step_data.get('type')}, text: '{current_step_data.get('text')}'")
+    logger.info(f"FLOW_NAVIGATION: Has answers: {bool(current_step_data.get('answers'))}")
+    logger.info(f"FLOW_NAVIGATION: Has next_flow: {bool(current_step_data.get('next_flow'))}")
     
     # Check if current step has answers and user provided a response
     if user_response and current_step_data.get("answers"):
+        logger.info(f"FLOW_NAVIGATION: Checking answers: {list(current_step_data['answers'].keys())}")
         # Find matching answer - more flexible matching
         for answer_key, answer_data in current_step_data["answers"].items():
+            logger.info(f"FLOW_NAVIGATION: Checking answer '{answer_key}' against user response '{user_response}'")
             if answer_key.lower() in user_response.lower() or user_response.lower() in answer_key.lower():
+                logger.info(f"FLOW_NAVIGATION: ✅ Answer match found: {answer_key}")
                 if answer_data.get("next_flow"):
+                    logger.info(f"FLOW_NAVIGATION: ✅ Next flow found for answer {answer_key}")
                     return {
                         "type": "next_step",
                         "step_data": answer_data["next_flow"],
                         "step_name": answer_data["name"]
                     }
+                else:
+                    logger.info(f"FLOW_NAVIGATION: ❌ No next_flow for answer {answer_key}")
     
     # Check for next_flow
     if current_step_data.get("next_flow"):
+        logger.info(f"FLOW_NAVIGATION: ✅ Found next_flow: {current_step_data['next_flow'].get('name')}")
         return {
             "type": "next_step",
             "step_data": current_step_data["next_flow"],
             "step_name": current_step_data["next_flow"].get("name")
         }
     
+    logger.info("FLOW_NAVIGATION: ❌ No next step found")
     return None
 
 def find_step_in_flow(flow_data: Dict[str, Any], step_name: str) -> Optional[Dict[str, Any]]:
@@ -940,30 +967,65 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         logger.info(f"FLOW_MANAGEMENT: Bot template available: {bot_template is not None}")
         if bot_template:
             logger.info(f"FLOW_MANAGEMENT: Bot template data keys: {list(bot_template.get('data', {}).keys())}")
+            # Debug: Show all available intents
+            for flow_key, flow_data in bot_template.get('data', {}).items():
+                if flow_data.get('type') == 'intent_bot':
+                    logger.info(f"FLOW_MANAGEMENT: Available intent '{flow_data.get('text', '')}' in flow {flow_key}")
+        
         matching_intent = await detect_flow_intent_with_llm_from_conversation(flow_state.conversation_history)
         logger.info(f"FLOW_MANAGEMENT: Intent detection result: {matching_intent}")
+        
         if matching_intent:
+            logger.info(f"FLOW_MANAGEMENT: ✅ INTENT DETECTED - {matching_intent['intent']} -> {matching_intent['flow_key']}")
+            logger.info(f"FLOW_MANAGEMENT: Flow data: {matching_intent['flow_data']}")
+            
             flow_state.current_flow = matching_intent["flow_key"]
             flow_state.current_step = matching_intent["flow_data"]["name"]
             flow_state.flow_data = matching_intent["flow_data"]
             
             logger.info(f"FLOW_MANAGEMENT: LLM started flow {flow_state.current_flow} for intent: {matching_intent['intent']}")
-            print_flow_status(room_name, flow_state, "🎉 FLOW STARTED", 
-                            f"Intent: {matching_intent['intent']} | Flow: {matching_intent['flow_key']} | Response: '{matching_intent['flow_data'].get('text', '')}'")
+            logger.info(f"FLOW_MANAGEMENT: Current step set to: {flow_state.current_step}")
+            logger.info(f"FLOW_MANAGEMENT: Flow data type: {matching_intent['flow_data'].get('type')}")
+            logger.info(f"FLOW_MANAGEMENT: Has next_flow: {bool(matching_intent['flow_data'].get('next_flow'))}")
             
-            # Add agent response to conversation history
-            response_text = matching_intent["flow_data"].get("text", "")
-            add_agent_response_to_history(flow_state, response_text)
-            
-            return {
-                "type": "flow_started",
-                "flow_name": matching_intent["intent"],
-                "response": response_text,
-                "next_step": matching_intent["flow_data"].get("next_flow")
-            }
+            # Check if this intent has a next_flow and automatically transition to it
+            next_flow = matching_intent["flow_data"].get("next_flow")
+            if next_flow:
+                logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
+                flow_state.current_step = next_flow.get("name")
+                flow_state.flow_data = next_flow
+                
+                print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
+                                f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
+                
+                # Use the next_flow response instead of intent response
+                response_text = next_flow.get("text", "")
+                add_agent_response_to_history(flow_state, response_text)
+                
+                return {
+                    "type": "flow_started",
+                    "flow_name": matching_intent["intent"],
+                    "response": response_text,
+                    "next_step": next_flow.get("next_flow")
+                }
+            else:
+                # No next_flow, use intent response
+                print_flow_status(room_name, flow_state, "🎉 FLOW STARTED", 
+                                f"Intent: {matching_intent['intent']} | Flow: {matching_intent['flow_key']} | Response: '{matching_intent['flow_data'].get('text', '')}'")
+                
+                # Add agent response to conversation history
+                response_text = matching_intent["flow_data"].get("text", "")
+                add_agent_response_to_history(flow_state, response_text)
+                
+                return {
+                    "type": "flow_started",
+                    "flow_name": matching_intent["intent"],
+                    "response": response_text,
+                    "next_step": matching_intent["flow_data"].get("next_flow")
+                }
         else:
             # No matching intent, use FAQ bot
-            logger.info("FLOW_MANAGEMENT: LLM found no matching intent, using FAQ bot")
+            logger.info("FLOW_MANAGEMENT: ❌ LLM found no matching intent, using FAQ bot")
             print_flow_status(room_name, flow_state, "❌ NO INTENT FOUND", "Using FAQ bot fallback")
             return await get_faq_response(user_message, flow_state=flow_state)
     
@@ -995,7 +1057,11 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     
     # We're in a flow, get next step
     print_flow_status(room_name, flow_state, "PROGRESSING IN FLOW", f"User response: '{user_message}'")
+    logger.info(f"FLOW_MANAGEMENT: Current flow: {flow_state.current_flow}, Current step: {flow_state.current_step}")
+    
     next_step = get_next_flow_step(flow_state, user_message)
+    logger.info(f"FLOW_MANAGEMENT: Next step result: {next_step}")
+    
     if next_step:
         old_step = flow_state.current_step
         flow_state.current_step = next_step["step_name"]
@@ -1041,6 +1107,10 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
 async def get_faq_response(user_message: str, bot_id: str = None, flow_state: FlowState = None) -> Dict[str, Any]:
     """Get response from FAQ bot - supports dynamic bot IDs"""
     try:
+        logger.info(f"FAQ_RESPONSE: Called with message: '{user_message}', bot_id: {bot_id}")
+        if flow_state:
+            logger.info(f"FAQ_RESPONSE: Flow state - current_flow: {flow_state.current_flow}, current_step: {flow_state.current_step}")
+        
         # Use provided bot_id or default from template or fallback
         default_bot_id = "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"
         if not bot_id:
@@ -1052,6 +1122,7 @@ async def get_faq_response(user_message: str, bot_id: str = None, flow_state: Fl
                         break
             bot_id = default_bot_id
         
+        logger.info(f"FAQ_RESPONSE: Using bot_id: {bot_id}")
         print(f"🤖 FAQ BOT CALL: Bot ID: {bot_id} | Question: '{user_message}'")
         
         async with httpx.AsyncClient() as client:
@@ -1204,6 +1275,27 @@ def get_flow_debug(room_name: str):
         "user_responses": flow_state.user_responses,
         "flow_data": flow_state.flow_data,
         "template_available": bot_template is not None
+    }
+
+@app.post("/api/test_intent_detection")
+async def test_intent_detection(request: Dict[str, Any]):
+    """Test intent detection with a sample message"""
+    user_message = request.get("message", "")
+    conversation_history = request.get("conversation_history", [])
+    
+    if not conversation_history:
+        conversation_history = [{"role": "user", "content": user_message}]
+    
+    logger.info(f"TEST_INTENT: Testing intent detection for message: '{user_message}'")
+    logger.info(f"TEST_INTENT: Conversation history: {conversation_history}")
+    
+    result = await detect_flow_intent_with_llm_from_conversation(conversation_history)
+    
+    return {
+        "user_message": user_message,
+        "conversation_history": conversation_history,
+        "detected_intent": result,
+        "available_intents": list(bot_template.get("data", {}).keys()) if bot_template else []
     }
 
 # Initialize bot template on startup

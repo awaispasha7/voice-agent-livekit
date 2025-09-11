@@ -53,14 +53,22 @@ class DynamicVoiceAgent {
         const trimmed = message.trim();
         
         // Very short messages might be incomplete
-        if (trimmed.length < 3) return true;
+        if (trimmed.length < 5) return true;
         
         // Messages ending with common incomplete patterns
         const incompletePatterns = [
             /^(hey|hi|hello|can you|i want|i need|tell me|what is|how do|where is|when is|why is|who is)\s*$/i,
             /^(can you|tell me|what|how|where|when|why|who)\s*$/i,
             /^(i think|i believe|i want|i need|i would|i should|i could|i might)\s*$/i,
-            /^(sure|okay|yes|no|maybe|well|so|but|and|or)\s*$/i
+            /^(sure|okay|yes|no|maybe|well|so|but|and|or)\s*$/i,
+            // New patterns for partial sentences
+            /^(okay\.?\s*scott,?)\s*$/i,
+            /^(okay\.?\s*scott,?\s*i\s*wanted\s*to\s*know\s*about)\s*$/i,
+            /^(okay\.?\s*scott,?\s*i\s*wanted\s*to\s*know\s*about\s*the\s*weather\s*update)\s*$/i,
+            // General patterns for incomplete sentences
+            /^(okay\.?\s*[a-z]+,?\s*)$/i,
+            /^(okay\.?\s*[a-z]+,?\s*i\s*wanted\s*to\s*know\s*about)\s*$/i,
+            /^(okay\.?\s*[a-z]+,?\s*i\s*wanted\s*to\s*know\s*about\s*[a-z]+\s*update)\s*$/i
         ];
         
         return incompletePatterns.some(pattern => pattern.test(trimmed));
@@ -431,10 +439,18 @@ class DynamicVoiceAgent {
             const messageHash = this.hashMessage(transcriptText);
             const currentTime = Date.now();
             
-            // Check if we've already processed this exact message recently (within 2 seconds)
+            // Check if we've already processed this exact message recently (within 3 seconds)
             if (this.processedMessages.has(messageHash) || 
-                (this.lastProcessedMessage === transcriptText && (currentTime - this.lastProcessedTime) < 2000)) {
+                (this.lastProcessedMessage === transcriptText && (currentTime - this.lastProcessedTime) < 3000)) {
                 console.log('🔄 Skipping duplicate message processing:', transcriptText);
+                return;
+            }
+            
+            // Also check if this is a partial version of a message we already processed
+            if (this.lastProcessedMessage && 
+                this.lastProcessedMessage.includes(transcriptText) && 
+                (currentTime - this.lastProcessedTime) < 3000) {
+                console.log('🔄 Skipping partial message processing:', transcriptText);
                 return;
             }
             
