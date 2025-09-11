@@ -184,7 +184,7 @@ Current conversation stage: {self.conversation_stage}
 """
 
     async def conversation_item_added(self, event):
-        """Handle conversation item added events for transcript logging"""
+        """Handle conversation item added events - COMPLETE LLM BYPASS"""
         try:
             # Check if this is a user message (speech-to-text result)
             if event.item.role == "user" and event.item.content:
@@ -204,10 +204,10 @@ Current conversation stage: {self.conversation_stage}
                     await self.handle_conversation_end(user_message)
                     return
                 
-                # Process through flow system
-                logger.info(f"FLOW_PROCESSING: Starting flow processing for: '{user_message}'")
+                # BYPASS LLM COMPLETELY - Process through flow system only
+                logger.info(f"FLOW_ROUTER: Bypassing LLM, processing through flow system: '{user_message}'")
                 await self.process_user_message_through_flow(user_message)
-                logger.info(f"FLOW_PROCESSING: Completed flow processing for: '{user_message}'")
+                logger.info(f"FLOW_ROUTER: Flow processing completed: '{user_message}'")
             
             # Check if this is an assistant response
             elif event.item.role == "assistant" and event.item.content:
@@ -315,30 +315,23 @@ Current conversation stage: {self.conversation_stage}
             logger.error(f"Error handling flow result: {e}")
 
     async def generate_flow_response(self, response_text: str):
-        """Generate a response using the flow text"""
+        """Generate a response using the flow text - DIRECT RESPONSE"""
         try:
-            if hasattr(self, 'agent_session') and self.agent_session:
-                logger.info(f"FLOW_RESPONSE: About to generate response: '{response_text}'")
-                # Use a more direct instruction to ensure the exact text is spoken
-                await self.agent_session.generate_reply(
-                    instructions=f"You must say exactly this and nothing else: '{response_text}'. Do not add any additional context or explanations."
-                )
-                logger.info(f"FLOW_RESPONSE: Generated response: '{response_text}'")
-            else:
-                logger.warning("No agent session available for response generation")
+            logger.info(f"FLOW_RESPONSE: Sending flow response: '{response_text}'")
+            # Send response directly without LLM processing
+            await self.send_agent_transcript(response_text)
+            logger.info(f"FLOW_RESPONSE: Flow response sent directly: '{response_text}'")
         except Exception as e:
             logger.error(f"Error generating flow response: {e}")
 
     async def handle_fallback_response(self, user_message: str):
-        """Handle fallback response when flow processing fails"""
+        """Handle fallback response when flow processing fails - DIRECT RESPONSE"""
         try:
             fallback_response = "I'm sorry, I'm having trouble processing your request. Let me connect you to a human agent who can help you better."
             
-            if hasattr(self, 'agent_session') and self.agent_session:
-                await self.agent_session.generate_reply(
-                    instructions=f"Say exactly: '{fallback_response}'"
-                )
-                logger.info(f"FALLBACK_RESPONSE: Generated fallback response")
+            # Send response directly without LLM processing
+            await self.send_agent_transcript(fallback_response)
+            logger.info(f"FALLBACK_RESPONSE: Generated fallback response directly")
         except Exception as e:
             logger.error(f"Error generating fallback response: {e}")
     
@@ -419,10 +412,9 @@ Examples:
 - "You're all set! Thanks for calling Alive5 and have a wonderful day."
 """
             
-            # Send farewell message through the agent session
-            if hasattr(self, 'agent_session') and self.agent_session:
-                await self.agent_session.generate_reply(instructions=farewell_instructions)
-                logger.info(f"FAREWELL: Sent goodbye message for session {self.session_id}")
+            # Send farewell message directly
+            await self.send_agent_transcript(farewell_instructions)
+            logger.info(f"FAREWELL: Sent goodbye message for session {self.session_id}")
                 
                 # Wait a moment for the farewell to be delivered
                 await asyncio.sleep(2)
@@ -451,22 +443,28 @@ Examples:
             logger.error(f"Error sending disconnection signal: {e}")
 
     async def generate_reply(self, instructions: str = None):
-        """Override generate_reply to COMPLETELY BLOCK automatic responses"""
+        """STRICT ROUTER - Only respond to flow system, never LLM"""
         try:
-            # Only allow responses from flow system with specific keywords
+            # ONLY allow responses from flow system with specific keywords
             if instructions and ("You must say exactly this" in instructions or "Say exactly" in instructions):
-                logger.info(f"GENERATE_REPLY: ✅ FLOW SYSTEM REQUEST: '{instructions}'")
-                # Call the parent generate_reply method
-                result = await super().generate_reply(instructions)
+                logger.info(f"FLOW_ROUTER: ✅ FLOW SYSTEM RESPONSE: '{instructions}'")
                 
-                # If we have a response, send it as agent transcript
-                if result and hasattr(result, 'content'):
-                    await self.send_agent_transcript(result.content)
+                # Extract the exact text to say
+                if "You must say exactly this" in instructions:
+                    response_text = instructions.split("You must say exactly this: '")[1].split("'")[0]
+                elif "Say exactly" in instructions:
+                    response_text = instructions.split("Say exactly: '")[1].split("'")[0]
+                else:
+                    response_text = instructions
                 
-                return result
+                # Send the exact response WITHOUT calling LLM
+                await self.send_agent_transcript(response_text)
+                logger.info(f"FLOW_ROUTER: Sent exact response: '{response_text}'")
+                
+                return response_text
             else:
-                # COMPLETELY BLOCK all automatic responses
-                logger.info(f"GENERATE_REPLY: 🚫 BLOCKED AUTOMATIC RESPONSE: '{instructions}'")
+                # COMPLETELY BLOCK all other responses
+                logger.info(f"FLOW_ROUTER: 🚫 BLOCKED LLM RESPONSE: '{instructions}'")
                 return None
         except Exception as e:
             logger.error(f"Error in generate_reply: {e}")
@@ -596,12 +594,11 @@ async def entrypoint(ctx: JobContext):
         
         logger.info(f"Flow-based agent session started for {session_id}")
         
-        # Initial greeting
+        # Initial greeting - DIRECT RESPONSE
         greeting_message = "Hello! I'm Scott from Alive5. How can I help you today?"
         
-        await agent_session.generate_reply(
-            instructions=f"Say exactly: '{greeting_message}'"
-        )
+        # Send greeting directly without LLM processing
+        await assistant.send_agent_transcript(greeting_message)
         
         logger.info(f"Initial greeting sent for session {session_id}")
         
