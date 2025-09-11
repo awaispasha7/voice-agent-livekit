@@ -1078,9 +1078,45 @@ class DynamicVoiceAgent {
     }
     
     async reconnect() {
-        if (!this.isConnected) {
+        try {
+            // Show reconnecting status
+            this.showStatus('🔄 Reconnecting... Please wait', 'connecting');
+            
+            // Clean up existing connection
+            if (this.room) {
+                try {
+                    await this.room.disconnect();
+                } catch (e) {
+                    console.warn('Error disconnecting during reconnect:', e);
+                }
+                this.room = null;
+            }
+            
+            // Reset connection state
+            this.isConnected = false;
             this.connectionAttempts = 0;
+            
+            // Clear any existing retry buttons
+            const existingRetryBtn = document.querySelector('.retry-btn');
+            if (existingRetryBtn) {
+                existingRetryBtn.remove();
+            }
+            
+            // Clear worker timeout
+            if (this.workerTimeout) {
+                clearTimeout(this.workerTimeout);
+                this.workerTimeout = null;
+            }
+            
+            // Hide controls
+            this.hideControls();
+            
+            // Reconnect
             await this.joinRoom();
+            
+        } catch (error) {
+            console.error('Reconnection failed:', error);
+            this.showStatus(`Reconnection failed: ${error.message}`, 'error');
         }
     }
     
@@ -1115,16 +1151,39 @@ class DynamicVoiceAgent {
             `, 'error');
             
             // Add a retry button
-            const retryBtn = document.createElement('button');
-            retryBtn.textContent = '🔄 Retry Connection';
-            retryBtn.className = 'retry-btn';
-            retryBtn.onclick = () => {
-                this.reconnect();
-            };
-            
-            const statusEl = document.getElementById('status');
-            statusEl.appendChild(retryBtn);
+            this.addRetryButton();
         }
+    }
+    
+    addRetryButton() {
+        // Remove existing retry button if any
+        const existingRetryBtn = document.querySelector('.retry-btn');
+        if (existingRetryBtn) {
+            existingRetryBtn.remove();
+        }
+        
+        // Add new retry button
+        const retryBtn = document.createElement('button');
+        retryBtn.textContent = '🔄 Retry Connection';
+        retryBtn.className = 'retry-btn';
+        retryBtn.onclick = async () => {
+            // Disable button and show loading
+            retryBtn.disabled = true;
+            retryBtn.textContent = '🔄 Retrying...';
+            retryBtn.style.opacity = '0.6';
+            
+            try {
+                await this.reconnect();
+            } catch (error) {
+                // Re-enable button if reconnection fails
+                retryBtn.disabled = false;
+                retryBtn.textContent = '🔄 Retry Connection';
+                retryBtn.style.opacity = '1';
+            }
+        };
+        
+        const statusEl = document.getElementById('status');
+        statusEl.appendChild(retryBtn);
     }
     
     handleWorkerStatus(statusData) {
@@ -1146,6 +1205,9 @@ class DynamicVoiceAgent {
                     ${message}<br>
                     <small>Worker is trying to reconnect automatically...</small>
                 `, 'warning');
+                
+                // Add retry button for manual retry
+                this.addRetryButton();
                 break;
                 
             case 'retrying':
@@ -1170,6 +1232,9 @@ class DynamicVoiceAgent {
                     ${message}<br>
                     <small>Please refresh the page and try again</small>
                 `, 'error');
+                
+                // Add retry button for manual retry
+                this.addRetryButton();
                 break;
                 
             default:
