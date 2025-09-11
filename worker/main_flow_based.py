@@ -58,6 +58,25 @@ for var in required_vars:
 # Global session tracking
 active_sessions = {}
 
+# Backend configuration
+BACKEND_URL = "https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com"
+BACKEND_TIMEOUT = 10  # seconds
+
+async def check_backend_health() -> bool:
+    """Check if the backend is accessible"""
+    try:
+        async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
+            response = await client.get(f"{BACKEND_URL}/health")
+            if response.status_code == 200:
+                logger.info("✅ Backend health check passed")
+                return True
+            else:
+                logger.warning(f"⚠️ Backend health check failed: {response.status_code}")
+                return False
+    except Exception as e:
+        logger.error(f"❌ Backend health check failed: {str(e)}")
+        return False
+
 class FlowBasedAssistant(Agent):
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
@@ -147,13 +166,20 @@ Current conversation stage: {self.conversation_stage}
     async def process_user_message_through_flow(self, user_message: str):
         """Process user message through the flow system"""
         try:
+            # Check backend health first
+            backend_healthy = await check_backend_health()
+            if not backend_healthy:
+                logger.warning("Backend not accessible, using fallback response")
+                await self.handle_fallback_response(user_message)
+                return
+            
             # Get room name from the room object
             room_name = self.room.name if self.room else "unknown"
             
             # Call the backend flow processing endpoint
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
                 response = await client.post(
-                    "https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/process_flow_message",
+                    f"{BACKEND_URL}/api/process_flow_message",
                     headers={
                         "Content-Type": "application/json",
                     },
@@ -392,6 +418,15 @@ async def entrypoint(ctx: JobContext):
     if room_name in active_sessions:
         logger.warning(f"Room {room_name} already has an active session. Skipping.")
         return
+    
+    # Check backend health before starting
+    logger.info("🔍 Checking backend health before starting worker...")
+    backend_healthy = await check_backend_health()
+    if not backend_healthy:
+        logger.error("❌ Backend is not accessible. Worker will start but may not function properly.")
+        logger.error("💡 Please ensure the backend is running and accessible.")
+    else:
+        logger.info("✅ Backend health check passed. Worker ready to start.")
         
     active_sessions[room_name] = session_id
     logger.info(f"Starting flow-based agent session {session_id} in room: {room_name}")

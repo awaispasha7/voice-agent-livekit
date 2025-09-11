@@ -158,6 +158,11 @@ class DynamicVoiceAgent {
             this.showControls();
             this.initializeConversationLog();
             
+            // Set up worker response timeout
+            this.workerTimeout = setTimeout(() => {
+                this.checkWorkerResponse();
+            }, 20000); // 20 seconds timeout
+            
         } catch (error) {
             console.error('Connection failed:', error);
             this.showStatus(`Connection failed: ${error.message}`, 'error');
@@ -1076,6 +1081,38 @@ class DynamicVoiceAgent {
     
     showControls() {
         document.getElementById('controls').classList.add('show');
+    }
+    
+    checkWorkerResponse() {
+        // Check if we've received any agent responses
+        const hasAgentResponse = this.conversationLog.some(log => 
+            log.type === 'agent' || log.sender === 'Scott'
+        );
+        
+        if (!hasAgentResponse) {
+            this.showStatus(`
+                ⚠️ Worker Connection Issue<br>
+                The voice agent is not responding. This may be due to:<br>
+                • Backend server not running<br>
+                • Worker initialization timeout<br>
+                • Network connectivity issues<br><br>
+                <strong>Please try:</strong><br>
+                1. Refresh the page and try again<br>
+                2. Check if the backend is running<br>
+                3. Contact support if the issue persists
+            `, 'error');
+            
+            // Add a retry button
+            const retryBtn = document.createElement('button');
+            retryBtn.textContent = '🔄 Retry Connection';
+            retryBtn.className = 'retry-btn';
+            retryBtn.onclick = () => {
+                this.reconnect();
+            };
+            
+            const statusEl = document.getElementById('status');
+            statusEl.appendChild(retryBtn);
+        }
     }
     
     hideControls() {
