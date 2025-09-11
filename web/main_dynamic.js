@@ -567,16 +567,24 @@ class DynamicVoiceAgent {
     async sendTranscriptForFlowProcessing(transcript) {
         try {
             // Send conversation history to backend for flow processing
+            const requestData = {
+                room_name: this.currentRoomName,
+                user_message: transcript,
+                conversation_history: this.conversationHistory
+            };
+            
+            console.log('📤 Sending to backend:', {
+                user_message: transcript,
+                conversation_history_length: this.conversationHistory.length,
+                conversation_history: this.conversationHistory
+            });
+            
             const response = await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/process_flow_message', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    room_name: this.currentRoomName,
-                    user_message: transcript,
-                    conversation_history: this.conversationHistory
-                })
+                body: JSON.stringify(requestData)
             });
             
             if (response.ok) {
