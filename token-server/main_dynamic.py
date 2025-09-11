@@ -101,7 +101,7 @@ class FlowResponse(BaseModel):
     current_flow_state: Optional[FlowState] = None
 
 async def detect_intent_with_llm(user_message: str) -> Optional[str]:
-    """Detect user intent using OpenAI LLM"""
+    """Detect user intent using OpenAI LLM (Legacy - for backward compatibility)"""
     if not user_message or user_message.strip() == "":
         logger.warning("Empty user message, skipping intent detection")
         return None
@@ -150,6 +150,80 @@ Respond with ONLY one word (the intent): sales, support, or billing.
             
     except Exception as e:
         logger.error(f"INTENT_DETECTION: Error using LLM: {e}")
+        return None
+
+async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, Any]]:
+    """Detect user intent using OpenAI LLM and map to Alive5 template flows"""
+    if not user_message or user_message.strip() == "":
+        logger.warning("Empty user message, skipping flow intent detection")
+        return None
+    
+    if not bot_template or not bot_template.get("data"):
+        logger.warning("No bot template available for flow intent detection")
+        return None
+        
+    try:
+        # Build available intents from template
+        available_intents = []
+        intent_mapping = {}
+        
+        for flow_key, flow_data in bot_template["data"].items():
+            if flow_data.get("type") == "intent_bot":
+                intent_text = flow_data.get("text", "")
+                available_intents.append(intent_text)
+                intent_mapping[intent_text.lower()] = {
+                    "flow_key": flow_key,
+                    "flow_data": flow_data,
+                    "intent": intent_text
+                }
+        
+        if not available_intents:
+            logger.warning("No intent_bot flows found in template")
+            return None
+        
+        # Create LLM prompt with available intents
+        intent_list = ", ".join(available_intents)
+        prompt = f"""
+You are an intent classifier for a customer service AI.
+Classify the following user message into exactly one of these available intents: {intent_list}
+
+User message: "{user_message}"
+
+Respond with ONLY the exact intent name from the list above, or "none" if no intent matches.
+"""
+        
+        logger.info(f"FLOW_INTENT_DETECTION: Analyzing message: '{user_message}' for intents: {intent_list}")
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are an intent classifier. Respond with exactly one intent name or 'none'."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0,
+            max_tokens=20
+        )
+        
+        detected_intent = response.choices[0].message.content.strip().lower()
+        logger.info(f"FLOW_INTENT_DETECTION: Raw response from OpenAI: '{detected_intent}'")
+        
+        # Check if detected intent matches any available intent
+        for intent_name, intent_data in intent_mapping.items():
+            if detected_intent == intent_name.lower() or detected_intent in intent_name.lower():
+                logger.info(f"FLOW_INTENT_DETECTION: Successfully detected '{intent_name}' from: '{user_message}'")
+                return intent_data
+        
+        # If no exact match, try partial matching
+        for intent_name, intent_data in intent_mapping.items():
+            if any(word in detected_intent for word in intent_name.lower().split()):
+                logger.info(f"FLOW_INTENT_DETECTION: Partial match detected '{intent_name}' from: '{user_message}'")
+                return intent_data
+        
+        logger.info(f"FLOW_INTENT_DETECTION: No matching intent found for: '{user_message}'")
+        return None
+            
+    except Exception as e:
+        logger.error(f"FLOW_INTENT_DETECTION: Error using LLM: {e}")
         return None
 
 def extract_user_data(message: str) -> Dict[str, Any]:
@@ -630,26 +704,7 @@ async def initialize_bot_template():
         logger.error(f"FLOW_MANAGEMENT: Failed to initialize bot template: {str(e)}")
         return None
 
-def find_matching_intent(user_message: str) -> Optional[Dict[str, Any]]:
-    """Find matching intent in the bot template based on user message"""
-    if not bot_template or not bot_template.get("data"):
-        return None
-    
-    user_lower = user_message.lower()
-    
-    # Check each flow for intent matches
-    for flow_key, flow_data in bot_template["data"].items():
-        if flow_data.get("type") == "intent_bot":
-            intent_text = flow_data.get("text", "").lower()
-            if intent_text in user_lower or any(word in user_lower for word in intent_text.split()):
-                logger.info(f"FLOW_MANAGEMENT: Found matching intent: {intent_text}")
-                return {
-                    "flow_key": flow_key,
-                    "flow_data": flow_data,
-                    "intent": intent_text
-                }
-    
-    return None
+# Removed find_matching_intent - now using LLM-based detection
 
 def get_next_flow_step(current_flow_state: FlowState, user_response: str = None) -> Optional[Dict[str, Any]]:
     """Get the next step in the current flow - fully dynamic"""
@@ -726,15 +781,15 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
     
     flow_state = flow_states[room_name]
     
-    # If no current flow, try to find matching intent
+    # If no current flow, try to find matching intent using LLM
     if not flow_state.current_flow:
-        matching_intent = find_matching_intent(user_message)
+        matching_intent = await detect_flow_intent_with_llm(user_message)
         if matching_intent:
             flow_state.current_flow = matching_intent["flow_key"]
             flow_state.current_step = matching_intent["flow_data"]["name"]
             flow_state.flow_data = matching_intent["flow_data"]
             
-            logger.info(f"FLOW_MANAGEMENT: Started flow {flow_state.current_flow} for intent: {matching_intent['intent']}")
+            logger.info(f"FLOW_MANAGEMENT: LLM started flow {flow_state.current_flow} for intent: {matching_intent['intent']}")
             
             return {
                 "type": "flow_started",
@@ -744,8 +799,25 @@ async def process_flow_message(room_name: str, user_message: str) -> Dict[str, A
             }
         else:
             # No matching intent, use FAQ bot
-            logger.info("FLOW_MANAGEMENT: No matching intent found, using FAQ bot")
+            logger.info("FLOW_MANAGEMENT: LLM found no matching intent, using FAQ bot")
             return await get_faq_response(user_message)
+    
+    # Check for intent shift even when in a flow using LLM
+    matching_intent = await detect_flow_intent_with_llm(user_message)
+    if matching_intent and matching_intent["flow_key"] != flow_state.current_flow:
+        # User shifted to a different intent - start new flow
+        logger.info(f"FLOW_MANAGEMENT: LLM detected intent shift from {flow_state.current_flow} to {matching_intent['flow_key']}")
+        flow_state.current_flow = matching_intent["flow_key"]
+        flow_state.current_step = matching_intent["flow_data"]["name"]
+        flow_state.flow_data = matching_intent["flow_data"]
+        flow_state.user_responses = {}  # Reset user responses for new flow
+        
+        return {
+            "type": "flow_started",
+            "flow_name": matching_intent["intent"],
+            "response": f"I understand you want to know about {matching_intent['intent']}. {matching_intent['flow_data'].get('text', '')}",
+            "next_step": matching_intent["flow_data"].get("next_flow")
+        }
     
     # We're in a flow, get next step
     next_step = get_next_flow_step(flow_state, user_message)
