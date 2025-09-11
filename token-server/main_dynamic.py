@@ -193,6 +193,26 @@ async def detect_flow_intent_with_llm_from_conversation(conversation_history: Li
         
         # Create LLM prompt with conversation context
         intent_list = ", ".join(available_intents)
+        
+        # Build dynamic intent descriptions for the LLM
+        intent_descriptions = []
+        for intent_name in available_intents:
+            # Create a more descriptive prompt based on the intent name
+            intent_lower = intent_name.lower()
+            if any(word in intent_lower for word in ['weather', 'climate', 'forecast']):
+                description = f'   - "{intent_name}" intent: Look for weather-related keywords like weather, temperature, forecast, climate, rain, snow, sunny, etc.'
+            elif any(word in intent_lower for word in ['price', 'cost', 'billing', 'plan']):
+                description = f'   - "{intent_name}" intent: Look for pricing-related keywords like price, cost, billing, plan, subscription, etc.'
+            elif any(word in intent_lower for word in ['agent', 'human', 'representative', 'support']):
+                description = f'   - "{intent_name}" intent: Look for agent-related keywords like agent, human, representative, speak to someone, talk to someone, etc.'
+            else:
+                # Generic description for any other intent
+                description = f'   - "{intent_name}" intent: Look for keywords and phrases related to {intent_name.lower()}'
+            
+            intent_descriptions.append(description)
+        
+        intent_descriptions_text = "\n".join(intent_descriptions)
+        
         prompt = f"""
 You are an intent classifier for a customer service AI. Analyze the ENTIRE conversation to understand the user's true intent.
 
@@ -203,11 +223,15 @@ CONVERSATION HISTORY:
 
 Based on the full conversation context, classify the user's intent into exactly one of these available intents: {intent_list}
 
-Consider:
-- The overall topic the user is discussing
-- Any questions they've asked
-- The context of their requests
-- How their intent might have evolved during the conversation
+IMPORTANT RULES:
+1. Look for keywords related to each intent:
+{intent_descriptions_text}
+
+2. Consider the overall topic the user is discussing
+3. Look at any questions they've asked
+4. Consider the context of their requests
+5. How their intent might have evolved during the conversation
+6. Match the user's request to the most appropriate intent based on the intent name and context
 
 Respond with ONLY the exact intent name from the list above, or "none" if no intent matches.
 """
@@ -232,17 +256,51 @@ Respond with ONLY the exact intent name from the list above, or "none" if no int
         detected_intent = response.choices[0].message.content.strip().lower()
         logger.info(f"CONVERSATION_INTENT_DETECTION: Raw response from OpenAI: '{detected_intent}'")
         
-        # Check if detected intent matches any available intent
+        # Dynamic intent matching - works with any intent names
+        def calculate_similarity(text1, text2):
+            """Calculate similarity between two text strings"""
+            text1_lower = text1.lower().strip()
+            text2_lower = text2.lower().strip()
+            
+            # Exact match
+            if text1_lower == text2_lower:
+                return 1.0
+            
+            # One contains the other
+            if text1_lower in text2_lower or text2_lower in text1_lower:
+                return 0.8
+            
+            # Word overlap
+            words1 = set(text1_lower.split())
+            words2 = set(text2_lower.split())
+            if words1 and words2:
+                overlap = len(words1.intersection(words2))
+                return overlap / max(len(words1), len(words2))
+            
+            return 0.0
+        
+        # Try exact matches first
         for intent_name, intent_data in intent_mapping.items():
-            if detected_intent == intent_name.lower() or detected_intent in intent_name.lower():
-                logger.info(f"CONVERSATION_INTENT_DETECTION: Successfully detected '{intent_name}' from conversation context")
+            if detected_intent == intent_name.lower():
+                logger.info(f"CONVERSATION_INTENT_DETECTION: Exact match detected '{intent_name}' from conversation context")
                 return intent_data
         
-        # If no exact match, try partial matching
+        # Try similarity matching
+        best_match = None
+        best_similarity = 0.0
+        similarity_threshold = 0.3  # Adjust this threshold as needed
+        
         for intent_name, intent_data in intent_mapping.items():
-            if any(word in detected_intent for word in intent_name.lower().split()):
-                logger.info(f"CONVERSATION_INTENT_DETECTION: Partial match detected '{intent_name}' from conversation context")
-                return intent_data
+            similarity = calculate_similarity(detected_intent, intent_name)
+            logger.info(f"CONVERSATION_INTENT_DETECTION: Similarity between '{detected_intent}' and '{intent_name}': {similarity}")
+            
+            if similarity > best_similarity and similarity >= similarity_threshold:
+                best_similarity = similarity
+                best_match = intent_data
+        
+        if best_match:
+            logger.info(f"CONVERSATION_INTENT_DETECTION: Best match detected with similarity {best_similarity}")
+            return best_match
         
         logger.info(f"CONVERSATION_INTENT_DETECTION: No matching intent found in conversation context")
         return None
