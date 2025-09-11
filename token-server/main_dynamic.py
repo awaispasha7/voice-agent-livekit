@@ -213,6 +213,11 @@ Respond with ONLY the exact intent name from the list above, or "none" if no int
 """
         
         logger.info(f"CONVERSATION_INTENT_DETECTION: Analyzing conversation with {len(conversation_history)} messages for intents: {intent_list}")
+        logger.info(f"CONVERSATION_INTENT_DETECTION: Available intents: {available_intents}")
+        logger.info(f"CONVERSATION_INTENT_DETECTION: Intent mapping: {intent_mapping}")
+        logger.info(f"CONVERSATION_INTENT_DETECTION: Conversation context:\n{conversation_context}")
+        logger.info(f"CONVERSATION_INTENT_DETECTION: Full prompt:\n{prompt}")
+        
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -874,7 +879,11 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     # If no current flow, try to find matching intent using LLM with conversation context
     if not flow_state.current_flow:
         print_flow_status(room_name, flow_state, "SEARCHING FOR INTENT", f"Analyzing conversation with {len(flow_state.conversation_history)} messages")
+        logger.info(f"FLOW_MANAGEMENT: Bot template available: {bot_template is not None}")
+        if bot_template:
+            logger.info(f"FLOW_MANAGEMENT: Bot template data keys: {list(bot_template.get('data', {}).keys())}")
         matching_intent = await detect_flow_intent_with_llm_from_conversation(flow_state.conversation_history)
+        logger.info(f"FLOW_MANAGEMENT: Intent detection result: {matching_intent}")
         if matching_intent:
             flow_state.current_flow = matching_intent["flow_key"]
             flow_state.current_step = matching_intent["flow_data"]["name"]
