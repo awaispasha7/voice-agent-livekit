@@ -89,6 +89,11 @@ class GetFAQResponseRequest(BaseModel):
     bot_id: str
     faq_question: str
 
+class ProcessFlowMessageRequest(BaseModel):
+    room_name: str
+    user_message: str
+    conversation_history: List[Dict[str, str]] = Field(default_factory=list)
+
 # Flow management models
 class FlowState(BaseModel):
     current_flow: Optional[str] = None
@@ -1092,7 +1097,7 @@ async def get_faq_response(user_message: str, bot_id: str = None, flow_state: Fl
 
 # New Flow-based Processing Endpoint
 @app.post("/api/process_flow_message")
-async def process_flow_message_endpoint(request: FlowResponse):
+async def process_flow_message_endpoint(request: ProcessFlowMessageRequest):
     """Process user message through the new flow system"""
     try:
         room_name = request.room_name

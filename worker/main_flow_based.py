@@ -60,9 +60,9 @@ active_sessions = {}
 
 # Backend configuration
 BACKEND_URL = "https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com"
-BACKEND_TIMEOUT = 10  # seconds
-BACKEND_RETRY_INTERVAL = 30  # seconds
-BACKEND_MAX_RETRIES = 10  # maximum retry attempts
+BACKEND_TIMEOUT = 15  # Increased timeout
+BACKEND_RETRY_INTERVAL = 30
+BACKEND_MAX_RETRIES = 10
 
 async def check_backend_health() -> bool:
     """Check if the backend is accessible"""
@@ -148,10 +148,12 @@ class FlowBasedAssistant(Agent):
         self.conversation_stage = "greeting"
         self.transcripts: list[str] = []
         self.full_transcript: str = ""
-        self.room = None  # Will be set by entrypoint
+        self.room = None
         self.current_flow_state = None
-        self.retry_manager = None  # Will be set after room is available
-        self.backend_healthy = None  # Will be set during initialization
+        self.retry_manager = None
+        self.backend_healthy = None
+        self.greeting_sent = False  # Track if greeting has been sent
+        self.conversation_history = []  # Track full conversation
         
         super().__init__(instructions=self._get_instructions())
 
@@ -160,324 +162,277 @@ class FlowBasedAssistant(Agent):
         return f"""
 You are Scott, the AI voice assistant for Alive5 Support (Session: {self.session_id}). 
 
-CRITICAL: You are now using a FLOW-BASED system. DO NOT respond to user messages automatically.
+CRITICAL FLOW-BASED OPERATION:
+- You are operating in FLOW-CONTROLLED mode
+- Do NOT generate automatic responses to user messages
+- ONLY respond when explicitly instructed by the flow system
+- Wait for flow processing to provide exact response text
 
 RESPONSE PROTOCOL:
-- ONLY respond when you receive explicit instructions starting with "You must say exactly this"
-- DO NOT generate your own responses to user questions
-- WAIT for the flow system to provide the exact response
-- When given explicit instructions, say exactly what you're told
+1. User speaks → Transcription captured
+2. Backend processes through flow system
+3. Flow system returns exact response text
+4. You speak ONLY that exact text
 
-FLOW SYSTEM:
-- The backend processes user messages and determines the correct response
-- You will receive specific instructions for each response
-- Follow these instructions exactly without adding your own content
+PERSONALITY when instructed to respond:
+- Professional, helpful, empathetic
+- Clear, warm, engaging voice
+- Simple, jargon-free language
+- Concise but complete responses
 
-TONE: Professional, helpful, empathetic, and conversational when instructed
-VOICE: Clear, warm, engaging
-LANGUAGE: Simple, jargon-free, concise responses
-AVOID: Automatic responses, adding extra content, technical jargon
+IMPORTANT: Never add extra content or modify flow responses.
 
-IMPORTANT: Do not respond to user questions on your own. Wait for explicit instructions.
-
-Current conversation stage: {self.conversation_stage}
+Current stage: {self.conversation_stage}
 """
 
     async def conversation_item_added(self, event):
-        """Handle conversation item added events - COMPLETE LLM BYPASS"""
+        """Handle conversation items with strict flow control"""
         try:
-            # Check if this is a user message (speech-to-text result)
             if event.item.role == "user" and event.item.content:
-                user_message = event.item.content
-                logger.info(f"TRANSCRIPT: User said: '{user_message}'")
+                user_message = event.item.content.strip()
+                if not user_message:
+                    return
+                    
+                logger.info(f"🎤 USER SPEECH: '{user_message}'")
                 
-                # Add to transcript history for context
-                self.transcripts.append(user_message)
-                if self.full_transcript:
-                    self.full_transcript += f"\nUser: {user_message}"
-                else:
-                    self.full_transcript = f"User: {user_message}"
+                # Add to conversation history
+                self.conversation_history.append({
+                    "role": "user", 
+                    "content": user_message,
+                    "timestamp": datetime.now().isoformat()
+                })
                 
-                # Check if user wants to end the conversation
+                # Check for conversation end
                 if self.should_end_conversation(user_message):
-                    logger.info(f"END_CONVERSATION: User indicated they want to end the call: '{user_message}'")
+                    logger.info(f"👋 FAREWELL DETECTED: '{user_message}'")
                     await self.handle_conversation_end(user_message)
                     return
                 
-                # BYPASS LLM COMPLETELY - Process through flow system only
-                logger.info(f"FLOW_ROUTER: Bypassing LLM, processing through flow system: '{user_message}'")
-                await self.process_user_message_through_flow(user_message)
-                logger.info(f"FLOW_ROUTER: Flow processing completed: '{user_message}'")
-            
-            # Check if this is an assistant response
-            elif event.item.role == "assistant" and event.item.content:
-                assistant_message = event.item.content
-                logger.info(f"TRANSCRIPT: Assistant said: '{assistant_message}'")
+                # Process through flow system ONLY
+                await self.process_through_flow_system(user_message)
                 
-                # Send assistant response as a separate transcription message
+            elif event.item.role == "assistant" and event.item.content:
+                # Track assistant responses
+                assistant_message = event.item.content.strip()
+                logger.info(f"🤖 ASSISTANT SPEECH: '{assistant_message}'")
+                
+                # Add to conversation history
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": assistant_message, 
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+                # Send to frontend for display
                 await self.send_agent_transcript(assistant_message)
                 
         except Exception as e:
-            logger.error(f"Error processing conversation item: {e}")
+            logger.error(f"Error in conversation_item_added: {e}")
 
-    async def process_user_message_through_flow(self, user_message: str):
-        """Process user message through the flow system"""
+    async def process_through_flow_system(self, user_message: str):
+        """Process user message strictly through backend flow system"""
         try:
-            # Check backend health first
+            # Check backend health
             backend_healthy = await check_backend_health()
             if not backend_healthy:
-                logger.warning("Backend not accessible, using fallback response")
+                logger.warning("❌ Backend not accessible")
                 await self.signal_worker_status("backend_down", "Backend server is not accessible")
                 
-                # Start retry loop if not already running
                 if self.retry_manager and not self.retry_manager.is_retrying:
                     await self.retry_manager.start_retry_loop()
                 
-                await self.handle_fallback_response(user_message)
+                await self.handle_backend_down_response()
                 return
             
-            # Get room name from the room object
             room_name = self.room.name if self.room else "unknown"
             
-            # Call the backend flow processing endpoint
+            # Send to backend flow processor with conversation history
+            logger.info(f"🔄 BACKEND REQUEST: Room={room_name}, Message='{user_message}'")
+            
             async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
+                payload = {
+                    "room_name": room_name,
+                    "user_message": user_message,
+                    "conversation_history": self.conversation_history[-10:]  # Last 10 messages
+                }
+                
                 response = await client.post(
                     f"{BACKEND_URL}/api/process_flow_message",
-                    headers={
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "room_name": room_name,
-                        "user_message": user_message
-                    }
+                    headers={"Content-Type": "application/json"},
+                    json=payload
                 )
                 
                 if response.status_code == 200:
                     flow_result = response.json()
-                    logger.info(f"FLOW_RESULT: {flow_result}")
-                    
-                    # Process the flow result
-                    await self.handle_flow_result(flow_result)
+                    logger.info(f"✅ FLOW RESULT: {flow_result}")
+                    await self.handle_flow_response(flow_result)
                 else:
-                    logger.error(f"Flow processing failed: {response.status_code} - {response.text}")
-                    # Fallback to simple response
-                    await self.handle_fallback_response(user_message)
+                    logger.error(f"❌ Backend error: {response.status_code} - {response.text}")
+                    await self.handle_backend_error_response()
                     
         except Exception as e:
-            logger.error(f"Error processing flow message: {e}")
-            # Fallback to simple response
-            await self.handle_fallback_response(user_message)
+            logger.error(f"❌ Flow processing error: {e}")
+            await self.handle_backend_error_response()
 
-    async def handle_flow_result(self, flow_result: Dict[str, Any]):
-        """Handle the result from the flow processing - fully dynamic"""
+    async def handle_flow_response(self, flow_result: Dict[str, Any]):
+        """Handle response from flow system and generate appropriate speech"""
         try:
             flow_data = flow_result.get("flow_result", {})
             flow_type = flow_data.get("type", "unknown")
             response_text = flow_data.get("response", "")
             
-            logger.info(f"FLOW_HANDLER: Processing flow type: {flow_type}")
-            logger.info(f"FLOW_HANDLER: Response text: '{response_text}'")
-            logger.info(f"FLOW_HANDLER: Full flow result: {flow_result}")
+            logger.info(f"🎯 PROCESSING FLOW TYPE: {flow_type}")
+            logger.info(f"📝 RESPONSE TEXT: '{response_text}'")
             
-            # Dynamic flow type handling - works with any flow type
+            if not response_text or response_text.strip() == "":
+                logger.warning("⚠️ Empty response from flow system")
+                return
+            
+            # Handle different flow types
             if flow_type == "flow_started":
-                # A new flow has started
                 flow_name = flow_data.get("flow_name", "Unknown")
-                logger.info(f"FLOW_STARTED: {flow_name}")
+                logger.info(f"🚀 FLOW STARTED: {flow_name}")
                 self.conversation_stage = f"flow_{flow_name.lower()}"
                 
-            elif flow_type == "agent_transfer" or flow_type == "agent":
-                # Transfer to human agent
-                logger.info("FLOW_AGENT_TRANSFER: Transferring to human agent")
-                if response_text:
-                    await self.generate_flow_response(response_text)
+            elif flow_type in ["agent_transfer", "agent"]:
+                logger.info("👥 AGENT TRANSFER REQUESTED")
+                # Generate response and then end conversation
+                await self.generate_speech_response(response_text)
                 await asyncio.sleep(3)
-                await self.handle_conversation_end("Agent transfer requested")
+                await self.handle_conversation_end("Agent transfer completed")
                 return
                 
-            elif flow_type == "error":
-                # Error occurred
-                logger.error("FLOW_ERROR: Error in flow processing")
+            elif flow_type == "faq_response":
+                logger.info("❓ FAQ RESPONSE")
+                self.conversation_stage = "faq_interaction"
                 
-            else:
-                # Handle any other flow type dynamically
-                logger.info(f"FLOW_DYNAMIC: Processing {flow_type} step")
-            
-            # Generate response for any flow type that has text
-            if response_text:
-                logger.info(f"FLOW_HANDLER: About to call generate_flow_response with: '{response_text}'")
-                await self.generate_flow_response(response_text)
-                logger.info(f"FLOW_HANDLER: generate_flow_response completed")
-            else:
-                logger.warning(f"FLOW_HANDLER: No response text for flow type: {flow_type}")
-                    
+            elif flow_type == "error":
+                logger.error("❌ FLOW ERROR")
+                
+            # Generate speech for any response with text
+            if response_text.strip():
+                await self.generate_speech_response(response_text)
+                
         except Exception as e:
-            logger.error(f"Error handling flow result: {e}")
+            logger.error(f"Error handling flow response: {e}")
 
-    async def generate_flow_response(self, response_text: str):
-        """Generate a response using the flow text - DIRECT RESPONSE"""
+    async def generate_speech_response(self, response_text: str):
+        """Generate speech response using the provided text"""
         try:
-            logger.info(f"FLOW_RESPONSE: Sending flow response: '{response_text}'")
-            # Send response directly without LLM processing
-            await self.send_agent_transcript(response_text)
-            logger.info(f"FLOW_RESPONSE: Flow response sent directly: '{response_text}'")
-        except Exception as e:
-            logger.error(f"Error generating flow response: {e}")
-
-    async def handle_fallback_response(self, user_message: str):
-        """Handle fallback response when flow processing fails - DIRECT RESPONSE"""
-        try:
-            fallback_response = "I'm sorry, I'm having trouble processing your request. Let me connect you to a human agent who can help you better."
+            logger.info(f"🗣️ GENERATING SPEECH: '{response_text}'")
             
-            # Send response directly without LLM processing
-            await self.send_agent_transcript(fallback_response)
-            logger.info(f"FALLBACK_RESPONSE: Generated fallback response directly")
+            # Create specific instructions for the LLM to say exactly what the flow dictated
+            flow_instructions = f"""
+You must respond with exactly this message from the flow system:
+
+"{response_text}"
+
+Say this naturally as Scott from Alive5, but do not add any additional content, questions, or modifications. 
+Speak exactly what is provided above.
+"""
+            
+            # Use the agent session to generate speech
+            if hasattr(self, 'agent_session') and self.agent_session:
+                await self.agent_session.generate_reply(flow_instructions)
+            else:
+                logger.error("No agent session available for speech generation")
+            
         except Exception as e:
-            logger.error(f"Error generating fallback response: {e}")
-    
-    async def signal_worker_status(self, status: str, message: str = ""):
-        """Signal worker status to frontend via room data"""
-        try:
-            if self.room:
-                # Send status as room metadata
-                await self.room.local_participant.set_metadata(json.dumps({
-                    "worker_status": status,
-                    "message": message,
-                    "timestamp": datetime.now().isoformat(),
-                    "session_id": self.session_id
-                }))
-                logger.info(f"WORKER_STATUS_SIGNAL: {status} - {message}")
-        except Exception as e:
-            logger.error(f"Error signaling worker status: {e}")
+            logger.error(f"Error generating speech response: {e}")
+
+    async def handle_backend_down_response(self):
+        """Handle response when backend is down"""
+        fallback_message = "I'm experiencing some technical difficulties. Let me connect you to a human agent who can help you right away."
+        await self.generate_speech_response(fallback_message)
+
+    async def handle_backend_error_response(self):
+        """Handle response when backend returns an error"""
+        error_message = "I apologize, but I'm having trouble processing your request. Let me connect you to one of our specialists who can assist you better."
+        await self.generate_speech_response(error_message)
 
     def should_end_conversation(self, user_message: str) -> bool:
-        """Check if user message indicates they want to end the conversation"""
+        """Enhanced farewell detection"""
         message_lower = user_message.lower().strip()
-        logger.info(f"FAREWELL_CHECK: Analyzing message: '{user_message}' -> '{message_lower}'")
         
-        # Common farewell phrases
-        farewell_phrases = [
-            # Direct goodbyes
-            "bye", "goodbye", "good bye", "see you", "see ya", "later", "farewell",
-            "that's all", "thats all", "that is all", "that'll be all", "that will be all",
+        farewell_patterns = [
+            # Direct endings
+            "bye", "goodbye", "good bye", "see you", "farewell", "later",
+            "that's all", "thats all", "that is all", "i'm done", "im done",
             
-            # Completion phrases
-            "i'm done", "im done", "i am done", "we're done", "were done", "we are done",
-            "that's it", "thats it", "that is it", "that's everything", "thats everything",
-            "nothing else", "no more questions", "i'm good", "im good", "i am good",
+            # Completion signals  
+            "thank you bye", "thanks bye", "perfect thanks", "great thanks",
+            "that helps thanks", "got it thanks", "ok bye", "okay bye",
             
-            # Thank you + ending
-            "thank you, bye", "thanks, bye", "thank you goodbye", "thanks goodbye",
-            "thank you that's all", "thanks thats all", "appreciate it bye", "thanks for your help bye",
-            
-            # Explicit endings
-            "end call", "end the call", "hang up", "disconnect", "finish", "close",
-            "i have to go", "gotta go", "need to go", "have to run", "talk later",
-            
-            # Satisfied responses
-            "perfect thank you", "great thanks", "awesome thanks", "that helps thanks",
-            "got it thanks", "understood thanks", "ok bye", "okay bye", "alright bye"
+            # Explicit commands
+            "end call", "hang up", "disconnect", "finish", "close",
+            "gotta go", "need to go", "have to go", "talk later"
         ]
         
-        # Check for exact matches or if the message starts with these phrases
-        for phrase in farewell_phrases:
-            if phrase in message_lower or message_lower.startswith(phrase):
-                logger.info(f"FAREWELL_DETECTED: Matched phrase: '{phrase}' in message: '{message_lower}'")
+        # Check for patterns
+        for pattern in farewell_patterns:
+            if pattern in message_lower:
+                logger.info(f"🔍 FAREWELL MATCH: '{pattern}' in '{message_lower}'")
                 return True
         
-        # Check for patterns like "thanks" + short response (likely ending)
-        if ("thank" in message_lower or "thanks" in message_lower) and len(message_lower.split()) <= 3:
-            logger.info(f"FAREWELL_DETECTED: Short thanks message: '{message_lower}'")
+        # Short thank you messages likely indicate ending
+        if ("thank" in message_lower or "thanks" in message_lower) and len(message_lower.split()) <= 4:
             return True
             
-        logger.info(f"FAREWELL_CHECK: No farewell detected in: '{message_lower}'")
         return False
 
     async def handle_conversation_end(self, user_message: str):
-        """Handle the end of conversation gracefully"""
+        """Handle conversation ending gracefully"""
         try:
-            # Generate a polite farewell response
-            farewell_instructions = f"""
-The user has indicated they want to end the conversation by saying: "{user_message}"
-
-Please provide a brief, warm farewell response that:
-1. Acknowledges their request to end the call
-2. Thanks them for using Alive5
-3. Offers future assistance if needed
-4. Keeps it short and natural (1-2 sentences max)
-
-Examples:
-- "Thank you for contacting Alive5! Have a great day and feel free to reach out anytime."
-- "Perfect! Thanks for using Alive5 support. Take care!"
-- "You're all set! Thanks for calling Alive5 and have a wonderful day."
-"""
+            logger.info(f"👋 ENDING CONVERSATION: {user_message}")
             
-            # Send farewell message directly
-            await self.send_agent_transcript(farewell_instructions)
-            logger.info(f"FAREWELL: Sent goodbye message for session {self.session_id}")
-                
-                # Wait a moment for the farewell to be delivered
-                await asyncio.sleep(2)
+            # Generate appropriate farewell
+            farewell_responses = [
+                "Thank you for contacting Alive5! Have a great day and feel free to reach out anytime.",
+                "Perfect! Thanks for using Alive5 support. Take care!",
+                "You're all set! Thanks for calling Alive5 and have a wonderful day."
+            ]
             
-            # Signal for disconnection via data message
+            # Pick appropriate farewell based on context
+            farewell = farewell_responses[0]  # Default
+            if "thank" in user_message.lower():
+                farewell = farewell_responses[1]
+            elif any(word in user_message.lower() for word in ["help", "good", "great", "perfect"]):
+                farewell = farewell_responses[2]
+            
+            await self.generate_speech_response(farewell)
+            
+            # Wait for farewell to complete
+            await asyncio.sleep(3)
+            
+            # Signal disconnection
             await self.send_disconnection_signal()
             
         except Exception as e:
             logger.error(f"Error handling conversation end: {e}")
 
     async def send_disconnection_signal(self):
-        """Send signal to frontend to disconnect"""
+        """Send disconnection signal to frontend"""
         try:
-            if hasattr(self, 'room') and self.room:
+            if self.room:
                 await self.room.local_participant.publish_data(
-                    data=json.dumps({
+                    json.dumps({
                         'type': 'conversation_end',
-                        'message': 'The conversation has ended. Disconnecting...',
+                        'message': 'Conversation ended gracefully',
                         'timestamp': datetime.now().isoformat(),
                         'reason': 'user_requested'
                     }).encode(),
                     topic="lk.conversation.control"
                 )
-                logger.info(f"DISCONNECT_SIGNAL: Sent disconnection signal for session {self.session_id}")
+                logger.info("📡 DISCONNECT SIGNAL SENT")
         except Exception as e:
-            logger.error(f"Error sending disconnection signal: {e}")
-
-    async def generate_reply(self, instructions: str = None):
-        """STRICT ROUTER - Only respond to flow system, never LLM"""
-        try:
-            # ONLY allow responses from flow system with specific keywords
-            if instructions and ("You must say exactly this" in instructions or "Say exactly" in instructions):
-                logger.info(f"FLOW_ROUTER: ✅ FLOW SYSTEM RESPONSE: '{instructions}'")
-                
-                # Extract the exact text to say
-                if "You must say exactly this" in instructions:
-                    response_text = instructions.split("You must say exactly this: '")[1].split("'")[0]
-                elif "Say exactly" in instructions:
-                    response_text = instructions.split("Say exactly: '")[1].split("'")[0]
-                else:
-                    response_text = instructions
-                
-                # Send the exact response WITHOUT calling LLM
-                await self.send_agent_transcript(response_text)
-                logger.info(f"FLOW_ROUTER: Sent exact response: '{response_text}'")
-                
-                return response_text
-            else:
-                # COMPLETELY BLOCK all other responses
-                logger.info(f"FLOW_ROUTER: 🚫 BLOCKED LLM RESPONSE: '{instructions}'")
-                return None
-        except Exception as e:
-            logger.error(f"Error in generate_reply: {e}")
-            return None
+            logger.error(f"Error sending disconnect signal: {e}")
 
     async def send_agent_transcript(self, message: str):
-        """Send agent transcript as a separate message to distinguish from user speech"""
+        """Send agent transcript to frontend for display"""
         try:
-            # Send agent transcript through the transcription stream but with agent identity
-            if hasattr(self, 'room') and self.room:
-                # Send as data message for reliable delivery
+            if self.room:
                 await self.room.local_participant.publish_data(
-                    data=json.dumps({
+                    json.dumps({
                         'type': 'agent_transcript',
                         'message': message,
                         'speaker': 'Scott_AI_Agent',
@@ -485,14 +440,23 @@ Examples:
                     }).encode(),
                     topic="lk.agent.transcript"
                 )
-                logger.info(f"AGENT_TRANSCRIPT: Sent agent message via data: '{message}'")
+                logger.info(f"📋 AGENT TRANSCRIPT SENT: '{message[:50]}...'")
         except Exception as e:
             logger.error(f"Error sending agent transcript: {e}")
 
-    def update_conversation_context(self, stage: str):
-        """Update conversation stage"""
-        self.conversation_stage = stage
-        logger.info(f"CONVERSATION_STAGE: Session {self.session_id} moved to stage: {stage}")
+    async def signal_worker_status(self, status: str, message: str = ""):
+        """Signal worker status to frontend"""
+        try:
+            if self.room:
+                await self.room.local_participant.set_metadata(json.dumps({
+                    "worker_status": status,
+                    "message": message,
+                    "timestamp": datetime.now().isoformat(),
+                    "session_id": self.session_id
+                }))
+                logger.info(f"🚦 STATUS SIGNAL: {status} - {message}")
+        except Exception as e:
+            logger.error(f"Error signaling status: {e}")
 
 def prewarm(proc):
     """Preload models for better performance"""
@@ -504,57 +468,51 @@ async def entrypoint(ctx: JobContext):
     room_name = ctx.room.name
     
     if room_name in active_sessions:
-        logger.warning(f"Room {room_name} already has an active session. Skipping.")
+        logger.warning(f"⚠️ Room {room_name} already has active session")
         return
     
-    # Create assistant first
+    # Create assistant
     assistant = FlowBasedAssistant(session_id)
     active_sessions[room_name] = session_id
-    logger.info(f"Starting flow-based agent session {session_id} in room: {room_name}")
+    logger.info(f"🚀 STARTING SESSION {session_id} in room {room_name}")
     
-    # Check backend health before starting
-    logger.info("🔍 Checking backend health before starting worker...")
+    # Check backend health
+    logger.info("🔍 Checking backend health...")
     backend_healthy = await check_backend_health()
+    assistant.backend_healthy = backend_healthy
+    
     if not backend_healthy:
-        logger.error("❌ Backend is not accessible. Worker will start but may not function properly.")
-        logger.error("💡 Please ensure the backend is running and accessible.")
-        # Signal backend down status (will be sent after room connection)
-        assistant.backend_healthy = False
+        logger.error("❌ Backend health check failed")
     else:
-        logger.info("✅ Backend health check passed. Worker ready to start.")
-        # Signal worker ready status (will be sent after room connection)
-        assistant.backend_healthy = True
+        logger.info("✅ Backend health check passed")
     
     agent_session = None
     
     try:
+        # Connect to room
         await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
-        logger.info(f"Connected to room {room_name}")
+        logger.info(f"🔗 Connected to room {room_name}")
         
-        # Store room reference in assistant for transcript handling
+        # Set up assistant references
         assistant.room = ctx.room
-        assistant.agent_session = None  # Will be set after session starts
         assistant.retry_manager = BackendRetryManager(assistant)
         
-        # Send initial status signal now that room is connected
-        if assistant.backend_healthy:
-            await assistant.signal_worker_status("ready", "Worker is ready and backend is accessible")
+        # Send initial status
+        if backend_healthy:
+            await assistant.signal_worker_status("ready", "Worker ready, backend accessible")
         else:
-            await assistant.signal_worker_status("backend_down", "Backend server is not accessible")
+            await assistant.signal_worker_status("backend_down", "Backend not accessible")
         
+        # Wait for participant
         try:
             participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=600.0)
-            logger.info(f"Participant {participant.identity} joined session {session_id}")
-            
+            logger.info(f"👤 Participant {participant.identity} joined")
             await asyncio.sleep(2)
         except asyncio.TimeoutError:
-            logger.warning(f"No participant joined session {session_id} within timeout")
-            return
-        except Exception as e:
-            logger.error(f"Error waiting for participant in session {session_id}: {e}")
+            logger.warning("⏰ No participant joined within timeout")
             return
 
-        # Create AgentSession with proper configuration for distinct transcription
+        # Create agent session
         agent_session = AgentSession(
             stt=deepgram.STT(
                 model="nova-2",
@@ -568,101 +526,91 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=cartesia.TTS(
                 model="sonic-english",
-                voice="a0e99841-438c-4a64-b679-ae501e7d6091",
+                voice="a0e99841-438c-4a64-b679-ae501e7d6091", 
                 api_key=os.getenv("CARTESIA_API_KEY")
             ),
             vad=ctx.proc.userdata["vad"],
             turn_detection=MultilingualModel(),
         )
         
-        # Start the session with proper room options for distinct transcription
+        # Start session
         await agent_session.start(
             room=ctx.room,
             agent=assistant,
             room_input_options=RoomInputOptions(
                 noise_cancellation=noise_cancellation.BVC(),
-                text_enabled=True,  # Enable text input
+                text_enabled=True,
             ),
             room_output_options=RoomOutputOptions(
-                transcription_enabled=True,  # Enable transcript output to frontend
-                sync_transcription=False,  # Disable sync to prevent mixing user/agent transcripts
+                transcription_enabled=True,
+                sync_transcription=False,
             ),
         )
         
-        # Store agent session reference in assistant for farewell handling
         assistant.agent_session = agent_session
+        logger.info(f"🎙️ Agent session started for {session_id}")
         
-        logger.info(f"Flow-based agent session started for {session_id}")
+        # Send initial greeting through flow system (simulate user joining)
+        await asyncio.sleep(1)
+        initial_greeting = "Hello! I'm Scott from Alive5. How can I help you today?"
         
-        # Initial greeting - DIRECT RESPONSE
-        greeting_message = "Hello! I'm Scott from Alive5. How can I help you today?"
+        # Send greeting directly and add to conversation history
+        assistant.conversation_history.append({
+            "role": "assistant",
+            "content": initial_greeting,
+            "timestamp": datetime.now().isoformat()
+        })
         
-        # Send greeting directly without LLM processing
-        await assistant.send_agent_transcript(greeting_message)
+        await assistant.send_agent_transcript(initial_greeting)
+        await assistant.generate_speech_response(initial_greeting)
         
-        logger.info(f"Initial greeting sent for session {session_id}")
+        logger.info(f"👋 Initial greeting sent for {session_id}")
         
-        # Keep session alive while participants are connected
+        # Keep session alive
         try:
             while ctx.room.remote_participants:
                 await asyncio.sleep(1)
-                logger.debug(f"Session {session_id} active - Participants connected")
         except Exception as e:
-            logger.warning(f"Session monitoring interrupted for {session_id}: {e}")
+            logger.warning(f"⚠️ Session monitoring interrupted: {e}")
         
     except Exception as e:
-        logger.error(f"Error in session {session_id}: {str(e)}", exc_info=True)
+        logger.error(f"❌ Session error {session_id}: {e}", exc_info=True)
     finally:
-        # Robust cleanup
-        logger.info(f"Starting cleanup for session {session_id}")
+        # Cleanup
+        logger.info(f"🧹 Cleaning up session {session_id}")
         
-        # Clean up session tracking
+        # Remove from active sessions
         if room_name in active_sessions:
             del active_sessions[room_name]
-            logger.info(f"Removed session {session_id} from active sessions")
-        
-        # Clean up retry manager
+            
+        # Stop retry manager
         if assistant.retry_manager:
             try:
                 await assistant.retry_manager.stop_retry_loop()
-                logger.info(f"Retry manager stopped for session {session_id}")
             except Exception as e:
-                logger.error(f"Error stopping retry manager for session {session_id}: {e}")
+                logger.error(f"Error stopping retry manager: {e}")
         
-        # Clean up agent session
+        # Close agent session
         if agent_session:
             try:
                 await asyncio.wait_for(agent_session.aclose(), timeout=10.0)
-                logger.info(f"Agent session {session_id} closed properly")
-            except asyncio.TimeoutError:
-                logger.warning(f"Agent session {session_id} close timed out")
+                logger.info(f"✅ Agent session closed: {session_id}")
             except Exception as e:
-                logger.error(f"Error closing agent session {session_id}: {e}")
+                logger.error(f"Error closing agent session: {e}")
         
-        # Clean up room connection
+        # Disconnect room
         try:
             if ctx.room and ctx.room.connection_state == "connected":
                 await asyncio.wait_for(ctx.room.disconnect(), timeout=5.0)
-                logger.info(f"Room disconnected for session {session_id}")
-        except asyncio.TimeoutError:
-            logger.warning(f"Room disconnect timed out for session {session_id}")
         except Exception as e:
-            logger.error(f"Error disconnecting room for session {session_id}: {e}")
+            logger.error(f"Error disconnecting room: {e}")
             
-        logger.info(f"Flow-based session {session_id} cleanup completed")
+        logger.info(f"🏁 Session {session_id} cleanup completed")
 
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        # Test the assistant
-        assistant = FlowBasedAssistant("test-session")
-        print(f"Flow-based assistant created for session: {assistant.session_id}")
-        print("Worker now uses flow-based processing")
-    else:
-        cli.run_app(
-            WorkerOptions(
-                entrypoint_fnc=entrypoint,
-                prewarm_fnc=prewarm,
-            ),
-        )
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            prewarm_fnc=prewarm,
+        ),
+    )
