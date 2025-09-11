@@ -191,6 +191,18 @@ class DynamicVoiceAgent {
             console.log('Room connected - transcript container created');
         });
         
+        // Handle participant metadata changes (worker status signals)
+        this.room.on(LivekitClient.RoomEvent.ParticipantMetadataChanged, (metadata, participant) => {
+            if (participant.isAgent) {
+                try {
+                    const statusData = JSON.parse(metadata);
+                    this.handleWorkerStatus(statusData);
+                } catch (e) {
+                    console.warn('Failed to parse worker status metadata:', e);
+                }
+            }
+        });
+        
         this.room.on(LivekitClient.RoomEvent.Disconnected, () => {
             this.isConnected = false;
             this.handleDisconnection();
@@ -1112,6 +1124,56 @@ class DynamicVoiceAgent {
             
             const statusEl = document.getElementById('status');
             statusEl.appendChild(retryBtn);
+        }
+    }
+    
+    handleWorkerStatus(statusData) {
+        const { worker_status, message, timestamp } = statusData;
+        console.log('Worker status update:', statusData);
+        
+        switch (worker_status) {
+            case 'ready':
+                this.showStatus(`
+                    ✅ Worker Ready<br>
+                    ${message}<br>
+                    <small>Connected at: ${new Date(timestamp).toLocaleTimeString()}</small>
+                `, 'connected');
+                break;
+                
+            case 'backend_down':
+                this.showStatus(`
+                    ⚠️ Backend Server Down<br>
+                    ${message}<br>
+                    <small>Worker is trying to reconnect automatically...</small>
+                `, 'warning');
+                break;
+                
+            case 'retrying':
+                this.showStatus(`
+                    🔄 Reconnecting...<br>
+                    ${message}<br>
+                    <small>Attempting to restore connection...</small>
+                `, 'connecting');
+                break;
+                
+            case 'reconnected':
+                this.showStatus(`
+                    ✅ Connection Restored<br>
+                    ${message}<br>
+                    <small>Backend is back online!</small>
+                `, 'connected');
+                break;
+                
+            case 'failed':
+                this.showStatus(`
+                    ❌ Connection Failed<br>
+                    ${message}<br>
+                    <small>Please refresh the page and try again</small>
+                `, 'error');
+                break;
+                
+            default:
+                console.log('Unknown worker status:', worker_status);
         }
     }
     

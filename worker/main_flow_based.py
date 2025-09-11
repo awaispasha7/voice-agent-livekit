@@ -61,6 +61,8 @@ active_sessions = {}
 # Backend configuration
 BACKEND_URL = "https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com"
 BACKEND_TIMEOUT = 10  # seconds
+BACKEND_RETRY_INTERVAL = 30  # seconds
+BACKEND_MAX_RETRIES = 10  # maximum retry attempts
 
 async def check_backend_health() -> bool:
     """Check if the backend is accessible"""
@@ -77,6 +79,69 @@ async def check_backend_health() -> bool:
         logger.error(f"❌ Backend health check failed: {str(e)}")
         return False
 
+class BackendRetryManager:
+    """Manages automatic retry attempts for backend connection"""
+    
+    def __init__(self, assistant):
+        self.assistant = assistant
+        self.retry_count = 0
+        self.is_retrying = False
+        self.retry_task = None
+    
+    async def start_retry_loop(self):
+        """Start the retry loop in the background"""
+        if self.is_retrying:
+            return
+        
+        self.is_retrying = True
+        self.retry_task = asyncio.create_task(self._retry_loop())
+        logger.info("🔄 Backend retry loop started")
+    
+    async def stop_retry_loop(self):
+        """Stop the retry loop"""
+        self.is_retrying = False
+        if self.retry_task:
+            self.retry_task.cancel()
+            try:
+                await self.retry_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("🛑 Backend retry loop stopped")
+    
+    async def _retry_loop(self):
+        """Main retry loop"""
+        while self.is_retrying and self.retry_count < BACKEND_MAX_RETRIES:
+            try:
+                await asyncio.sleep(BACKEND_RETRY_INTERVAL)
+                
+                if not self.is_retrying:
+                    break
+                
+                logger.info(f"🔄 Retry attempt {self.retry_count + 1}/{BACKEND_MAX_RETRIES}")
+                
+                backend_healthy = await check_backend_health()
+                if backend_healthy:
+                    logger.info("✅ Backend is back online!")
+                    await self.assistant.signal_worker_status("reconnected", "Backend connection restored")
+                    self.retry_count = 0
+                    self.is_retrying = False
+                    break
+                else:
+                    self.retry_count += 1
+                    logger.warning(f"⚠️ Backend still down, retry {self.retry_count}/{BACKEND_MAX_RETRIES}")
+                    await self.assistant.signal_worker_status("retrying", f"Retrying backend connection ({self.retry_count}/{BACKEND_MAX_RETRIES})")
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in retry loop: {e}")
+                self.retry_count += 1
+        
+        if self.retry_count >= BACKEND_MAX_RETRIES:
+            logger.error("❌ Maximum retry attempts reached. Backend appears to be permanently down.")
+            await self.assistant.signal_worker_status("failed", "Backend connection failed after maximum retries")
+            self.is_retrying = False
+
 class FlowBasedAssistant(Agent):
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
@@ -85,6 +150,7 @@ class FlowBasedAssistant(Agent):
         self.full_transcript: str = ""
         self.room = None  # Will be set by entrypoint
         self.current_flow_state = None
+        self.retry_manager = None  # Will be set after room is available
         
         super().__init__(instructions=self._get_instructions())
 
@@ -170,6 +236,12 @@ Current conversation stage: {self.conversation_stage}
             backend_healthy = await check_backend_health()
             if not backend_healthy:
                 logger.warning("Backend not accessible, using fallback response")
+                await self.signal_worker_status("backend_down", "Backend server is not accessible")
+                
+                # Start retry loop if not already running
+                if self.retry_manager and not self.retry_manager.is_retrying:
+                    await self.retry_manager.start_retry_loop()
+                
                 await self.handle_fallback_response(user_message)
                 return
             
@@ -273,6 +345,21 @@ Current conversation stage: {self.conversation_stage}
                 logger.info(f"FALLBACK_RESPONSE: Generated fallback response")
         except Exception as e:
             logger.error(f"Error generating fallback response: {e}")
+    
+    async def signal_worker_status(self, status: str, message: str = ""):
+        """Signal worker status to frontend via room data"""
+        try:
+            if self.room:
+                # Send status as room metadata
+                await self.room.local_participant.set_metadata(json.dumps({
+                    "worker_status": status,
+                    "message": message,
+                    "timestamp": datetime.now().isoformat(),
+                    "session_id": self.session_id
+                }))
+                logger.info(f"WORKER_STATUS_SIGNAL: {status} - {message}")
+        except Exception as e:
+            logger.error(f"Error signaling worker status: {e}")
 
     def should_end_conversation(self, user_message: str) -> bool:
         """Check if user message indicates they want to end the conversation"""
@@ -425,8 +512,12 @@ async def entrypoint(ctx: JobContext):
     if not backend_healthy:
         logger.error("❌ Backend is not accessible. Worker will start but may not function properly.")
         logger.error("💡 Please ensure the backend is running and accessible.")
+        # Signal backend down status
+        await assistant.signal_worker_status("backend_down", "Backend server is not accessible")
     else:
         logger.info("✅ Backend health check passed. Worker ready to start.")
+        # Signal worker ready status
+        await assistant.signal_worker_status("ready", "Worker is ready and backend is accessible")
         
     active_sessions[room_name] = session_id
     logger.info(f"Starting flow-based agent session {session_id} in room: {room_name}")
@@ -441,6 +532,7 @@ async def entrypoint(ctx: JobContext):
         # Store room reference in assistant for transcript handling
         assistant.room = ctx.room
         assistant.agent_session = None  # Will be set after session starts
+        assistant.retry_manager = BackendRetryManager(assistant)
         
         try:
             participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=600.0)
@@ -521,6 +613,14 @@ async def entrypoint(ctx: JobContext):
         if room_name in active_sessions:
             del active_sessions[room_name]
             logger.info(f"Removed session {session_id} from active sessions")
+        
+        # Clean up retry manager
+        if assistant.retry_manager:
+            try:
+                await assistant.retry_manager.stop_retry_loop()
+                logger.info(f"Retry manager stopped for session {session_id}")
+            except Exception as e:
+                logger.error(f"Error stopping retry manager for session {session_id}: {e}")
         
         # Clean up agent session
         if agent_session:
