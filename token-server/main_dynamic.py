@@ -1032,6 +1032,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     # If we're already in a flow, check if this is a response to a question
     if flow_state.current_flow and flow_state.current_step:
         logger.info(f"FLOW_MANAGEMENT: Already in flow {flow_state.current_flow}, step {flow_state.current_step}")
+        logger.info(f"FLOW_MANAGEMENT: Flow data: {flow_state.flow_data}")
         
         # Check if current step is a question and user provided a response
         current_step_data = flow_state.flow_data
@@ -1065,7 +1066,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 print_flow_status(room_name, flow_state, "❌ NO NEXT STEP", "Using FAQ bot fallback")
                 return await get_faq_response(user_message, flow_state=flow_state)
         else:
-            logger.info("FLOW_MANAGEMENT: Current step is not a question, checking for intent shift")
+            logger.info(f"FLOW_MANAGEMENT: Current step is not a question (type: {current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift")
     
     # Check for intent shift even when in a flow using LLM with conversation context
     print_flow_status(room_name, flow_state, "CHECKING FOR INTENT SHIFT", f"Current flow: {flow_state.current_flow}")

@@ -17,6 +17,8 @@ class DynamicVoiceAgent {
         this.processedMessages = new Set();
         this.lastProcessedMessage = null;
         this.lastProcessedTime = 0;
+        this.transcriptTimeout = null;
+        this.pendingTranscript = null;
         
         // Track conversation history for intent detection
         this.conversationHistory = [];
@@ -67,7 +69,9 @@ class DynamicVoiceAgent {
             /^(okay\.?\s*scott,?\s*i\s*wanted\s*to\s*know\s*about\s*the\s*weather\s*update)\s*$/i,
             // Scott-specific patterns
             /^(scott\.?\s*can\s*you\s*tell)\s*$/i,
+            /^(scott\.?\s*can\s*you\s*tell\s*me\s*about)\s*$/i,
             /^(scott\.?\s*can\s*you\s*tell\s*me\s*the\s*weather\s*update)\s*$/i,
+            /^(hey,?\s*scott\.?\s*can\s*you\s*tell\s*me\s*about)\s*$/i,
             // General patterns for incomplete sentences
             /^(okay\.?\s*[a-z]+,?\s*)$/i,
             /^(okay\.?\s*[a-z]+,?\s*i\s*wanted\s*to\s*know\s*about)\s*$/i,
@@ -78,6 +82,69 @@ class DynamicVoiceAgent {
         ];
         
         return incompletePatterns.some(pattern => pattern.test(trimmed));
+    }
+    
+    processCompleteTranscript(transcriptText) {
+        // Prevent duplicate processing of the same message
+        const messageHash = this.hashMessage(transcriptText);
+        const currentTime = Date.now();
+        
+        // Check if we've already processed this exact message recently (within 5 seconds)
+        if (this.processedMessages.has(messageHash) || 
+            (this.lastProcessedMessage === transcriptText && (currentTime - this.lastProcessedTime) < 5000)) {
+            console.log('🔄 Skipping duplicate message processing:', transcriptText);
+            return;
+        }
+        
+        // Also check if this is a partial version of a message we already processed
+        if (this.lastProcessedMessage && 
+            this.lastProcessedMessage.includes(transcriptText) && 
+            (currentTime - this.lastProcessedTime) < 5000) {
+            console.log('🔄 Skipping partial message processing:', transcriptText);
+            return;
+        }
+        
+        // Also check if this transcript is a substring of a message we already processed
+        if (this.lastProcessedMessage && 
+            transcriptText.length < this.lastProcessedMessage.length &&
+            this.lastProcessedMessage.startsWith(transcriptText) &&
+            (currentTime - this.lastProcessedTime) < 5000) {
+            console.log('🔄 Skipping substring message processing:', transcriptText);
+            return;
+        }
+        
+        // Mark this message as processed
+        this.processedMessages.add(messageHash);
+        this.lastProcessedMessage = transcriptText;
+        this.lastProcessedTime = currentTime;
+        
+        // Clean up old processed messages (keep only last 10)
+        if (this.processedMessages.size > 10) {
+            const messagesArray = Array.from(this.processedMessages);
+            this.processedMessages.clear();
+            // Keep the last 5 messages
+            messagesArray.slice(-5).forEach(msg => this.processedMessages.add(msg));
+        }
+        
+        // Check if this looks like a farewell
+        const isFarewell = this.detectFarewell(transcriptText);
+        
+        // Add to conversation log with clear user identification
+        this.addLogEntry({
+            speaker: `👤 ${this.participantName || 'You'}`,
+            message: transcriptText,
+            type: 'user'
+        });
+        
+        // Add to conversation history for intent detection
+        this.conversationHistory.push({
+            role: 'user',
+            content: transcriptText,
+            timestamp: new Date().toISOString()
+        });
+        
+        // Send for flow processing
+        this.sendTranscriptForFlowProcessing(transcriptText);
     }
     
     updateDisplay() {
@@ -441,87 +508,19 @@ class DynamicVoiceAgent {
         
         // Only add to conversation log and send for intent detection if it's final and complete
         if (isFinal && transcriptText.trim() && !attributes.incomplete) {
-            // Prevent duplicate processing of the same message
-            const messageHash = this.hashMessage(transcriptText);
-            const currentTime = Date.now();
-            
-            // Check if we've already processed this exact message recently (within 3 seconds)
-            if (this.processedMessages.has(messageHash) || 
-                (this.lastProcessedMessage === transcriptText && (currentTime - this.lastProcessedTime) < 3000)) {
-                //console.log('🔄 Skipping duplicate message processing:', transcriptText);
-                return;
+            // Clear any existing timeout
+            if (this.transcriptTimeout) {
+                clearTimeout(this.transcriptTimeout);
             }
             
-            // Also check if this is a partial version of a message we already processed
-            if (this.lastProcessedMessage && 
-                this.lastProcessedMessage.includes(transcriptText) && 
-                (currentTime - this.lastProcessedTime) < 5000) {
-                console.log('🔄 Skipping partial message processing:', transcriptText);
-                return;
-            }
+            // Store the pending transcript
+            this.pendingTranscript = transcriptText;
             
-            // Also check if this transcript is a substring of a message we already processed
-            if (this.lastProcessedMessage && 
-                transcriptText.length < this.lastProcessedMessage.length &&
-                this.lastProcessedMessage.startsWith(transcriptText) &&
-                (currentTime - this.lastProcessedTime) < 5000) {
-                console.log('🔄 Skipping substring message processing:', transcriptText);
-                return;
-            }
-            
-            // Mark this message as processed
-            this.processedMessages.add(messageHash);
-            this.lastProcessedMessage = transcriptText;
-            this.lastProcessedTime = currentTime;
-            
-            // Clean up old processed messages (keep only last 10)
-            if (this.processedMessages.size > 10) {
-                const messagesArray = Array.from(this.processedMessages);
-                this.processedMessages.clear();
-                // Keep the last 5 messages
-                messagesArray.slice(-5).forEach(msg => this.processedMessages.add(msg));
-            }
-            // Check if this looks like a farewell
-            const isFarewell = this.detectFarewell(transcriptText);
-            
-            // Add to conversation log with clear user identification
-            this.addLogEntry({
-                speaker: `👤 ${this.participantName || 'You'}`,
-                message: transcriptText,
-                type: 'user'
-            });
-            
-            // Add to conversation history for intent detection
-            this.conversationHistory.push({
-                role: 'user',
-                content: transcriptText,
-                timestamp: new Date().toISOString()
-            });
-            
-            // Keep only last 10 messages to avoid token limits
-            if (this.conversationHistory.length > 10) {
-                this.conversationHistory = this.conversationHistory.slice(-10);
-            }
-            
-            // Show farewell detection
-            if (isFarewell) {
-                console.log('👋 Farewell detected in user message:', transcriptText);
-                this.addLogEntry({
-                    speaker: 'System',
-                    message: '👋 Farewell detected - ending conversation...',
-                    type: 'system'
-                });
-                
-                this.showToast('Ending conversation...', 'info');
-                
-                // Trigger conversation end after a brief delay to allow agent response
-                setTimeout(() => {
-                    this.handleConversationEnd('User said goodbye');
-                }, 3000); // 3 second delay to allow agent to respond with farewell
-            }
-            
-            // Send transcript to backend for flow processing
-            this.sendTranscriptForFlowProcessing(transcriptText);
+            // Set a timeout to process the transcript after a delay
+            // This allows for complete sentences to be captured
+            this.transcriptTimeout = setTimeout(() => {
+                this.processCompleteTranscript(this.pendingTranscript);
+            }, 1500); // 1.5 second delay to wait for complete sentences
         }
     }
 
