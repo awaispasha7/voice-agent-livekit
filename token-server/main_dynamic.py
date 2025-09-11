@@ -194,21 +194,11 @@ async def detect_flow_intent_with_llm_from_conversation(conversation_history: Li
         # Create LLM prompt with conversation context
         intent_list = ", ".join(available_intents)
         
-        # Build dynamic intent descriptions for the LLM
+        # Build dynamic intent descriptions for the LLM - completely generic
         intent_descriptions = []
         for intent_name in available_intents:
-            # Create a more descriptive prompt based on the intent name
-            intent_lower = intent_name.lower()
-            if any(word in intent_lower for word in ['weather', 'climate', 'forecast']):
-                description = f'   - "{intent_name}" intent: Look for weather-related keywords like weather, temperature, forecast, climate, rain, snow, sunny, weather updates, etc.'
-            elif any(word in intent_lower for word in ['price', 'cost', 'billing', 'plan']):
-                description = f'   - "{intent_name}" intent: Look for pricing-related keywords like price, cost, billing, plan, subscription, pricing, etc.'
-            elif any(word in intent_lower for word in ['agent', 'human', 'representative', 'support']):
-                description = f'   - "{intent_name}" intent: Look for agent-related keywords like agent, human, representative, speak to someone, talk to someone, etc.'
-            else:
-                # Generic description for any other intent
-                description = f'   - "{intent_name}" intent: Look for keywords and phrases related to {intent_name.lower()}'
-            
+            # Generic description for any intent - no hardcoded keywords
+            description = f'   - "{intent_name}" intent: Look for keywords and phrases related to {intent_name.lower()}'
             intent_descriptions.append(description)
         
         intent_descriptions_text = "\n".join(intent_descriptions)
@@ -233,7 +223,8 @@ IMPORTANT RULES:
 5. How their intent might have evolved during the conversation
 6. Match the user's request to the most appropriate intent based on the intent name and context
 
-Respond with ONLY the exact intent name from the list above, or "none" if no intent matches.
+
+ Respond with ONLY the exact intent name from the list above, or "none" if no intent matches.
 """
         
         logger.info(f"CONVERSATION_INTENT_DETECTION: Analyzing conversation with {len(conversation_history)} messages for intents: {intent_list}")
@@ -294,10 +285,6 @@ Respond with ONLY the exact intent name from the list above, or "none" if no int
             similarity = calculate_similarity(detected_intent, intent_name)
             logger.info(f"CONVERSATION_INTENT_DETECTION: Similarity between '{detected_intent}' and '{intent_name}': {similarity}")
             
-            # Special handling for weather-related terms
-            if any(word in detected_intent for word in ['weather', 'temperature', 'forecast', 'climate', 'rain', 'snow', 'sunny']) and 'weather' in intent_name.lower():
-                similarity = max(similarity, 0.8)  # Boost weather similarity
-                logger.info(f"CONVERSATION_INTENT_DETECTION: Weather boost applied, new similarity: {similarity}")
             
             if similarity > best_similarity and similarity >= similarity_threshold:
                 best_similarity = similarity
@@ -1010,11 +997,16 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 }
             else:
                 # No next_flow, use intent response
+                logger.info(f"FLOW_MANAGEMENT: No next_flow found for intent, using intent response")
                 print_flow_status(room_name, flow_state, "🎉 FLOW STARTED", 
                                 f"Intent: {matching_intent['intent']} | Flow: {matching_intent['flow_key']} | Response: '{matching_intent['flow_data'].get('text', '')}'")
                 
                 # Add agent response to conversation history
                 response_text = matching_intent["flow_data"].get("text", "")
+                if not response_text or response_text == "N/A":
+                    response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+                    logger.warning(f"FLOW_MANAGEMENT: Intent response was empty or N/A, using generic fallback")
+                
                 add_agent_response_to_history(flow_state, response_text)
                 
                 return {

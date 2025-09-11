@@ -72,6 +72,10 @@ class DynamicVoiceAgent {
             /^(scott\.?\s*can\s*you\s*tell\s*me\s*about)\s*$/i,
             /^(scott\.?\s*can\s*you\s*tell\s*me\s*the\s*weather\s*update)\s*$/i,
             /^(hey,?\s*scott\.?\s*can\s*you\s*tell\s*me\s*about)\s*$/i,
+            // Weather-specific patterns (these are COMPLETE sentences, not incomplete)
+            // /^(the\s*weather\s*today)\s*$/i,  // This is complete, not incomplete
+            // /^(weather\s*today)\s*$/i,        // This is complete, not incomplete
+            // /^(weather)\s*$/i,                // This is complete, not incomplete
             // General patterns for incomplete sentences
             /^(okay\.?\s*[a-z]+,?\s*)$/i,
             /^(okay\.?\s*[a-z]+,?\s*i\s*wanted\s*to\s*know\s*about)\s*$/i,
