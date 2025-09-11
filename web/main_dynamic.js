@@ -269,7 +269,11 @@ class DynamicVoiceAgent {
                 
                 try {
                     audioElement.play()
-                        .then(() => console.log('Audio playback started'))
+                        .then(() => {
+                            console.log('Audio playback started');
+                            // Clear worker timeout since agent audio is playing
+                            this.clearWorkerTimeoutError();
+                        })
                         .catch(err => console.error('Audio playback failed:', err));
                 } catch (e) {
                     console.warn('Audio play error:', e);
@@ -329,6 +333,9 @@ class DynamicVoiceAgent {
                 } else if (isAgentIdentity || (!isUserTranscript && participantInfo.identity !== this.participantName)) {
                     // This is likely agent speech - but we'll handle it via our custom agent transcript stream
                     console.log('🤖 Skipping potential agent transcript (will be handled by custom stream):', message);
+                    
+                    // Clear worker timeout since agent is responding
+                    this.clearWorkerTimeoutError();
                 } else {
                     // Fallback - check content or other attributes
                     console.log('❓ Ambiguous transcript, treating as user:', message);
@@ -559,6 +566,9 @@ class DynamicVoiceAgent {
             if (response.ok) {
                 const result = await response.json();
                 console.log('Flow processing result:', result);
+                
+                // Clear worker timeout since backend is responding
+                this.clearWorkerTimeoutError();
                 
                 // Handle flow result
                 if (result.flow_result) {
@@ -1207,7 +1217,10 @@ class DynamicVoiceAgent {
     checkWorkerResponse() {
         // Check if we've received any agent responses
         const hasAgentResponse = this.conversationLog.some(log => 
-            log.type === 'agent' || log.sender === 'Scott'
+            log.type === 'agent' || 
+            log.sender === 'Scott' ||
+            log.speaker?.includes('Scott') ||
+            log.speaker?.includes('agent')
         );
         
         if (!hasAgentResponse) {
@@ -1225,6 +1238,30 @@ class DynamicVoiceAgent {
             
             // Add a retry button
             this.addRetryButton();
+        } else {
+            // Agent has responded, clear any existing error status
+            console.log('✅ Agent response detected, clearing worker timeout error');
+            this.clearWorkerTimeoutError();
+        }
+    }
+    
+    clearWorkerTimeoutError() {
+        // Clear the worker timeout
+        if (this.workerTimeout) {
+            clearTimeout(this.workerTimeout);
+            this.workerTimeout = null;
+        }
+        
+        // Remove any existing retry buttons
+        const existingRetryBtn = document.querySelector('.retry-btn');
+        if (existingRetryBtn) {
+            existingRetryBtn.remove();
+        }
+        
+        // Clear error status if it's showing worker connection issue
+        const statusEl = document.getElementById('status');
+        if (statusEl && statusEl.innerHTML.includes('Worker Connection Issue')) {
+            statusEl.style.display = 'none';
         }
     }
     
