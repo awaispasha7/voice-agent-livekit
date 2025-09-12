@@ -25,6 +25,7 @@ from livekit.plugins import (
     silero,
     noise_cancellation
 )
+from livekit.agents import llm
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit import rtc
 
@@ -57,6 +58,101 @@ for var in required_vars:
 
 # Global session tracking
 active_sessions = {}
+
+class FlowBasedLLM(llm.LLM):
+    """Custom LLM that intercepts responses and routes through flow system"""
+    
+    def __init__(self, backend_url: str, api_key: str):
+        super().__init__()
+        self.backend_url = backend_url
+        self.api_key = api_key
+        self.room_name = None
+        
+    def set_room_name(self, room_name: str):
+        """Set the room name for this LLM instance"""
+        self.room_name = room_name
+        
+    async def generate_response(self, chat_context: llm.ChatContext) -> llm.LLMStream:
+        """Main method to override - intercepts all LLM responses"""
+        try:
+            # Get the latest user message
+            if not chat_context.messages:
+                yield llm.LLMResponse(text="Hello! I'm Scott from Alive5. How can I help you today?")
+                return
+                
+            last_message = chat_context.messages[-1].text
+            logger.info(f"🎤 CUSTOM LLM: Processing message: '{last_message}'")
+            
+            # Convert chat context to conversation history
+            conversation_history = []
+            for msg in chat_context.messages:
+                conversation_history.append({
+                    "role": msg.role,
+                    "content": msg.text,
+                    "timestamp": datetime.now().isoformat()
+                })
+            
+            # Process through backend flow system
+            response_text = await self.process_through_backend(last_message, conversation_history)
+            
+            # Yield the response
+            yield llm.LLMResponse(text=response_text)
+            
+        except Exception as e:
+            logger.error(f"Error in custom LLM: {e}")
+            yield llm.LLMResponse(text="I apologize, but I'm having trouble processing your request. Let me connect you to a human agent.")
+    
+    async def process_through_backend(self, user_message: str, conversation_history: list) -> str:
+        """Process user message through backend flow system"""
+        try:
+            if not self.room_name:
+                return "I'm experiencing technical difficulties. Please try again."
+                
+            # Check backend health
+            backend_healthy = await check_backend_health()
+            if not backend_healthy:
+                return "I'm experiencing some technical difficulties. Let me connect you to a human agent who can help you right away."
+            
+            # Send to backend flow processor
+            logger.info(f"🔄 BACKEND REQUEST: Room={self.room_name}, Message='{user_message}'")
+            
+            async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
+                payload = {
+                    "room_name": self.room_name,
+                    "user_message": user_message,
+                    "conversation_history": conversation_history[-10:]  # Last 10 messages
+                }
+                
+                response = await client.post(
+                    f"{self.backend_url}/api/process_flow_message",
+                    headers={"Content-Type": "application/json"},
+                    json=payload
+                )
+                
+                if response.status_code == 200:
+                    flow_result = response.json()
+                    logger.info(f"✅ FLOW RESULT: {flow_result}")
+                    
+                    # Extract response text from flow result
+                    flow_data = flow_result.get("flow_result", {})
+                    response_text = flow_data.get("response", "")
+                    
+                    if not response_text or response_text.strip() == "":
+                        return "I apologize, but I'm having trouble processing your request. Let me connect you to one of our specialists who can assist you better."
+                    
+                    return response_text
+                else:
+                    logger.error(f"❌ Backend error: {response.status_code} - {response.text}")
+                    return "I apologize, but I'm having trouble processing your request. Let me connect you to one of our specialists who can assist you better."
+                    
+        except Exception as e:
+            logger.error(f"❌ Flow processing error: {e}")
+            return "I apologize, but I'm having trouble processing your request. Let me connect you to one of our specialists who can assist you better."
+    
+    async def chat(self, chat_context: llm.ChatContext) -> llm.LLMStream:
+        """Required method for LLM class - delegates to generate_response"""
+        return self.generate_response(chat_context)
+
 
 # Backend configuration
 BACKEND_URL = "https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com"
@@ -143,272 +239,19 @@ class BackendRetryManager:
             self.is_retrying = False
 
 class FlowBasedAssistant(Agent):
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, custom_llm: FlowBasedLLM) -> None:
         self.session_id = session_id
-        self.conversation_stage = "greeting"
-        self.transcripts: list[str] = []
-        self.full_transcript: str = ""
         self.room = None
-        self.current_flow_state = None
         self.retry_manager = None
         self.backend_healthy = None
-        self.greeting_sent = False  # Track if greeting has been sent
-        self.conversation_history = []  # Track full conversation
         
-        super().__init__(instructions=self._get_instructions())
+        # Use the custom LLM instead of default
+        super().__init__(
+            instructions="Flow-based voice assistant for Alive5 Support",
+            llm=custom_llm
+        )
 
-    def _get_instructions(self) -> str:
-        """Generate instructions for the flow-based voice assistant"""
-        return f"""
-You are Scott, the AI voice assistant for Alive5 Support (Session: {self.session_id}). 
 
-CRITICAL FLOW-BASED OPERATION:
-- You are operating in FLOW-CONTROLLED mode
-- Do NOT generate automatic responses to user messages
-- ONLY respond when explicitly instructed by the flow system
-- Wait for flow processing to provide exact response text
-
-RESPONSE PROTOCOL:
-1. User speaks → Transcription captured
-2. Backend processes through flow system
-3. Flow system returns exact response text
-4. You speak ONLY that exact text
-
-PERSONALITY when instructed to respond:
-- Professional, helpful, empathetic
-- Clear, warm, engaging voice
-- Simple, jargon-free language
-- Concise but complete responses
-
-IMPORTANT: Never add extra content or modify flow responses.
-
-Current stage: {self.conversation_stage}
-"""
-
-    async def conversation_item_added(self, event):
-        """Handle conversation items with strict flow control"""
-        try:
-            if event.item.role == "user" and event.item.content:
-                user_message = event.item.content.strip()
-                if not user_message:
-                    return
-                    
-                logger.info(f"🎤 USER SPEECH: '{user_message}'")
-                
-                # Add to conversation history
-                self.conversation_history.append({
-                    "role": "user", 
-                    "content": user_message,
-                    "timestamp": datetime.now().isoformat()
-                })
-                
-                # Check for conversation end
-                if self.should_end_conversation(user_message):
-                    logger.info(f"👋 FAREWELL DETECTED: '{user_message}'")
-                    await self.handle_conversation_end(user_message)
-                    return
-                
-                # Process through flow system ONLY
-                await self.process_through_flow_system(user_message)
-                
-            elif event.item.role == "assistant" and event.item.content:
-                # Track assistant responses
-                assistant_message = event.item.content.strip()
-                logger.info(f"🤖 ASSISTANT SPEECH: '{assistant_message}'")
-                
-                # Add to conversation history
-                self.conversation_history.append({
-                    "role": "assistant",
-                    "content": assistant_message, 
-                    "timestamp": datetime.now().isoformat()
-                })
-                
-                # Send to frontend for display
-                await self.send_agent_transcript(assistant_message)
-                
-        except Exception as e:
-            logger.error(f"Error in conversation_item_added: {e}")
-
-    async def process_through_flow_system(self, user_message: str):
-        """Process user message strictly through backend flow system"""
-        try:
-            # Check backend health
-            backend_healthy = await check_backend_health()
-            if not backend_healthy:
-                logger.warning("❌ Backend not accessible")
-                await self.signal_worker_status("backend_down", "Backend server is not accessible")
-                
-                if self.retry_manager and not self.retry_manager.is_retrying:
-                    await self.retry_manager.start_retry_loop()
-                
-                await self.handle_backend_down_response()
-                return
-            
-            room_name = self.room.name if self.room else "unknown"
-            
-            # Send to backend flow processor with conversation history
-            logger.info(f"🔄 BACKEND REQUEST: Room={room_name}, Message='{user_message}'")
-            
-            async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
-                payload = {
-                    "room_name": room_name,
-                    "user_message": user_message,
-                    "conversation_history": self.conversation_history[-10:]  # Last 10 messages
-                }
-                
-                response = await client.post(
-                    f"{BACKEND_URL}/api/process_flow_message",
-                    headers={"Content-Type": "application/json"},
-                    json=payload
-                )
-                
-                if response.status_code == 200:
-                    flow_result = response.json()
-                    logger.info(f"✅ FLOW RESULT: {flow_result}")
-                    await self.handle_flow_response(flow_result)
-                else:
-                    logger.error(f"❌ Backend error: {response.status_code} - {response.text}")
-                    await self.handle_backend_error_response()
-                    
-        except Exception as e:
-            logger.error(f"❌ Flow processing error: {e}")
-            await self.handle_backend_error_response()
-
-    async def handle_flow_response(self, flow_result: Dict[str, Any]):
-        """Handle response from flow system and generate appropriate speech"""
-        try:
-            flow_data = flow_result.get("flow_result", {})
-            flow_type = flow_data.get("type", "unknown")
-            response_text = flow_data.get("response", "")
-            
-            logger.info(f"🎯 PROCESSING FLOW TYPE: {flow_type}")
-            logger.info(f"📝 RESPONSE TEXT: '{response_text}'")
-            
-            if not response_text or response_text.strip() == "":
-                logger.warning("⚠️ Empty response from flow system")
-                return
-            
-            # Handle different flow types
-            if flow_type == "flow_started":
-                flow_name = flow_data.get("flow_name", "Unknown")
-                logger.info(f"🚀 FLOW STARTED: {flow_name}")
-                self.conversation_stage = f"flow_{flow_name.lower()}"
-                
-            elif flow_type in ["agent_transfer", "agent"]:
-                logger.info("👥 AGENT TRANSFER REQUESTED")
-                # Generate response and then end conversation
-                await self.generate_speech_response(response_text)
-                await asyncio.sleep(3)
-                await self.handle_conversation_end("Agent transfer completed")
-                return
-                
-            elif flow_type == "faq_response":
-                logger.info("❓ FAQ RESPONSE")
-                self.conversation_stage = "faq_interaction"
-                
-            elif flow_type == "error":
-                logger.error("❌ FLOW ERROR")
-                
-            # Generate speech for any response with text
-            if response_text.strip():
-                await self.generate_speech_response(response_text)
-                
-        except Exception as e:
-            logger.error(f"Error handling flow response: {e}")
-
-    async def generate_speech_response(self, response_text: str):
-        """Generate speech response using the provided text"""
-        try:
-            logger.info(f"🗣️ GENERATING SPEECH: '{response_text}'")
-            
-            # Create specific instructions for the LLM to say exactly what the flow dictated
-            flow_instructions = f"""
-You must respond with exactly this message from the flow system:
-
-"{response_text}"
-
-Say this naturally as Scott from Alive5, but do not add any additional content, questions, or modifications. 
-Speak exactly what is provided above.
-"""
-            
-            # Use the agent session to generate speech
-            if hasattr(self, 'agent_session') and self.agent_session:
-                await self.agent_session.generate_reply(flow_instructions)
-            else:
-                logger.error("No agent session available for speech generation")
-            
-        except Exception as e:
-            logger.error(f"Error generating speech response: {e}")
-
-    async def handle_backend_down_response(self):
-        """Handle response when backend is down"""
-        fallback_message = "I'm experiencing some technical difficulties. Let me connect you to a human agent who can help you right away."
-        await self.generate_speech_response(fallback_message)
-
-    async def handle_backend_error_response(self):
-        """Handle response when backend returns an error"""
-        error_message = "I apologize, but I'm having trouble processing your request. Let me connect you to one of our specialists who can assist you better."
-        await self.generate_speech_response(error_message)
-
-    def should_end_conversation(self, user_message: str) -> bool:
-        """Enhanced farewell detection"""
-        message_lower = user_message.lower().strip()
-        
-        farewell_patterns = [
-            # Direct endings
-            "bye", "goodbye", "good bye", "see you", "farewell", "later",
-            "that's all", "thats all", "that is all", "i'm done", "im done",
-            
-            # Completion signals  
-            "thank you bye", "thanks bye", "perfect thanks", "great thanks",
-            "that helps thanks", "got it thanks", "ok bye", "okay bye",
-            
-            # Explicit commands
-            "end call", "hang up", "disconnect", "finish", "close",
-            "gotta go", "need to go", "have to go", "talk later"
-        ]
-        
-        # Check for patterns
-        for pattern in farewell_patterns:
-            if pattern in message_lower:
-                logger.info(f"🔍 FAREWELL MATCH: '{pattern}' in '{message_lower}'")
-                return True
-        
-        # Short thank you messages likely indicate ending
-        if ("thank" in message_lower or "thanks" in message_lower) and len(message_lower.split()) <= 4:
-            return True
-            
-        return False
-
-    async def handle_conversation_end(self, user_message: str):
-        """Handle conversation ending gracefully"""
-        try:
-            logger.info(f"👋 ENDING CONVERSATION: {user_message}")
-            
-            # Generate appropriate farewell
-            farewell_responses = [
-                "Thank you for contacting Alive5! Have a great day and feel free to reach out anytime.",
-                "Perfect! Thanks for using Alive5 support. Take care!",
-                "You're all set! Thanks for calling Alive5 and have a wonderful day."
-            ]
-            
-            # Pick appropriate farewell based on context
-            farewell = farewell_responses[0]  # Default
-            if "thank" in user_message.lower():
-                farewell = farewell_responses[1]
-            elif any(word in user_message.lower() for word in ["help", "good", "great", "perfect"]):
-                farewell = farewell_responses[2]
-            
-            await self.generate_speech_response(farewell)
-            
-            # Wait for farewell to complete
-            await asyncio.sleep(3)
-            
-            # Signal disconnection
-            await self.send_disconnection_signal()
-            
-        except Exception as e:
-            logger.error(f"Error handling conversation end: {e}")
 
     async def send_disconnection_signal(self):
         """Send disconnection signal to frontend"""
@@ -471,8 +314,12 @@ async def entrypoint(ctx: JobContext):
         logger.warning(f"⚠️ Room {room_name} already has active session")
         return
     
-    # Create assistant
-    assistant = FlowBasedAssistant(session_id)
+    # Create custom LLM
+    custom_llm = FlowBasedLLM(BACKEND_URL, "dummy_key")
+    custom_llm.set_room_name(room_name)
+    
+    # Create assistant with custom LLM
+    assistant = FlowBasedAssistant(session_id, custom_llm)
     active_sessions[room_name] = session_id
     logger.info(f"🚀 STARTING SESSION {session_id} in room {room_name}")
     
@@ -512,18 +359,14 @@ async def entrypoint(ctx: JobContext):
             logger.warning("⏰ No participant joined within timeout")
             return
 
-        # Create agent session
+        # Create agent session with custom LLM
         agent_session = AgentSession(
             stt=deepgram.STT(
                 model="nova-2",
                 language="en-US",
                 api_key=os.getenv("DEEPGRAM_API_KEY")
             ),
-            llm=openai.LLM(
-                model="gpt-4o",
-                temperature=0.7,
-                api_key=os.getenv("OPENAI_API_KEY")
-            ),
+            llm=custom_llm,  # Use our custom LLM
             tts=cartesia.TTS(
                 model="sonic-english",
                 voice="a0e99841-438c-4a64-b679-ae501e7d6091", 
@@ -550,21 +393,8 @@ async def entrypoint(ctx: JobContext):
         assistant.agent_session = agent_session
         logger.info(f"🎙️ Agent session started for {session_id}")
         
-        # Send initial greeting through flow system (simulate user joining)
-        await asyncio.sleep(1)
-        initial_greeting = "Hello! I'm Scott from Alive5. How can I help you today?"
-        
-        # Send greeting directly and add to conversation history
-        assistant.conversation_history.append({
-            "role": "assistant",
-            "content": initial_greeting,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-        await assistant.send_agent_transcript(initial_greeting)
-        await assistant.generate_speech_response(initial_greeting)
-        
-        logger.info(f"👋 Initial greeting sent for {session_id}")
+        # The custom LLM will handle the initial greeting automatically
+        logger.info(f"👋 Custom LLM will handle initial greeting for {session_id}")
         
         # Keep session alive
         try:
