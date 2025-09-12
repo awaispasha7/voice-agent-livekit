@@ -5,7 +5,7 @@ import asyncio
 import httpx
 from datetime import datetime
 from dotenv import load_dotenv
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union, Literal, AsyncIterable
 import json
 
 from livekit.agents import (
@@ -18,6 +18,7 @@ from livekit.agents import (
     RoomOutputOptions,
     AutoSubscribe
 )
+from livekit.agents.voice.agent import ModelSettings
 from livekit.plugins import (
     deepgram,
     cartesia,
@@ -26,6 +27,7 @@ from livekit.plugins import (
     noise_cancellation
 )
 from livekit.agents import llm
+from livekit.agents.types import NOT_GIVEN, NotGivenOr, DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit import rtc
 
@@ -59,6 +61,7 @@ for var in required_vars:
 # Global session tracking
 active_sessions = {}
 
+
 class FlowBasedLLM(llm.LLM):
     """Custom LLM that intercepts responses and routes through flow system"""
     
@@ -67,40 +70,134 @@ class FlowBasedLLM(llm.LLM):
         self.backend_url = backend_url
         self.api_key = api_key
         self.room_name = None
+        self.has_sent_initial_greeting = False
         
     def set_room_name(self, room_name: str):
         """Set the room name for this LLM instance"""
         self.room_name = room_name
         
-    async def generate_response(self, chat_context: llm.ChatContext) -> llm.LLMStream:
+    def chat(
+        self,
+        *,
+        chat_ctx: llm.ChatContext,
+        tools: list[llm.FunctionTool] | None = None,
+        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+        parallel_tool_calls: NotGivenOr[bool] = NOT_GIVEN,
+        tool_choice: NotGivenOr[llm.ToolChoice] = NOT_GIVEN,
+        extra_kwargs: NotGivenOr[dict[str, Any]] = NOT_GIVEN,
+    ) -> llm.LLMStream:
         """Main method to override - intercepts all LLM responses"""
-        try:
-            # Get the latest user message
-            if not chat_context.messages:
-                yield llm.LLMResponse(text="Hello! I'm Scott from Alive5. How can I help you today?")
-                return
+        # Since we're using hooks for the main flow, just return empty response
+        # to prevent the default LLM from generating responses
+        logger.info(f"🎤 CUSTOM LLM: chat() called - returning empty response (using hooks instead)")
+        return self._create_response_stream(chat_ctx, "")
+    
+    def _create_response_stream(self, chat_ctx: llm.ChatContext, response_text: str) -> llm.LLMStream:
+        """Create a proper LLMStream with the response text"""
+        # Create a simple async generator that yields ChatChunks
+        async def _response_generator():
+            # Always yield a chunk, but with empty content if needed
+            chunk = llm.ChatChunk(
+                id=str(uuid.uuid4()),
+                delta=llm.ChoiceDelta(
+                    content=response_text,
+                    role="assistant"
+                )
+            )
+            yield chunk
+        
+        # Create a proper LLMStream instance
+        # Based on the documentation, LLMStream is an abstract base class
+        # We need to create a concrete implementation
+        class SimpleLLMStream(llm.LLMStream):
+            def __init__(self, generator):
+                self._generator = generator
+                self._chat_ctx = chat_ctx
                 
-            last_message = chat_context.messages[-1].text
-            logger.info(f"🎤 CUSTOM LLM: Processing message: '{last_message}'")
+            async def _run(self):
+                """Required abstract method implementation"""
+                async for chunk in self._generator:
+                    yield chunk
+                
+            async def __anext__(self):
+                return await self._generator.__anext__()
+                
+            def __aiter__(self):
+                return self
+                
+            @property
+            def chat_ctx(self):
+                return self._chat_ctx
+                
+            @property
+            def fnc_ctx(self):
+                return None
+                
+            @property
+            def function_calls(self):
+                return []
+                
+            def execute_functions(self):
+                return []
+                
+            async def aclose(self):
+                pass
+        
+        return SimpleLLMStream(_response_generator())
+    
+    
+    async def _call_backend_async(self, user_message: str, conversation_history: list) -> str:
+        """Async backend call to process flow messages"""
+        try:
+            import httpx
             
-            # Convert chat context to conversation history
-            conversation_history = []
-            for msg in chat_context.messages:
-                conversation_history.append({
-                    "role": msg.role,
-                    "content": msg.text,
-                    "timestamp": datetime.now().isoformat()
-                })
+            logger.info(f"🔧 Making HTTP request to: {self.backend_url}/api/process_flow_message")
+            logger.info(f"🔧 Request payload: room_name={self.room_name}, user_message='{user_message}'")
             
-            # Process through backend flow system
-            response_text = await self.process_through_backend(last_message, conversation_history)
-            
-            # Yield the response
-            yield llm.LLMResponse(text=response_text)
-            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.backend_url}/api/process_flow_message",
+                    json={
+                        "room_name": self.room_name,
+                        "user_message": user_message,
+                        "conversation_history": conversation_history
+                    },
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=10.0
+                )
+                
+                logger.info(f"🔧 Backend response status: {response.status_code}")
+                logger.info(f"🔧 Backend response text: {response.text}")
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    logger.info(f"🔧 Backend response data: {data}")
+                    
+                    # Check for both "success" and "processed" status
+                    if data.get("status") in ["success", "processed"] and "flow_result" in data:
+                        flow_result = data["flow_result"]
+                        logger.info(f"🔧 Flow result: {flow_result}")
+                        
+                        # Handle all flow result types
+                        if flow_result.get("type") in ["flow_response", "question", "message", "faq_response"]:
+                            response_text = flow_result.get("response", "I'm here to help!")
+                            logger.info(f"🔧 Flow response ({flow_result.get('type')}): '{response_text}'")
+                            return response_text
+                        elif flow_result.get("type") == "error":
+                            response_text = flow_result.get("response", "I'm here to help!")
+                            logger.info(f"🔧 Error response: '{response_text}'")
+                            return response_text
+                    
+                    # Fallback to generic response
+                    logger.warning("🔧 No valid flow result found, using fallback")
+                    return "I'm here to help! How can I assist you today?"
+                else:
+                    logger.error(f"❌ Backend error: {response.status_code} - {response.text}")
+                    return "I'm here to help! How can I assist you today?"
+                    
         except Exception as e:
-            logger.error(f"Error in custom LLM: {e}")
-            yield llm.LLMResponse(text="I apologize, but I'm having trouble processing your request. Let me connect you to a human agent.")
+            logger.error(f"❌ Error calling backend: {e}", exc_info=True)
+            return "I'm here to help! How can I assist you today?"
     
     async def process_through_backend(self, user_message: str, conversation_history: list) -> str:
         """Process user message through backend flow system"""
@@ -148,10 +245,7 @@ class FlowBasedLLM(llm.LLM):
         except Exception as e:
             logger.error(f"❌ Flow processing error: {e}")
             return "I apologize, but I'm having trouble processing your request. Let me connect you to one of our specialists who can assist you better."
-    
-    async def chat(self, chat_context: llm.ChatContext) -> llm.LLMStream:
-        """Required method for LLM class - delegates to generate_response"""
-        return self.generate_response(chat_context)
+
 
 
 # Backend configuration
@@ -244,14 +338,101 @@ class FlowBasedAssistant(Agent):
         self.room = None
         self.retry_manager = None
         self.backend_healthy = None
+        self.custom_llm = custom_llm
         
         # Use the custom LLM instead of default
         super().__init__(
             instructions="Flow-based voice assistant for Alive5 Support",
             llm=custom_llm
         )
+    
+    async def on_enter(self) -> None:
+        """Called when the agent enters the room"""
+        logger.info(f"🎤 AGENT ENTERED ROOM: {self.session_id}")
+        
+        # Send initial greeting using session.generate_reply as recommended
+        try:
+            await self.session.generate_reply(
+                instructions="Greet the user with a warm welcome. Say: Hello! I'm Scott from Alive5. How can I help you today?"
+            )
+            logger.info(f"👋 Initial greeting sent for {self.session_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to send initial greeting: {e}", exc_info=True)
+    
+    async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
+        """Called when user completes their turn (finishes speaking)"""
+        logger.info(f"🎤 USER TURN COMPLETED: '{new_message.text_content}'")
+        
+        try:
+            # Process through our custom LLM's backend system
+            conversation_history = []
+            for msg in turn_ctx.items:
+                if hasattr(msg, 'text_content') and msg.text_content:
+                    conversation_history.append({
+                        "role": msg.role,
+                        "content": msg.text_content,
+                        "timestamp": datetime.now().isoformat()
+                    })
+            
+            # Add the new message to conversation history
+            conversation_history.append({
+                "role": new_message.role,
+                "content": new_message.text_content or "",
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            logger.info(f"🎤 Calling backend with room_name: {self.custom_llm.room_name}")
+            logger.info(f"🎤 User message: '{new_message.text_content or ''}'")
+            logger.info(f"🎤 Conversation history: {conversation_history}")
+            response_text = await self.custom_llm._call_backend_async(new_message.text_content or "", conversation_history)
+            logger.info(f"🎤 Backend returned: '{response_text}'")
+            
+            # Add the response to the chat context so the LLM can use it
+            turn_ctx.add_message(
+                role="assistant",
+                content=response_text
+            )
+            
+            # Update the chat context permanently
+            await self.update_chat_ctx(turn_ctx)
+            logger.info(f"🎤 Response added to chat context: '{response_text}'")
+                
+        except Exception as e:
+            logger.error(f"❌ Error processing user message: {e}", exc_info=True)
+            # Add error message to chat context
+            turn_ctx.add_message(
+                role="assistant",
+                content="I apologize, but I'm having trouble processing your request. Let me connect you to a human agent."
+            )
+            await self.update_chat_ctx(turn_ctx)
 
-
+    async def llm_node(
+        self,
+        chat_ctx: llm.ChatContext,
+        tools: list[llm.FunctionTool],
+        model_settings: ModelSettings
+    ) -> AsyncIterable[llm.ChatChunk]:
+        """Override LLM node to use our custom flow processing"""
+        logger.info(f"🎤 LLM NODE: Processing chat context with {len(chat_ctx.items)} items")
+        
+        # Check if the last message is from the assistant (our flow response)
+        if chat_ctx.items and chat_ctx.items[-1].role == "assistant":
+            # The response was already added by on_user_turn_completed
+            # Just yield it as a ChatChunk
+            last_message = chat_ctx.items[-1]
+            chunk = llm.ChatChunk(
+                id=str(uuid.uuid4()),
+                delta=llm.ChoiceDelta(
+                    content=last_message.text_content or "",
+                    role="assistant"
+                )
+            )
+            yield chunk
+        else:
+            # Fallback to default LLM behavior if no assistant message
+            logger.info(f"🎤 LLM NODE: No assistant message found, using default behavior")
+            async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+                yield chunk
 
     async def send_disconnection_signal(self):
         """Send disconnection signal to frontend"""
@@ -315,11 +496,14 @@ async def entrypoint(ctx: JobContext):
         return
     
     # Create custom LLM
+    logger.info(f"🔧 Creating custom LLM with backend URL: {BACKEND_URL}")
     custom_llm = FlowBasedLLM(BACKEND_URL, "dummy_key")
     custom_llm.set_room_name(room_name)
+    logger.info(f"🔧 Custom LLM created with room_name: {room_name}")
     
     # Create assistant with custom LLM
     assistant = FlowBasedAssistant(session_id, custom_llm)
+    logger.info(f"🔧 FlowBasedAssistant created for session: {session_id}")
     active_sessions[room_name] = session_id
     logger.info(f"🚀 STARTING SESSION {session_id} in room {room_name}")
     
@@ -373,7 +557,7 @@ async def entrypoint(ctx: JobContext):
                 api_key=os.getenv("CARTESIA_API_KEY")
             ),
             vad=ctx.proc.userdata["vad"],
-            turn_detection=MultilingualModel(),
+            turn_detection=None,  # Disable turn detection to avoid compatibility issues
         )
         
         # Start session
@@ -393,7 +577,7 @@ async def entrypoint(ctx: JobContext):
         assistant.agent_session = agent_session
         logger.info(f"🎙️ Agent session started for {session_id}")
         
-        # The custom LLM will handle the initial greeting automatically
+        # Initial greeting will be handled by the custom LLM
         logger.info(f"👋 Custom LLM will handle initial greeting for {session_id}")
         
         # Keep session alive

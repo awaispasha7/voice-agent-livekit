@@ -50,43 +50,6 @@ class DynamicVoiceAgent {
         return hash.toString();
     }
     
-    isIncompleteTranscript(message) {
-        // Check if transcript looks incomplete
-        const trimmed = message.trim();
-        
-        // Very short messages might be incomplete
-        if (trimmed.length < 8) return true;
-        
-        // Messages ending with common incomplete patterns
-        const incompletePatterns = [
-            /^(hey|hi|hello|can you|i want|i need|tell me|what is|how do|where is|when is|why is|who is)\s*$/i,
-            /^(can you|tell me|what|how|where|when|why|who)\s*$/i,
-            /^(i think|i believe|i want|i need|i would|i should|i could|i might)\s*$/i,
-            /^(sure|okay|yes|no|maybe|well|so|but|and|or)\s*$/i,
-            // New patterns for partial sentences
-            /^(okay\.?\s*scott,?)\s*$/i,
-            /^(okay\.?\s*scott,?\s*i\s*wanted\s*to\s*know\s*about)\s*$/i,
-            /^(okay\.?\s*scott,?\s*i\s*wanted\s*to\s*know\s*about\s*the\s*weather\s*update)\s*$/i,
-            // Scott-specific patterns
-            /^(scott\.?\s*can\s*you\s*tell)\s*$/i,
-            /^(scott\.?\s*can\s*you\s*tell\s*me\s*about)\s*$/i,
-            /^(scott\.?\s*can\s*you\s*tell\s*me\s*the\s*weather\s*update)\s*$/i,
-            /^(hey,?\s*scott\.?\s*can\s*you\s*tell\s*me\s*about)\s*$/i,
-            // Weather-specific patterns (these are COMPLETE sentences, not incomplete)
-            // /^(the\s*weather\s*today)\s*$/i,  // This is complete, not incomplete
-            // /^(weather\s*today)\s*$/i,        // This is complete, not incomplete
-            // /^(weather)\s*$/i,                // This is complete, not incomplete
-            // General patterns for incomplete sentences
-            /^(okay\.?\s*[a-z]+,?\s*)$/i,
-            /^(okay\.?\s*[a-z]+,?\s*i\s*wanted\s*to\s*know\s*about)\s*$/i,
-            /^(okay\.?\s*[a-z]+,?\s*i\s*wanted\s*to\s*know\s*about\s*[a-z]+\s*update)\s*$/i,
-            // More general incomplete patterns
-            /^(scott\.?\s*can\s*you\s*tell\s*me\s*the\s*[a-z]+\s*update)\s*$/i,
-            /^(scott\.?\s*can\s*you\s*tell\s*me\s*the\s*[a-z]+)\s*$/i
-        ];
-        
-        return incompletePatterns.some(pattern => pattern.test(trimmed));
-    }
     
     processCompleteTranscript(transcriptText) {
         // Prevent duplicate processing of the same message
@@ -409,15 +372,8 @@ class DynamicVoiceAgent {
                     // This is definitely a user's speech transcription
                     console.log('👤 USER:', message);
                     
-                    // Check if this looks like an incomplete transcript
-                    const isIncomplete = this.isIncompleteTranscript(message);
-                    if (isIncomplete) {
-                        console.log('⏳ Incomplete transcript detected, waiting for completion:', message);
-                        // Still process it for display but mark as incomplete
-                        this.handleUserTranscription(message, participantInfo, { ...reader.info.attributes, incomplete: true });
-                    } else {
-                        this.handleUserTranscription(message, participantInfo, reader.info.attributes);
-                    }
+                    // Process all user transcripts immediately - no filtering
+                    this.handleUserTranscription(message, participantInfo, reader.info.attributes);
                 } else if (isAgentIdentity || (!isUserTranscript && participantInfo.identity !== this.participantName)) {
                     // This is likely agent speech - but we'll handle it via our custom agent transcript stream
                     console.log('🤖 Scott:', message);
@@ -511,7 +467,7 @@ class DynamicVoiceAgent {
         this.updateTranscriptDisplay(transcriptText, isFinal);
         
         // Only add to conversation log and send for intent detection if it's final and complete
-        if (isFinal && transcriptText.trim() && !attributes.incomplete) {
+        if (isFinal && transcriptText.trim()) {
             // Clear any existing timeout
             if (this.transcriptTimeout) {
                 clearTimeout(this.transcriptTimeout);
