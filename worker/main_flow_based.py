@@ -28,7 +28,6 @@ from livekit.plugins import (
 )
 from livekit.agents import llm
 from livekit.agents.types import NOT_GIVEN, NotGivenOr, DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit import rtc
 
 # Load environment variables
@@ -163,7 +162,7 @@ class FlowBasedLLM(llm.LLM):
                         "conversation_history": conversation_history
                     },
                     headers={"Authorization": f"Bearer {self.api_key}"},
-                    timeout=10.0
+                    timeout=BACKEND_TIMEOUT
                 )
                 
                 logger.info(f"🔧 Backend response status: {response.status_code}")
@@ -178,13 +177,32 @@ class FlowBasedLLM(llm.LLM):
                         flow_result = data["flow_result"]
                         logger.info(f"🔧 Flow result: {flow_result}")
                         
+                        # Normalize fields
+                        ftype = (flow_result or {}).get("type")
+                        response_text = (flow_result or {}).get("response") or ""
+                        next_step = (flow_result or {}).get("next_step")
+                        
+                        # If flow just started OR response is boilerplate, try to speak the next_step's text
+                        if ftype == "flow_started" and (not response_text or response_text.strip().upper() == "N/A" or response_text.strip().lower().startswith("i understand you want to know")):
+                            if isinstance(next_step, dict):
+                                candidate = next_step.get("text")
+                                if candidate and candidate.strip():
+                                    logger.info(f"🔧 Using next_step text due to empty/N/A response: '{candidate}'")
+                                    return candidate
+                            # If next_step is missing or has no text, gently ask the user to clarify for this flow
+                            if (not next_step) or (isinstance(next_step, dict) and not (next_step.get("text") or "").strip()):
+                                fallback_prompt = "Could you please clarify so I can proceed?"
+                                logger.info("🔧 Missing next_step text; using gentle clarification prompt")
+                                return fallback_prompt
+                        
                         # Handle all flow result types
-                        if flow_result.get("type") in ["flow_response", "question", "message", "faq_response"]:
-                            response_text = flow_result.get("response", "I'm here to help!")
-                            logger.info(f"🔧 Flow response ({flow_result.get('type')}): '{response_text}'")
-                            return response_text
-                        elif flow_result.get("type") == "error":
-                            response_text = flow_result.get("response", "I'm here to help!")
+                        if ftype in ["flow_response", "question", "message", "faq_response", "faq", "flow_started"]:
+                            if response_text and response_text.strip():
+                                logger.info(f"🔧 Flow response ({ftype}): '{response_text}'")
+                                return response_text
+                        
+                        if ftype == "error":
+                            response_text = response_text or "I'm here to help!"
                             logger.info(f"🔧 Error response: '{response_text}'")
                             return response_text
                     
@@ -250,7 +268,7 @@ class FlowBasedLLM(llm.LLM):
 
 # Backend configuration
 BACKEND_URL = "https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com"
-BACKEND_TIMEOUT = 15  # Increased timeout
+BACKEND_TIMEOUT = 25  # Increased timeout to reduce read timeouts
 BACKEND_RETRY_INTERVAL = 30
 BACKEND_MAX_RETRIES = 10
 
@@ -339,6 +357,7 @@ class FlowBasedAssistant(Agent):
         self.retry_manager = None
         self.backend_healthy = None
         self.custom_llm = custom_llm
+        self._greeted = False
         
         # Use the custom LLM instead of default
         super().__init__(
@@ -350,12 +369,16 @@ class FlowBasedAssistant(Agent):
         """Called when the agent enters the room"""
         logger.info(f"🎤 AGENT ENTERED ROOM: {self.session_id}")
         
-        # Send initial greeting using session.generate_reply as recommended
+        # Speak greeting directly via TTS so it doesn't rely on LLM
         try:
-            await self.session.generate_reply(
-                instructions="Greet the user with a warm welcome. Say: Hello! I'm Scott from Alive5. How can I help you today?"
-            )
-            logger.info(f"👋 Initial greeting sent for {self.session_id}")
+            if not self._greeted and self.session:
+                await self.session.say("Hello! I'm Scott from Alive5. How can I help you today?")
+                self._greeted = True
+                try:
+                    await self.send_agent_transcript("Hello! I'm Scott from Alive5. How can I help you today?")
+                except Exception:
+                    pass
+                logger.info(f"👋 Initial greeting sent for {self.session_id}")
         except Exception as e:
             logger.error(f"❌ Failed to send initial greeting: {e}", exc_info=True)
     
@@ -386,6 +409,11 @@ class FlowBasedAssistant(Agent):
             logger.info(f"🎤 Conversation history: {conversation_history}")
             response_text = await self.custom_llm._call_backend_async(new_message.text_content or "", conversation_history)
             logger.info(f"🎤 Backend returned: '{response_text}'")
+            # Also publish agent transcript to frontend for visibility
+            try:
+                await self.send_agent_transcript(response_text)
+            except Exception as _e:
+                logger.warning(f"Failed to publish agent transcript: {_e}")
             
             # Add the response to the chat context so the LLM can use it
             turn_ctx.add_message(
@@ -431,7 +459,8 @@ class FlowBasedAssistant(Agent):
         else:
             # Fallback to default LLM behavior if no assistant message
             logger.info(f"🎤 LLM NODE: No assistant message found, using default behavior")
-            async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+            # Call superclass implementation (Agent.llm_node)
+            async for chunk in super().llm_node(chat_ctx, tools, model_settings):
                 yield chunk
 
     async def send_disconnection_signal(self):
@@ -576,9 +605,7 @@ async def entrypoint(ctx: JobContext):
         
         assistant.agent_session = agent_session
         logger.info(f"🎙️ Agent session started for {session_id}")
-        
-        # Initial greeting will be handled by the custom LLM
-        logger.info(f"👋 Custom LLM will handle initial greeting for {session_id}")
+        # on_enter handles initial greeting via TTS
         
         # Keep session alive
         try:
