@@ -978,7 +978,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     # Global farewell detection to gracefully end calls regardless of step type
     um_low = (user_message or "").lower().strip()
     farewell_markers = [
-        "bye", "goodbye", "that is all", "that's all", "thats all", "thanks, bye", "thank you, bye", "end call", "hang up", "we are done", "we're done", "okay, bye", "Okay, that's all"
+        "bye", "goodbye", "that is all", "that's all", "thats all", "thanks, bye", "thank you, bye", "end call", "hang up", "we are done", "we're done", "okay, bye", "ok bye", "okay that's all", "ok that's all", "i think that's all", "that's all goodbye"
     ]
     if any(m in um_low for m in farewell_markers):
         response_text = "Thanks for calling Alive5. Have a great day! Goodbye!"
@@ -1100,6 +1100,12 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 if llm_interp.get("status") == "extracted" and float(llm_interp.get("confidence", 0)) >= 0.6:
                     interp = llm_interp
 
+            # Extra yes/no fallback for special-needs/SSO style questions
+            qtxt = (current_step_data.get("text") or "").lower()
+            utxt = (user_message or "").lower()
+            if any(k in qtxt for k in ["special needs", "sso", "salesforce", "crm integration"]) and re.search(r"\b(yes|yeah|yep|yup|sure|of course|please|ok|okay|absolutely|i need|i would need)\b", utxt):
+                interp = {"status": "extracted", "kind": "yesno", "value": True, "confidence": 0.95}
+
             # Process the user response and move to next step
             next_step = get_next_flow_step(flow_state, user_message)
             if next_step:
@@ -1161,12 +1167,10 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                         "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
                         "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"
                     }
-                    import re
                     parts = re.findall(r"\d|zero|one|two|three|four|five|six|seven|eight|nine", t)
                     return "".join(words_map.get(p, p) for p in parts)
 
                 def _extract_quantity(t: str) -> Optional[int]:
-                    import re
                     m = re.search(r"\b(\d{1,3})\b", t)
                     if m:
                         return int(m.group(1))
@@ -1222,7 +1226,6 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     }
 
                 # If user utterance is too short/stopwordy, re-ask the same question instead of falling back
-                import re
                 tokens = re.findall(r"\w+", ur)
                 if len(tokens) <= 2:
                     response_text = current_step_data.get("text", "")
@@ -1254,6 +1257,14 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     flow_state.flow_data = nf
                     logger.info(f"FLOW_MANAGEMENT: Auto-transitioned message → faq for answers handling: {old} → {flow_state.current_step}")
                     current_step_data = flow_state.flow_data
+
+            # Also handle if current step IS 'faq' and we haven't printed its prompt yet (ensure response shown)
+            if current_step_data and current_step_data.get("type") == "faq":
+                faq_text = current_step_data.get("text", "")
+                if faq_text:
+                    add_agent_response_to_history(flow_state, faq_text)
+                    logger.info("FLOW_MANAGEMENT: Emitting FAQ prompt to user")
+                    # Do not return here; still evaluate answers below against user_message
 
             # Handle template 'answers' on FAQ/message steps (noAction / moreAction)
             if current_step_data and current_step_data.get("answers") and current_step_data.get("type") in ("faq", "message"):
