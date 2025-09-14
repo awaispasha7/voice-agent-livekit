@@ -736,53 +736,13 @@ async def initialize_bot_template():
             else:
                 logger.error(f"FLOW_MANAGEMENT: Invalid template response: {result}")
                 print(f"❌ TEMPLATE LOAD FAILED: {result}")
-                print("🔧 FALLBACK: Using mock template for testing")
-                bot_template = create_mock_template()
-                return bot_template
+                return None
     except Exception as e:
         logger.error(f"FLOW_MANAGEMENT: Failed to initialize bot template: {str(e)}")
         print(f"❌ TEMPLATE INITIALIZATION ERROR: {str(e)}")
-        print("🔧 FALLBACK: Using mock template for testing")
-        bot_template = create_mock_template()
-        return bot_template
+        return None
 
-def create_mock_template():
-    """Create a mock template for testing when the API fails"""
-    return {
-        "code": 200,
-        "data": {
-            "Flow_1": {
-                "type": "intent_bot",
-                "text": "weather",
-                "name": "weather_intent",
-                "next_flow": {
-                    "type": "question",
-                    "text": "What is your zip code?",
-                    "name": "weather_zip_question"
-                }
-            },
-            "Flow_2": {
-                "type": "intent_bot", 
-                "text": "pricing",
-                "name": "pricing_intent",
-                "next_flow": {
-                    "type": "question",
-                    "text": "How many phone lines do you need?",
-                    "name": "pricing_lines_question"
-                }
-            },
-            "Flow_3": {
-                "type": "intent_bot",
-                "text": "support",
-                "name": "support_intent", 
-                "next_flow": {
-                    "type": "question",
-                    "text": "What technical issue are you experiencing?",
-                    "name": "support_issue_question"
-                }
-            }
-        }
-    }
+    # Removed mock template: always fetch from Alive5 API per client requirement
 
 # Removed find_matching_intent - now using LLM-based detection
 
@@ -1232,16 +1192,14 @@ async def get_faq_response(user_message: str, bot_id: str = None, flow_state: Fl
         if flow_state:
             logger.info(f"FAQ_RESPONSE: Flow state - current_flow: {flow_state.current_flow}, current_step: {flow_state.current_step}")
         
-        # Use provided bot_id or default from template or fallback
-        default_bot_id = "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"
+        # Use provided bot_id or an explicit default from env/constant (template 'name' is NOT a bot_id)
         if not bot_id:
-            # Try to get default FAQ bot ID from template
-            if bot_template and bot_template.get("data"):
-                for flow_data in bot_template["data"].values():
-                    if flow_data.get("type") == "faq":
-                        default_bot_id = flow_data.get("name", default_bot_id)
-                        break
-            bot_id = default_bot_id
+            env_bot_id = os.getenv("A5_FAQ_BOT_ID")
+            if env_bot_id and env_bot_id.strip():
+                bot_id = env_bot_id.strip()
+            else:
+                # Fallback to known bot id shared by client
+                bot_id = "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"
         
         logger.info(f"FAQ_RESPONSE: Using bot_id: {bot_id}")
         print(f"🤖 FAQ BOT CALL: Bot ID: {bot_id} | Question: '{user_message}'")

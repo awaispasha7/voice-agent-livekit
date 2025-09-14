@@ -145,7 +145,7 @@ class FlowBasedLLM(llm.LLM):
         return SimpleLLMStream(_response_generator())
     
     
-    async def _call_backend_async(self, user_message: str, conversation_history: list) -> str:
+    async def _call_backend_async(self, user_message: str, conversation_history: list) -> dict:
         """Async backend call to process flow messages"""
         try:
             import httpx
@@ -188,34 +188,34 @@ class FlowBasedLLM(llm.LLM):
                                 candidate = next_step.get("text")
                                 if candidate and candidate.strip():
                                     logger.info(f"🔧 Using next_step text due to empty/N/A response: '{candidate}'")
-                                    return candidate
+                                    return {"text": candidate, "type": "question" if candidate.strip().endswith("?") else ftype}
                             # If next_step is missing or has no text, gently ask the user to clarify for this flow
                             if (not next_step) or (isinstance(next_step, dict) and not (next_step.get("text") or "").strip()):
                                 fallback_prompt = "Could you please clarify so I can proceed?"
                                 logger.info("🔧 Missing next_step text; using gentle clarification prompt")
-                                return fallback_prompt
+                                return {"text": fallback_prompt, "type": "clarify"}
                         
                         # Handle all flow result types
                         if ftype in ["flow_response", "question", "message", "faq_response", "faq", "flow_started"]:
                             if response_text and response_text.strip():
                                 logger.info(f"🔧 Flow response ({ftype}): '{response_text}'")
-                                return response_text
+                                return {"text": response_text, "type": ftype}
                         
                         if ftype == "error":
                             response_text = response_text or "I'm here to help!"
                             logger.info(f"🔧 Error response: '{response_text}'")
-                            return response_text
+                            return {"text": response_text, "type": "error"}
                     
                     # Fallback to generic response
                     logger.warning("🔧 No valid flow result found, using fallback")
-                    return "I'm here to help! How can I assist you today?"
+                    return {"text": "I'm here to help! How can I assist you today?", "type": "fallback"}
                 else:
                     logger.error(f"❌ Backend error: {response.status_code} - {response.text}")
-                    return "I'm here to help! How can I assist you today?"
+                    return {"text": "I'm here to help! How can I assist you today?", "type": "fallback"}
                     
         except Exception as e:
             logger.error(f"❌ Error calling backend: {e}", exc_info=True)
-            return "I'm here to help! How can I assist you today?"
+            return {"text": "I'm here to help! How can I assist you today?", "type": "fallback"}
     
     async def process_through_backend(self, user_message: str, conversation_history: list) -> str:
         """Process user message through backend flow system"""
@@ -358,6 +358,7 @@ class FlowBasedAssistant(Agent):
         self.backend_healthy = None
         self.custom_llm = custom_llm
         self._greeted = False
+        self._speech_lock = asyncio.Lock()
         
         # Use the custom LLM instead of default
         super().__init__(
@@ -372,7 +373,8 @@ class FlowBasedAssistant(Agent):
         # Speak greeting directly via TTS so it doesn't rely on LLM
         try:
             if not self._greeted and self.session:
-                await self.session.say("Hello! I'm Scott from Alive5. How can I help you today?")
+                async with self._speech_lock:
+                    await self.session.say("Hello! I'm Scott from Alive5. How can I help you today?")
                 self._greeted = True
                 try:
                     await self.send_agent_transcript("Hello! I'm Scott from Alive5. How can I help you today?")
@@ -387,6 +389,11 @@ class FlowBasedAssistant(Agent):
         logger.info(f"🎤 USER TURN COMPLETED: '{new_message.text_content}'")
         
         try:
+            # Initialize clarification trackers
+            if not hasattr(self, "_last_question_text"):
+                self._last_question_text = None
+                self._clarify_count = 0
+
             # Process through our custom LLM's backend system
             conversation_history = []
             for msg in turn_ctx.items:
@@ -407,23 +414,42 @@ class FlowBasedAssistant(Agent):
             logger.info(f"🎤 Calling backend with room_name: {self.custom_llm.room_name}")
             logger.info(f"🎤 User message: '{new_message.text_content or ''}'")
             logger.info(f"🎤 Conversation history: {conversation_history}")
-            response_text = await self.custom_llm._call_backend_async(new_message.text_content or "", conversation_history)
-            logger.info(f"🎤 Backend returned: '{response_text}'")
-            # Also publish agent transcript to frontend for visibility
+            backend_out = await self.custom_llm._call_backend_async(new_message.text_content or "", conversation_history)
+            response_text = backend_out.get("text", "")
+            rtype = backend_out.get("type", "")
+            logger.info(f"🎤 Backend returned: type={rtype} text='{response_text}'")
+
+            # Natural clarification when not understood
+            if rtype in ("error", "fallback") and self._last_question_text:
+                if self._clarify_count < 2:
+                    response_text = f"Sorry, I didn't catch that. {self._last_question_text}"
+                    self._clarify_count += 1
+                else:
+                    # keep backend message after attempts
+                    pass
+            else:
+                self._clarify_count = 0
+
+            # Track last question
+            if rtype == "question" or response_text.strip().endswith("?"):
+                self._last_question_text = response_text
+            elif rtype in ("message", "faq", "faq_response", "flow_started"):
+                if response_text.strip().endswith("?"):
+                    self._last_question_text = response_text
+                else:
+                    self._last_question_text = None
+            # Speak sequentially to avoid interruption by later responses
+            try:
+                async with self._speech_lock:
+                    await self.session.say(response_text)
+            except Exception as _e:
+                logger.warning(f"Failed to speak response: {_e}")
+
+            # Publish agent transcript to frontend for visibility
             try:
                 await self.send_agent_transcript(response_text)
             except Exception as _e:
                 logger.warning(f"Failed to publish agent transcript: {_e}")
-            
-            # Add the response to the chat context so the LLM can use it
-            turn_ctx.add_message(
-                role="assistant",
-                content=response_text
-            )
-            
-            # Update the chat context permanently
-            await self.update_chat_ctx(turn_ctx)
-            logger.info(f"🎤 Response added to chat context: '{response_text}'")
                 
         except Exception as e:
             logger.error(f"❌ Error processing user message: {e}", exc_info=True)
