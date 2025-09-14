@@ -1204,7 +1204,8 @@ async def get_faq_response(user_message: str, bot_id: str = None, flow_state: Fl
         logger.info(f"FAQ_RESPONSE: Using bot_id: {bot_id}")
         print(f"🤖 FAQ BOT CALL: Bot ID: {bot_id} | Question: '{user_message}'")
         
-        async with httpx.AsyncClient() as client:
+        # FAQ may take ~15s; set a generous timeout
+        async with httpx.AsyncClient(timeout=httpx.Timeout(35.0)) as client:
             response = await client.post(
                 f"{A5_BASE_URL}/public/1.0/get-faq-bot-response-by-bot-id",
                 headers={
@@ -1232,8 +1233,8 @@ async def get_faq_response(user_message: str, bot_id: str = None, flow_state: Fl
                 "bot_id": bot_id
             }
     except Exception as e:
-        logger.error(f"FLOW_MANAGEMENT: FAQ bot error: {str(e)}")
-        print(f"❌ FAQ BOT ERROR: {str(e)}")
+        logger.error(f"FLOW_MANAGEMENT: FAQ bot error: {e!r}")
+        print(f"❌ FAQ BOT ERROR: {e!r}")
         # Add error response to conversation history if flow_state is provided
         error_response = "I'm sorry, I'm having trouble processing your request. Let me connect you to a human agent."
         if flow_state:

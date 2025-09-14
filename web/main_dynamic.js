@@ -460,27 +460,45 @@ class DynamicVoiceAgent {
     handleUserTranscription(transcriptText, participantInfo, attributes = {}) {
         //console.log('User transcription:', transcriptText, 'from:', participantInfo.identity);
         
-        // Check if this is a final transcript or interim
-        const isFinal = attributes['lk.transcript.final'] === 'true' || !attributes['lk.transcript.interim'];
+        // Strictly treat only explicit finals as final; everything else is interim
+        const isFinal = attributes['lk.transcript.final'] === 'true';
         
         // Update transcript display with proper interim/final handling
         this.updateTranscriptDisplay(transcriptText, isFinal);
         
         // Only add to conversation log and send for intent detection if it's final and complete
         if (isFinal && transcriptText.trim()) {
+            const now = Date.now();
+            const AGGREGATE_WINDOW_MS = 1200;
+
             // Clear any existing timeout
             if (this.transcriptTimeout) {
                 clearTimeout(this.transcriptTimeout);
             }
-            
-            // Store the pending transcript
-            this.pendingTranscript = transcriptText;
-            
-            // Set a timeout to process the transcript after a delay
-            // This allows for complete sentences to be captured
+
+            // Initialize last final timestamp storage
+            if (typeof this.lastFinalAt !== 'number') {
+                this.lastFinalAt = 0;
+            }
+
+            // If another final came in recently, aggregate instead of replacing
+            if (now - this.lastFinalAt <= AGGREGATE_WINDOW_MS && this.pendingTranscript && this.pendingTranscript.length) {
+                // Concatenate with a space if needed
+                const joiner = this.pendingTranscript.endsWith(' ') ? '' : ' ';
+                this.pendingTranscript = this.pendingTranscript + joiner + transcriptText;
+            } else {
+                // Start a new pending utterance
+                this.pendingTranscript = transcriptText;
+            }
+
+            this.lastFinalAt = now;
+
+            // Debounce processing to allow more finals to arrive and be aggregated
             this.transcriptTimeout = setTimeout(() => {
                 this.processCompleteTranscript(this.pendingTranscript);
-            }, 1500); // 1.5 second delay to wait for complete sentences
+                this.pendingTranscript = '';
+                this.lastFinalAt = 0;
+            }, AGGREGATE_WINDOW_MS);
         }
     }
 
