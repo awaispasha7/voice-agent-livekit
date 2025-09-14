@@ -1216,7 +1216,76 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 add_agent_response_to_history(flow_state, response_text)
                 return {"type": "question", "response": response_text, "flow_state": flow_state}
         else:
-            logger.info(f"FLOW_MANAGEMENT: Current step is not a question (type: {current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift")
+            logger.info(f"FLOW_MANAGEMENT: Current step is not a question (type: {current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift or answers branch")
+
+            # If current step is a message with a next_flow of type 'faq', auto-transition so that
+            # subsequent user utterances evaluate the FAQ node's answers.
+            if current_step_data and current_step_data.get("type") == "message" and current_step_data.get("next_flow"):
+                nf = current_step_data.get("next_flow")
+                if isinstance(nf, dict) and nf.get("type") == "faq":
+                    old = flow_state.current_step
+                    flow_state.current_step = nf.get("name")
+                    flow_state.flow_data = nf
+                    logger.info(f"FLOW_MANAGEMENT: Auto-transitioned message → faq for answers handling: {old} → {flow_state.current_step}")
+                    current_step_data = flow_state.flow_data
+
+            # Handle template 'answers' on FAQ/message steps (noAction / moreAction)
+            if current_step_data and current_step_data.get("answers") and current_step_data.get("type") in ("faq", "message"):
+                answers = current_step_data.get("answers", {}) or {}
+                um = (user_message or "").lower().strip()
+                # Heuristics for escalation vs end
+                escalate_phrases = [
+                    "agent", "human", "representative", "connect me", "talk to", "speak to", "someone", "person", "escalate", "transfer"
+                ]
+                end_phrases = [
+                    "thanks", "thank you", "that is all", "that's all", "thats all", "bye", "goodbye", "all good", "great, thanks", "no more"
+                ]
+
+                def _matches_any(phrases: list[str]) -> bool:
+                    return any(p in um for p in phrases)
+
+                # Decide branch
+                branch = None
+                if _matches_any(escalate_phrases) and "moreAction" in answers:
+                    branch = "moreAction"
+                elif _matches_any(end_phrases) and "noAction" in answers:
+                    branch = "noAction"
+
+                if branch:
+                    node = answers.get(branch) or {}
+                    response_text = node.get("text", "")
+                    next_flow = node.get("next_flow")
+                    logger.info(f"FLOW_MANAGEMENT: ANSWERS branch '{branch}' selected. Next_flow: {bool(next_flow)}")
+                    add_agent_response_to_history(flow_state, response_text)
+
+                    # Transition if next_flow exists
+                    if next_flow:
+                        old = flow_state.current_step
+                        flow_state.current_step = next_flow.get("name")
+                        flow_state.flow_data = next_flow
+                        logger.info(f"FLOW_MANAGEMENT: ANSWERS transition {old} → {flow_state.current_step}")
+                        print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old} → To: {flow_state.current_step} | Type: {next_flow.get('type')} | Response: '{response_text}'")
+
+                        # If this is an Agent handoff, expose as flow_started for frontend intent update
+                        flow_name = None
+                        nf_text = (next_flow.get("text") or "").strip()
+                        if nf_text.lower().startswith("intent: agent"):
+                            flow_name = "Agent"
+                        return {
+                            "type": "flow_started" if flow_name else (next_flow.get("type", "message")),
+                            "flow_name": flow_name,
+                            "response": response_text,
+                            "next_step": next_flow.get("next_flow"),
+                            "flow_state": flow_state
+                        }
+
+                    # No next_flow: just return the branch message
+                    # If this was a noAction branch, mark as conversation_end for graceful close
+                    return {
+                        "type": "conversation_end" if branch == "noAction" else node.get("type", "message"),
+                        "response": response_text,
+                        "flow_state": flow_state
+                    }
     
     # Check for intent shift even when in a flow using LLM
     print_flow_status(room_name, flow_state, "CHECKING FOR INTENT SHIFT", f"Current flow: {flow_state.current_flow}")

@@ -363,6 +363,12 @@ class FlowBasedAssistant(Agent):
         self.custom_llm = custom_llm
         self._greeted = False
         self._speech_lock = asyncio.Lock()
+        # Aggregate multiple short user turns before backend call
+        self._aggregate_buffer: str = ""
+        self._aggregate_task: Optional[asyncio.Task] = None
+        self._aggregate_window_s: float = 1.2
+        self._last_chat_ctx: Optional[llm.ChatContext] = None
+        self._backend_call_lock = asyncio.Lock()
         
         # Use the custom LLM instead of default
         super().__init__(
@@ -389,18 +395,46 @@ class FlowBasedAssistant(Agent):
             logger.error(f"❌ Failed to send initial greeting: {e}", exc_info=True)
     
     async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
-        """Called when user completes their turn (finishes speaking)"""
+        """Called when user finishes speaking; aggregate multiple turns before processing"""
         logger.info(f"🎤 USER TURN COMPLETED: '{new_message.text_content}'")
-        
+        self._last_chat_ctx = turn_ctx
+        text = (new_message.text_content or "").strip()
+        if not text:
+            return
+        # Append to buffer; if previous ends without punctuation, add a space
+        joiner = " " if (self._aggregate_buffer and not self._aggregate_buffer.endswith((" ", ",", ".", "?", "!"))) else ""
+        self._aggregate_buffer = f"{self._aggregate_buffer}{joiner}{text}".strip()
+        # Reset timer
+        if self._aggregate_task and not self._aggregate_task.done():
+            self._aggregate_task.cancel()
+            try:
+                await self._aggregate_task
+            except Exception:
+                pass
+        self._aggregate_task = asyncio.create_task(self._flush_aggregate_after_delay())
+
+    async def _flush_aggregate_after_delay(self) -> None:
         try:
-            # Smalltalk: greet/farewell/acknowledgement for human tone
-            user_text = (new_message.text_content or "").strip()
+            await asyncio.sleep(self._aggregate_window_s)
+            text = self._aggregate_buffer.strip()
+            self._aggregate_buffer = ""
+            if not text:
+                return
+            await self._process_aggregated_text(text)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"Aggregate flush error: {e}")
+
+    async def _process_aggregated_text(self, user_text: str) -> None:
+        """Send aggregated text to backend and speak response"""
+        try:
+            # Smalltalk blending
             lower_text = user_text.lower()
             polite_reply: Optional[str] = None
             greetings = ["hi", "hello", "hey", "good morning", "good evening"]
             byes = ["bye", "goodbye", "see you", "talk to you later", "that\'s all", "thanks, bye"]
             affirmations = ["okay", "ok", "sounds good", "that sounds great", "great", "thanks", "thank you"]
-
             if any(lower_text.startswith(g) for g in greetings):
                 polite_reply = "Hello!"
             elif any(b in lower_text for b in byes):
@@ -413,32 +447,30 @@ class FlowBasedAssistant(Agent):
                 self._last_question_text = None
                 self._clarify_count = 0
 
-            # Process through our custom LLM's backend system
+            # Build conversation history from last chat ctx
             conversation_history = []
-            for msg in turn_ctx.items:
-                if hasattr(msg, 'text_content') and msg.text_content:
-                    conversation_history.append({
-                        "role": msg.role,
-                        "content": msg.text_content,
-                        "timestamp": datetime.now().isoformat()
-                    })
-            
-            # Add the new message to conversation history
+            if self._last_chat_ctx:
+                for msg in self._last_chat_ctx.items:
+                    if hasattr(msg, 'text_content') and msg.text_content:
+                        conversation_history.append({
+                            "role": msg.role,
+                            "content": msg.text_content,
+                            "timestamp": datetime.now().isoformat()
+                        })
             conversation_history.append({
-                "role": new_message.role,
-                "content": new_message.text_content or "",
+                "role": "user",
+                "content": user_text,
                 "timestamp": datetime.now().isoformat()
             })
-            
-            logger.info(f"🎤 Calling backend with room_name: {self.custom_llm.room_name}")
-            logger.info(f"🎤 User message: '{new_message.text_content or ''}'")
-            logger.info(f"🎤 Conversation history: {conversation_history}")
-            backend_out = await self.custom_llm._call_backend_async(user_text, conversation_history)
+
+            logger.info(f"🎤 Aggregated user message: '{user_text}'")
+            async with self._backend_call_lock:
+                backend_out = await self.custom_llm._call_backend_async(user_text, conversation_history)
             response_text = backend_out.get("text", "")
             rtype = backend_out.get("type", "")
             logger.info(f"🎤 Backend returned: type={rtype} text='{response_text}'")
 
-            # If backend started a flow, publish intent update to frontend
+            # Intent update broadcast
             try:
                 if rtype == "flow_started" and backend_out.get("flow_name") and self.room:
                     await self.room.local_participant.publish_data(
@@ -453,50 +485,52 @@ class FlowBasedAssistant(Agent):
             except Exception as _e:
                 logger.warning(f"Failed to publish intent update: {_e}")
 
-            # Natural clarification when not understood
+            # Clarify when not understood
             if rtype in ("error", "fallback") and self._last_question_text:
                 if self._clarify_count < 2:
                     response_text = f"Sorry, I didn't catch that. {self._last_question_text}"
                     self._clarify_count += 1
-                else:
-                    # keep backend message after attempts
-                    pass
             else:
                 self._clarify_count = 0
 
-            # Blend polite smalltalk if detected and does not conflict with a question
+            # Sanitize odd fallbacks and avoid duplicated greetings
+            rlow = response_text.lower().strip()
+            if "i'm not scott" in rlow:
+                response_text = response_text.replace("I'm not Scott", "I'm Scott").replace("i'm not scott", "I'm Scott")
+                rlow = response_text.lower().strip()
             if polite_reply and not response_text.strip().endswith("?"):
-                response_text = f"{polite_reply} {response_text}".strip()
+                if not (rlow.startswith("hello") or "how can i help" in rlow):
+                    response_text = f"{polite_reply} {response_text}".strip()
 
             # Track last question
             if rtype == "question" or response_text.strip().endswith("?"):
                 self._last_question_text = response_text
             elif rtype in ("message", "faq", "faq_response", "flow_started"):
-                if response_text.strip().endswith("?"):
-                    self._last_question_text = response_text
-                else:
-                    self._last_question_text = None
-            # Speak sequentially to avoid interruption by later responses
-            try:
-                async with self._speech_lock:
-                    await self.session.say(response_text)
-            except Exception as _e:
-                logger.warning(f"Failed to speak response: {_e}")
+                self._last_question_text = response_text if response_text.strip().endswith("?") else None
 
-            # Publish agent transcript to frontend for visibility
+            async with self._speech_lock:
+                await self.session.say(response_text)
+
             try:
                 await self.send_agent_transcript(response_text)
             except Exception as _e:
                 logger.warning(f"Failed to publish agent transcript: {_e}")
-                
+
+            # Graceful end: if backend indicates conversation_end, signal frontend and disconnect
+            if rtype == "conversation_end":
+                try:
+                    await self.send_disconnection_signal()
+                except Exception as _e:
+                    logger.warning(f"Failed to send conversation end signal: {_e}")
+                try:
+                    # small delay so TTS finishes
+                    await asyncio.sleep(1.0)
+                    if self.room and self.room.connection_state == "connected":
+                        await self.room.disconnect()
+                except Exception as _e:
+                    logger.warning(f"Failed to disconnect room after conversation end: {_e}")
         except Exception as e:
-            logger.error(f"❌ Error processing user message: {e}", exc_info=True)
-            # Add error message to chat context
-            turn_ctx.add_message(
-                role="assistant",
-                content="I apologize, but I'm having trouble processing your request. Let me connect you to a human agent."
-            )
-            await self.update_chat_ctx(turn_ctx)
+            logger.error(f"❌ Error processing aggregated user message: {e}", exc_info=True)
 
     async def llm_node(
         self,
