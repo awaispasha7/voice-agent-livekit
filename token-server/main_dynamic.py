@@ -120,10 +120,11 @@ def interpret_answer(question_text: str, user_text: str) -> Dict[str, Any]:
     u = (user_text or "").lower().strip()
 
     # Yes/No
-    if any(k in q for k in ["special needs", "sso", "salesforce", "crm integration", "yes", "no"]):
-        if re.search(r"\b(yes|yeah|yup|sure|affirmative)\b", u):
+    yes_triggers = ["special needs", "sso", "salesforce", "crm integration", "do you", "would you", "are you", "is it", "should we", "can you"]
+    if any(k in q for k in yes_triggers):
+        if re.search(r"\b(yes|yeah|yep|yup|sure|of course|please|affirmative|ok|okay|absolutely)\b", u):
             return {"status": "extracted", "kind": "yesno", "value": True, "confidence": 0.9}
-        if re.search(r"\b(no|nope|nah|negative)\b", u):
+        if re.search(r"\b(no|nope|nah|negative|not really|don\'t|do not)\b", u):
             return {"status": "extracted", "kind": "yesno", "value": False, "confidence": 0.9}
 
     # ZIP
@@ -1077,6 +1078,16 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         current_step_data = flow_state.flow_data
         if current_step_data and current_step_data.get("type") == "question":
             logger.info(f"FLOW_MANAGEMENT: Current step is a question, processing user response: '{user_message}'")
+            # Global farewell within question context
+            um_low_q = (user_message or "").lower().strip()
+            farewell_markers_q = [
+                "bye", "goodbye", "that is all", "that's all", "thats all", "thanks, bye", "thank you, bye", "end call", "hang up", "we are done", "we're done", "okay, bye", "okay that's all", "ok that's all", "ok bye"
+            ]
+            if any(m in um_low_q for m in farewell_markers_q):
+                response_text = "Thanks for calling Alive5. Have a great day! Goodbye!"
+                add_agent_response_to_history(flow_state, response_text)
+                logger.info("FLOW_MANAGEMENT: Farewell detected during question → conversation_end")
+                return {"type": "conversation_end", "response": response_text, "flow_state": flow_state}
             
             # Try interpreter first to handle natural speech
             interp = interpret_answer(current_step_data.get("text", ""), user_message or "")

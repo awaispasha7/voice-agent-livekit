@@ -505,7 +505,7 @@ class FlowBasedAssistant(Agent):
             # Track last question
             if rtype == "question" or response_text.strip().endswith("?"):
                 self._last_question_text = response_text
-            elif rtype in ("message", "faq", "faq_response", "flow_started"):
+            elif rtype in ("message", "faq", "faq_response", "flow_started", "conversation_end"):
                 self._last_question_text = response_text if response_text.strip().endswith("?") else None
 
             async with self._speech_lock:
