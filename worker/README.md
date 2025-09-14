@@ -4,7 +4,7 @@ This directory contains different worker implementations for the Alive5 Voice Ag
 
 ## Available Workers
 
-### 🚀 `main_flow_based.py` (RECOMMENDED)
+### 🚀 `main_flow_based.py`
 - **Purpose**: Flow-based conversation system using Alive5 templates
 - **Features**: 
   - Dynamic template loading from Alive5 API
@@ -13,25 +13,17 @@ This directory contains different worker implementations for the Alive5 Voice Ag
   - Real-time template updates
 - **Use Case**: Production use with client-defined conversation flows
 
-### 🔄 `main_dynamic.py`
-- **Purpose**: Intent-based conversation system using LLM classification
-- **Features**:
-  - OpenAI-based intent detection (sales, support, billing)
-  - Dynamic conversation adaptation
-  - User data extraction
-  - Session tracking and analytics
-- **Use Case**: Open-ended conversations with AI-generated responses
+ 
 
 ## Usage
 
 To run a specific worker:
 
 ```bash
-# Flow-based worker (recommended)
+# Flow-based worker
 python main_flow_based.py
 
-# Dynamic intent-based worker
-python main_dynamic.py
+ 
 ```
 
 ## Environment Variables

@@ -108,57 +108,101 @@ class FlowResponse(BaseModel):
     current_flow_state: Optional[FlowState] = None
     conversation_history: Optional[List[Dict[str, str]]] = None
 
-async def detect_intent_with_llm(user_message: str) -> Optional[str]:
-    """Detect user intent using OpenAI LLM (Legacy - for backward compatibility)"""
-    if not user_message or user_message.strip() == "":
-        logger.warning("Empty user message, skipping intent detection")
-        return None
-        
+def interpret_answer(question_text: str, user_text: str) -> Dict[str, Any]:
+    """Extract structured answers from natural speech for common question types."""
+    q = (question_text or "").lower()
+    u = (user_text or "").lower().strip()
+
+    # Yes/No
+    if any(k in q for k in ["special needs", "sso", "salesforce", "crm integration", "yes", "no"]):
+        if re.search(r"\b(yes|yeah|yup|sure|affirmative)\b", u):
+            return {"status": "extracted", "kind": "yesno", "value": True, "confidence": 0.9}
+        if re.search(r"\b(no|nope|nah|negative)\b", u):
+            return {"status": "extracted", "kind": "yesno", "value": False, "confidence": 0.9}
+
+    # ZIP
+    if "zip" in q:
+        words_map = {"zero":"0","one":"1","two":"2","three":"3","four":"4","five":"5","six":"6","seven":"7","eight":"8","nine":"9"}
+        parts = re.findall(r"\d|zero|one|two|three|four|five|six|seven|eight|nine", u)
+        digits = "".join(words_map.get(p, p) for p in parts)
+        if len(digits) >= 5:
+            return {"status": "extracted", "kind": "zip", "value": digits[:5], "confidence": 0.85}
+
+    # Phone lines quantity
+    if "phone line" in q or "lines" in q:
+        # direct digits
+        m = re.search(r"\b(\d{1,3})\b", u)
+        if m:
+            return {"status": "extracted", "kind": "number", "value": int(m.group(1)), "confidence": 0.9}
+        # hyphenated or spaced tens-composite (twenty four, twenty-four)
+        tens_map = {
+            "twenty":20, "thirty":30, "forty":40, "fifty":50, "sixty":60, "seventy":70, "eighty":80, "ninety":90
+        }
+        units_map = {"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9}
+        m2 = re.search(r"\b(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[ -]?(one|two|three|four|five|six|seven|eight|nine)?\b", u)
+        if m2:
+            tens = tens_map.get(m2.group(1), 0)
+            unit = units_map.get(m2.group(2), 0) if m2.group(2) else 0
+            val = tens + unit
+            if val > 0:
+                return {"status": "extracted", "kind": "number", "value": val, "confidence": 0.85}
+        # basic units (fallback)
+        words_to_num = {"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10,
+                        "eleven":11,"twelve":12,"thirteen":13,"fourteen":14,"fifteen":15,"sixteen":16,"seventeen":17,
+                        "eighteen":18,"nineteen":19,"twenty":20}
+        for w, n in words_to_num.items():
+            if re.search(rf"\b{w}\b", u):
+                return {"status": "extracted", "kind": "number", "value": n, "confidence": 0.8}
+
+    # Texts-per-month quantity
+    if "texts" in q:
+        m = re.search(r"\b(\d{1,5})\b", u)
+        if m:
+            return {"status": "extracted", "kind": "number", "value": int(m.group(1)), "confidence": 0.85}
+
+    return {"status": "unclear", "kind": "text", "value": u, "confidence": 0.0}
+
+def llm_extract_answer(question_text: str, user_text: str) -> Dict[str, Any]:
+    """LLM-based extractor for natural responses when deterministic parsing is unclear.
+    Returns the same schema as interpret_answer. Uses strict JSON output instructions.
+    """
     try:
-        prompt = f"""
-You are an intent classifier for a customer service AI.
-Classify the following user message into exactly one of these intents:
-- sales: {INTENT_DESCRIPTIONS["sales"]}
-- support: {INTENT_DESCRIPTIONS["support"]}
-- billing: {INTENT_DESCRIPTIONS["billing"]}
-
-User message: "{user_message}"
-
-Respond with ONLY one word (the intent): sales, support, or billing.
-"""
-        
-        logger.info(f"INTENT_DETECTION: Analyzing message: '{user_message}'")
+        if not OPENAI_API_KEY:
+            return {"status": "unclear", "kind": "text", "value": user_text, "confidence": 0.0}
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
+        system = (
+            "You extract structured answers from a user's natural reply. "
+            "Return a JSON object only, no prose, with keys: status ('extracted'|'unclear'), "
+            "kind ('number'|'zip'|'yesno'|'text'), value, confidence (0..1)."
+        )
+        user = (
+            "Question: " + (question_text or "") + "\n"
+            "User reply: " + (user_text or "") + "\n"
+            "Rules:\n"
+            "- If user gives a quantity like 'two phone lines' or 'twenty four', set kind='number' and value as integer.\n"
+            "- If it's a ZIP like 'two five nine six three', set kind='zip' and 5-digit value.\n"
+            "- If yes/no ('yes', 'no', etc.), set kind='yesno' and value true/false.\n"
+            "- Otherwise set status='unclear'.\n"
+            "Respond with JSON only."
+        )
+        resp = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are an intent classifier. Respond with exactly one word."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
-            temperature=0.0,
-            max_tokens=10
+            temperature=0.2,
+            max_tokens=120
         )
-        
-        detected_intent = response.choices[0].message.content.strip().lower()
-        logger.info(f"INTENT_DETECTION: Raw response from OpenAI: '{detected_intent}'")
-        
-        if detected_intent in ["sales", "support", "billing"]:
-            logger.info(f"INTENT_DETECTION: Successfully detected '{detected_intent}' from: '{user_message}'")
-            return detected_intent
-        else:
-            logger.warning(f"INTENT_DETECTION: Invalid intent '{detected_intent}', using fallback mapping")
-            # Fallback mapping
-            if any(word in user_message.lower() for word in ["price", "cost", "buy", "purchase", "plan", "demo"]):
-                return "sales"
-            elif any(word in user_message.lower() for word in ["help", "issue", "problem", "error", "bug", "install"]):
-                return "support"
-            elif any(word in user_message.lower() for word in ["bill", "payment", "invoice", "charge", "account", "refund"]):
-                return "billing"
-            return None
-            
+        content = resp.choices[0].message.content or "{}"
+        data = json.loads(content)
+        # Basic validation
+        if isinstance(data, dict) and data.get("status") in ("extracted", "unclear"):
+            return data
     except Exception as e:
-        logger.error(f"INTENT_DETECTION: Error using LLM: {e}")
-        return None
+        logger.warning(f"ANSWER_LLM: extractor error {e}")
+    return {"status": "unclear", "kind": "text", "value": user_text, "confidence": 0.0}
+
 
 async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, Any]]:
     """Detect flow intent using LLM - simple and direct approach"""
@@ -579,10 +623,8 @@ async def process_transcript(request: TranscriptRequest):
         
         logger.info(f"TRANSCRIPT_PROCESSING: Room {room_name}, Message: '{transcript}'")
         
-        # Detect intent using LLM
-        detected_intent = await detect_intent_with_llm(transcript)
-        
-        # Extract user data
+        # Legacy intent detection removed; keep only user data extraction
+        detected_intent = None
         user_data = extract_user_data(transcript)
         
         # Update session if we have one
@@ -609,10 +651,7 @@ async def process_transcript(request: TranscriptRequest):
             'transcript': transcript
         }
         
-        # Add intent to response if detected
-        if detected_intent:
-            response_data['intent'] = detected_intent
-            
+        # (intent omitted)
         # Add user data to response if extracted
         if user_data:
             response_data['userData'] = user_data
@@ -1018,6 +1057,17 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         if current_step_data and current_step_data.get("type") == "question":
             logger.info(f"FLOW_MANAGEMENT: Current step is a question, processing user response: '{user_message}'")
             
+            # Try interpreter first to handle natural speech
+            interp = interpret_answer(current_step_data.get("text", ""), user_message or "")
+            logger.info(f"ANSWER_INTERPRETER: {interp}")
+            if interp.get("status") != "extracted":
+                # Gated LLM extraction if unclear
+                llm_interp = llm_extract_answer(current_step_data.get("text", ""), user_message or "")
+                logger.info(f"ANSWER_LLM: {llm_interp}")
+                # Prefer LLM only if it extracted with reasonable confidence
+                if llm_interp.get("status") == "extracted" and float(llm_interp.get("confidence", 0)) >= 0.6:
+                    interp = llm_interp
+
             # Process the user response and move to next step
             next_step = get_next_flow_step(flow_state, user_message)
             if next_step:
@@ -1041,6 +1091,19 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     "flow_state": flow_state
                 }
             else:
+                # If interpreter extracted something, attempt progression even if answers don't match strictly
+                if interp.get("status") == "extracted" and current_step_data.get("next_flow"):
+                    nxt = current_step_data["next_flow"]
+                    old_step = flow_state.current_step
+                    flow_state.current_step = nxt.get("name")
+                    flow_state.flow_data = nxt
+                    step_type = nxt.get("type", "unknown")
+                    response_text = nxt.get("text", "")
+                    logger.info("FLOW_MANAGEMENT: Interpreter-based progression applied")
+                    print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
+                    add_agent_response_to_history(flow_state, response_text)
+                    return {"type": step_type, "response": response_text, "flow_state": flow_state}
+
                 # Heuristics: try to interpret common free-form answers to advance flow instead of falling back
                 qtext = (current_step_data.get("text") or "").lower()
                 ur = (user_message or "").lower()
@@ -1124,8 +1187,10 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     }
 
                 logger.info("FLOW_MANAGEMENT: ❌ No next step found for question response (after heuristics)")
-                print_flow_status(room_name, flow_state, "❌ NO NEXT STEP", "Using FAQ bot fallback")
-                return await get_faq_response(user_message, flow_state=flow_state)
+                # Re-ask the same question instead of immediate FAQ
+                response_text = current_step_data.get("text", "")
+                add_agent_response_to_history(flow_state, response_text)
+                return {"type": "question", "response": response_text, "flow_state": flow_state}
         else:
             logger.info(f"FLOW_MANAGEMENT: Current step is not a question (type: {current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift")
     

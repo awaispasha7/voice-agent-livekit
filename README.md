@@ -7,8 +7,7 @@ This project implements a dynamic voice agent using LiveKit, FastAPI, and Alive5
 ```
 voice-agent
 ├── worker/
-│   ├── main_flow_based.py   # 🚀 Flow-based worker (RECOMMENDED)
-│   ├── main_dynamic.py      # Intent-based worker
+│   ├── main_flow_based.py   # 🚀 Flow-based worker
 │   └── README.md            # Worker documentation
 ├── token-server/
 │   ├── main_dynamic.py      # FastAPI server with flow management
@@ -50,10 +49,7 @@ voice-agent
      python worker/main_flow_based.py download-files
      python worker/main_flow_based.py dev
      ```
-   - **Alternative worker:**
-     ```
-     python worker/main_dynamic.py dev    # Intent-based
-     ```
+   
    - **Start the token server:**
      ``` 
      python token-server/main_dynamic.py
@@ -73,10 +69,7 @@ voice-agent
 - **Real-time template updates** without code changes
 - **Fallback to FAQ bot** for general questions
 
-### 🔄 Intent-Based System
-- **AI-powered intent detection** (sales, support, billing)
-- **Dynamic conversation adaptation**
-- **User data extraction** and session tracking
+
 
 ## Usage
 
