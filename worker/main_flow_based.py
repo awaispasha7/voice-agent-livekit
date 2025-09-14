@@ -199,7 +199,11 @@ class FlowBasedLLM(llm.LLM):
                         if ftype in ["flow_response", "question", "message", "faq_response", "faq", "flow_started"]:
                             if response_text and response_text.strip():
                                 logger.info(f"🔧 Flow response ({ftype}): '{response_text}'")
-                                return {"text": response_text, "type": ftype}
+                                # Bubble up flow_name for intent updates
+                                out: Dict[str, Any] = {"text": response_text, "type": ftype}
+                                if ftype == "flow_started" and isinstance(flow_result, dict) and flow_result.get("flow_name"):
+                                    out["flow_name"] = flow_result.get("flow_name")
+                                return out
                         
                         if ftype == "error":
                             response_text = response_text or "I'm here to help!"
@@ -389,6 +393,21 @@ class FlowBasedAssistant(Agent):
         logger.info(f"🎤 USER TURN COMPLETED: '{new_message.text_content}'")
         
         try:
+            # Smalltalk: greet/farewell/acknowledgement for human tone
+            user_text = (new_message.text_content or "").strip()
+            lower_text = user_text.lower()
+            polite_reply: Optional[str] = None
+            greetings = ["hi", "hello", "hey", "good morning", "good evening"]
+            byes = ["bye", "goodbye", "see you", "talk to you later", "that\'s all", "thanks, bye"]
+            affirmations = ["okay", "ok", "sounds good", "that sounds great", "great", "thanks", "thank you"]
+
+            if any(lower_text.startswith(g) for g in greetings):
+                polite_reply = "Hello!"
+            elif any(b in lower_text for b in byes):
+                polite_reply = "Thanks for calling Alive5. Have a great day!"
+            elif any(a in lower_text for a in affirmations):
+                polite_reply = "Okay, that sounds great."
+
             # Initialize clarification trackers
             if not hasattr(self, "_last_question_text"):
                 self._last_question_text = None
@@ -414,10 +433,25 @@ class FlowBasedAssistant(Agent):
             logger.info(f"🎤 Calling backend with room_name: {self.custom_llm.room_name}")
             logger.info(f"🎤 User message: '{new_message.text_content or ''}'")
             logger.info(f"🎤 Conversation history: {conversation_history}")
-            backend_out = await self.custom_llm._call_backend_async(new_message.text_content or "", conversation_history)
+            backend_out = await self.custom_llm._call_backend_async(user_text, conversation_history)
             response_text = backend_out.get("text", "")
             rtype = backend_out.get("type", "")
             logger.info(f"🎤 Backend returned: type={rtype} text='{response_text}'")
+
+            # If backend started a flow, publish intent update to frontend
+            try:
+                if rtype == "flow_started" and backend_out.get("flow_name") and self.room:
+                    await self.room.local_participant.publish_data(
+                        json.dumps({
+                            'type': 'intent_update',
+                            'intent': backend_out.get("flow_name"),
+                            'source': 'Flow System',
+                            'timestamp': datetime.now().isoformat()
+                        }).encode(),
+                        topic="lk.intent.update"
+                    )
+            except Exception as _e:
+                logger.warning(f"Failed to publish intent update: {_e}")
 
             # Natural clarification when not understood
             if rtype in ("error", "fallback") and self._last_question_text:
@@ -429,6 +463,10 @@ class FlowBasedAssistant(Agent):
                     pass
             else:
                 self._clarify_count = 0
+
+            # Blend polite smalltalk if detected and does not conflict with a question
+            if polite_reply and not response_text.strip().endswith("?"):
+                response_text = f"{polite_reply} {response_text}".strip()
 
             # Track last question
             if rtype == "question" or response_text.strip().endswith("?"):

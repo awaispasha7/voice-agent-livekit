@@ -451,6 +451,15 @@ class DynamicVoiceAgent {
                 } catch (error) {
                     console.error('Error processing conversation control data:', error);
                 }
+            } else if (topic === 'lk.intent.update') {
+                try {
+                    const data = JSON.parse(new TextDecoder().decode(payload));
+                    if (data.type === 'intent_update' && data.intent) {
+                        this.handleIntentUpdate(data.intent, data.source || 'Flow System');
+                    }
+                } catch (error) {
+                    console.error('Error processing intent update data:', error);
+                }
             } else if (topic) {
                 console.log('📨 Other data received:', { topic, participant: participant?.identity, data: new TextDecoder().decode(payload) });
             }
@@ -498,7 +507,7 @@ class DynamicVoiceAgent {
                 this.processCompleteTranscript(this.pendingTranscript);
                 this.pendingTranscript = '';
                 this.lastFinalAt = 0;
-            }, AGGREGATE_WINDOW_MS);
+            }, AGGREGATE_WINDOW_MS + 400);
         }
     }
 

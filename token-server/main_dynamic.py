@@ -101,6 +101,12 @@ class FlowState(BaseModel):
     flow_data: Optional[Dict[str, Any]] = None
     user_responses: Optional[Dict[str, str]] = None
     conversation_history: List[Dict[str, str]] = Field(default_factory=list)
+    # Pending question lock for strict flow
+    pending_step: Optional[str] = None
+    pending_expected_kind: Optional[str] = None  # 'number'|'zip'|'yesno'|'text'
+    pending_asked_at: Optional[float] = None
+    pending_reask_count: int = 0
+    deferred_intent: Optional[str] = None
 
 class FlowResponse(BaseModel):
     room_name: str
@@ -1083,6 +1089,14 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 
                 # Handle different step types
                 response_text = next_step["step_data"].get("text", "")
+                # Set pending question lock if next is a question
+                if step_type == 'question':
+                    flow_state.pending_step = next_step['step_name']
+                    flow_state.pending_expected_kind = 'number' if ('phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
+                    flow_state.pending_asked_at = time.time()
+                    flow_state.pending_reask_count = 0
+                else:
+                    flow_state.pending_step = None
                 add_agent_response_to_history(flow_state, response_text)
                 
                 return {
@@ -1101,6 +1115,14 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     response_text = nxt.get("text", "")
                     logger.info("FLOW_MANAGEMENT: Interpreter-based progression applied")
                     print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
+                    # Update pending lock
+                    if step_type == 'question':
+                        flow_state.pending_step = flow_state.current_step
+                        flow_state.pending_expected_kind = 'number' if ('phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
+                        flow_state.pending_asked_at = time.time()
+                        flow_state.pending_reask_count = 0
+                    else:
+                        flow_state.pending_step = None
                     add_agent_response_to_history(flow_state, response_text)
                     return {"type": step_type, "response": response_text, "flow_state": flow_state}
 
@@ -1189,6 +1211,8 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 logger.info("FLOW_MANAGEMENT: ❌ No next step found for question response (after heuristics)")
                 # Re-ask the same question instead of immediate FAQ
                 response_text = current_step_data.get("text", "")
+                flow_state.pending_reask_count = (flow_state.pending_reask_count or 0) + 1
+                flow_state.pending_asked_at = time.time()
                 add_agent_response_to_history(flow_state, response_text)
                 return {"type": "question", "response": response_text, "flow_state": flow_state}
         else:
