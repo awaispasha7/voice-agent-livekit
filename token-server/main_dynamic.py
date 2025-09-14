@@ -974,6 +974,21 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     if len(flow_state.conversation_history) > 10:
         flow_state.conversation_history = flow_state.conversation_history[-10:]
     
+    # Global farewell detection to gracefully end calls regardless of step type
+    um_low = (user_message or "").lower().strip()
+    farewell_markers = [
+        "bye", "goodbye", "that is all", "that's all", "thats all", "thanks, bye", "thank you, bye", "end call", "hang up", "we are done", "we're done", "okay, bye", "Okay, that's all"
+    ]
+    if any(m in um_low for m in farewell_markers):
+        response_text = "Thanks for calling Alive5. Have a great day! Goodbye!"
+        add_agent_response_to_history(flow_state, response_text)
+        logger.info("FLOW_MANAGEMENT: Global farewell detected → conversation_end")
+        return {
+            "type": "conversation_end",
+            "response": response_text,
+            "flow_state": flow_state
+        }
+
     # If no current flow, try to find matching intent using LLM
     if not flow_state.current_flow:
         print_flow_status(room_name, flow_state, "SEARCHING FOR INTENT", f"Analyzing message: '{user_message}'")

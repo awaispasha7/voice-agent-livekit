@@ -447,6 +447,13 @@ class DynamicVoiceAgent {
                     if (data.type === 'conversation_end') {
                         console.log('🔚 Conversation end signal received:', data);
                         this.handleConversationEnd(data);
+                        // Immediately show end UI and request disconnect
+                        try {
+                            this.showStatus('Conversation ended. Disconnecting...', 'info');
+                            if (this.room) {
+                                this.room.disconnect().catch(()=>{});
+                            }
+                        } catch(e) { /* ignore */ }
                     }
                 } catch (error) {
                     console.error('Error processing conversation control data:', error);
