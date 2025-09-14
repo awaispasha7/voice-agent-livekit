@@ -7,6 +7,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from typing import Dict, Any, Optional, Union, Literal, AsyncIterable
 import json
+import re
 
 from livekit.agents import (
     AgentSession,
@@ -363,6 +364,7 @@ class FlowBasedAssistant(Agent):
         self.custom_llm = custom_llm
         self._greeted = False
         self._speech_lock = asyncio.Lock()
+        self._ending = False
         # Aggregate multiple short user turns before backend call
         self._aggregate_buffer: str = ""
         self._aggregate_task: Optional[asyncio.Task] = None
@@ -498,7 +500,7 @@ class FlowBasedAssistant(Agent):
             if "i'm not scott" in rlow:
                 response_text = response_text.replace("I'm not Scott", "I'm Scott").replace("i'm not scott", "I'm Scott")
                 rlow = response_text.lower().strip()
-            if polite_reply and not response_text.strip().endswith("?"):
+            if rtype != "conversation_end" and polite_reply and not response_text.strip().endswith("?"):
                 if not (rlow.startswith("hello") or "how can i help" in rlow):
                     response_text = f"{polite_reply} {response_text}".strip()
 
@@ -507,6 +509,19 @@ class FlowBasedAssistant(Agent):
                 self._last_question_text = response_text
             elif rtype in ("message", "faq", "faq_response", "flow_started", "conversation_end"):
                 self._last_question_text = response_text if response_text.strip().endswith("?") else None
+
+            # Deduplicate repeated sentence fragments in the response
+            def _dedupe_sentences(text: str) -> str:
+                parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text) if p.strip()]
+                seen = set()
+                out = []
+                for p in parts:
+                    key = p.lower()
+                    if key not in seen:
+                        seen.add(key)
+                        out.append(p)
+                return " ".join(out)
+            response_text = _dedupe_sentences(response_text)
 
             async with self._speech_lock:
                 await self.session.say(response_text)
@@ -517,7 +532,8 @@ class FlowBasedAssistant(Agent):
                 logger.warning(f"Failed to publish agent transcript: {_e}")
 
             # Graceful end: if backend indicates conversation_end, signal frontend and disconnect
-            if rtype == "conversation_end":
+            if rtype == "conversation_end" and not self._ending:
+                self._ending = True
                 try:
                     await self.send_disconnection_signal()
                 except Exception as _e:

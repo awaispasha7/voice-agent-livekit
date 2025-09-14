@@ -62,6 +62,30 @@ active_sessions: Dict[str, Dict[str, Any]] = {}
 bot_template = None
 flow_states: Dict[str, Any] = {}
 
+# Helper: find a step in the template by its exact text (case-insensitive)
+def _find_step_by_text(template: Dict[str, Any], target_text: str) -> Optional[Dict[str, Any]]:
+    if not template or not target_text:
+        return None
+    tt = target_text.strip().lower()
+    try:
+        for flow_key, flow_data in (template.get("data", {}) or {}).items():
+            # traverse next_flow chain
+            stack = []
+            if isinstance(flow_data, dict):
+                stack.append({"flow_key": flow_key, "node": flow_data})
+            while stack:
+                cur = stack.pop()
+                node = cur["node"]
+                text = (node.get("text") or "").strip().lower()
+                if text and text == tt:
+                    return {"flow_key": cur["flow_key"], "node": node}
+                nxt = node.get("next_flow")
+                if isinstance(nxt, dict):
+                    stack.append({"flow_key": cur["flow_key"], "node": nxt})
+    except Exception:
+        return None
+    return None
+
 # Request models
 class ConnectionRequest(BaseModel):
     participant_name: str
@@ -281,7 +305,7 @@ Examples:
                 return intent_data
         
         logger.info(f"INTENT_DETECTION: ❌ No intent found, will use FAQ bot")
-        return None
+            return None
             
     except Exception as e:
         logger.error(f"INTENT_DETECTION: Error using LLM: {e}")
@@ -1249,22 +1273,41 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
 
             # If current step is a message with a next_flow of type 'faq', auto-transition so that
             # subsequent user utterances evaluate the FAQ node's answers.
-            if current_step_data and current_step_data.get("type") == "message" and current_step_data.get("next_flow"):
+            if current_step_data and current_step_data.get("type") == "message":
                 nf = current_step_data.get("next_flow")
+                # If next_flow is faq, auto-transition
                 if isinstance(nf, dict) and nf.get("type") == "faq":
                     old = flow_state.current_step
                     flow_state.current_step = nf.get("name")
                     flow_state.flow_data = nf
                     logger.info(f"FLOW_MANAGEMENT: Auto-transitioned message → faq for answers handling: {old} → {flow_state.current_step}")
                     current_step_data = flow_state.flow_data
+                # If there's no explicit next_flow, but the template contains a faq node with the expected text, jump to it
+                elif not nf and bot_template:
+                    msg_text = (current_step_data.get("text") or "").strip()
+                    probe = _find_step_by_text(bot_template, "Feel free to ask any question!")
+                    if probe and isinstance(probe.get("node"), dict) and probe["node"].get("type") == "faq":
+                        old = flow_state.current_step
+                        flow_state.current_step = probe["node"].get("name")
+                        flow_state.flow_data = probe["node"]
+                        logger.info(f"FLOW_MANAGEMENT: Soft-transitioned message → faq by text match: {old} → {flow_state.current_step}")
+                        current_step_data = flow_state.flow_data
 
-            # Also handle if current step IS 'faq' and we haven't printed its prompt yet (ensure response shown)
+            # Also handle if current step IS 'faq' — emit its prompt once so the user hears it
             if current_step_data and current_step_data.get("type") == "faq":
                 faq_text = current_step_data.get("text", "")
                 if faq_text:
-                    add_agent_response_to_history(flow_state, faq_text)
-                    logger.info("FLOW_MANAGEMENT: Emitting FAQ prompt to user")
-                    # Do not return here; still evaluate answers below against user_message
+                    # avoid duplicate prompt if it was the previous assistant message
+                    last_msg = flow_state.conversation_history[-1]["content"] if flow_state.conversation_history else ""
+                    if (last_msg or "").strip().lower() != faq_text.strip().lower():
+                        add_agent_response_to_history(flow_state, faq_text)
+                        logger.info("FLOW_MANAGEMENT: Emitting FAQ prompt to user")
+                        # Return the prompt so the agent actually says it; answers will be evaluated on next user turn
+                        return {
+                            "type": "message",
+                            "response": faq_text,
+                            "flow_state": flow_state
+                        }
 
             # Handle template 'answers' on FAQ/message steps (noAction / moreAction)
             if current_step_data and current_step_data.get("answers") and current_step_data.get("type") in ("faq", "message"):
