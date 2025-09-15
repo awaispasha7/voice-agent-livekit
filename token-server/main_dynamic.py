@@ -90,7 +90,7 @@ def _find_step_by_text(template: Dict[str, Any], target_text: str) -> Optional[D
 class ConnectionRequest(BaseModel):
     participant_name: str
     room_name: Optional[str] = None
-    intent: Optional[str] = None  # sales, support, billing
+    intent: Optional[str] = None 
     user_data: Optional[Dict[str, Any]] = None
 
 class TranscriptRequest(BaseModel):
@@ -305,7 +305,7 @@ Examples:
                 return intent_data
         
         logger.info(f"INTENT_DETECTION: ❌ No intent found, will use FAQ bot")
-            return None
+        return None
             
     except Exception as e:
         logger.error(f"INTENT_DETECTION: Error using LLM: {e}")
@@ -619,7 +619,7 @@ def cleanup_room(room_name: str):
 
 @app.post("/api/sessions/{room_name}/transfer")
 def initiate_transfer(room_name: str, department: str = "sales"):
-    """Initiate transfer to human agent (sales, support, billing)"""
+    """Initiate transfer to human agent"""
     try:
         if room_name not in active_sessions:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -1313,7 +1313,8 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             if current_step_data and current_step_data.get("answers") and current_step_data.get("type") in ("faq", "message"):
                 answers = current_step_data.get("answers", {}) or {}
                 um = (user_message or "").lower().strip()
-                # Heuristics for escalation vs end
+                
+                # Heuristics for escalation vs end - check these FIRST
                 escalate_phrases = [
                     "agent", "human", "representative", "connect me", "talk to", "speak to", "someone", "person", "escalate", "transfer"
                 ]
@@ -1324,7 +1325,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 def _matches_any(phrases: list[str]) -> bool:
                     return any(p in um for p in phrases)
 
-                # Decide branch
+                # Decide branch - prioritize escalation and end phrases
                 branch = None
                 if _matches_any(escalate_phrases) and "moreAction" in answers:
                     branch = "moreAction"
@@ -1364,6 +1365,32 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     return {
                         "type": "conversation_end" if branch == "noAction" else node.get("type", "message"),
                         "response": response_text,
+                        "flow_state": flow_state
+                    }
+                
+                # If no escalation/end branch was selected, try answer interpreter for unclear questions
+                interp = interpret_answer(current_step_data.get("text", ""), user_message or "")
+                logger.info(f"FAQ_ANSWER_INTERPRETER: {interp}")
+                
+                if interp.get("status") == "unclear":
+                    # Handle unclear questions by asking for clarification
+                    response_text = "I didn't quite understand that. Could you please rephrase your question or ask about something specific?"
+                    add_agent_response_to_history(flow_state, response_text)
+                    logger.info("FAQ_ANSWER_INTERPRETER: Handling unclear question with clarification request")
+                    return {
+                        "type": "message",
+                        "response": response_text,
+                        "flow_state": flow_state
+                    }
+                elif interp.get("status") == "extracted":
+                    # Handle clear questions by transitioning to question handling
+                    logger.info("FAQ_ANSWER_INTERPRETER: Clear question detected, transitioning to question handling")
+                    # Reset to question handling flow
+                    flow_state.current_step = "question"
+                    flow_state.flow_data = bot_template.get("question", {})
+                    return {
+                        "type": "message",
+                        "response": "I understand you have a question. Let me help you with that.",
                         "flow_state": flow_state
                     }
     
