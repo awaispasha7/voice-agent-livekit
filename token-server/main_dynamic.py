@@ -138,10 +138,67 @@ class FlowResponse(BaseModel):
     current_flow_state: Optional[FlowState] = None
     conversation_history: Optional[List[Dict[str, str]]] = None
 
+def is_ambiguous_transcription(user_text: str) -> bool:
+    """Detect if the user text appears to be a garbled/ambiguous transcription."""
+    u = (user_text or "").lower().strip()
+    
+    # Check for common garbled patterns
+    garbled_patterns = [
+        r"\bthrough\s+\w+\s+lines?\b",  # "through phone lines"
+        r"\bwe\s+use\s*$",  # "we use" at end
+        r"\babout\s+to\s*$",  # "about to" (likely "about two")
+        r"\bto\s+fifty\s*\??",  # "to fifty?" (likely "two fifty")
+        r"\buh\s*$",  # "uh" at end
+        r"\bum\s*$",  # "um" at end
+        r"\buh\s+can\s+i\b",  # "uh can i"
+        r"\bthat\s+is\s+a\s+question\s+i\s+i\s+think\b",  # repeated words
+        r"\bsome\s+some\b",  # repeated words
+        r"\babout\s+two\s+two\b",  # repeated words
+    ]
+    
+    # Check for incomplete sentences (ends with articles/prepositions)
+    incomplete_endings = [
+        r"\bthe\s*$", r"\ba\s*$", r"\ban\s*$", r"\bto\s*$", r"\bfor\s*$", 
+        r"\bwith\s*$", r"\bin\s*$", r"\bon\s*$", r"\bat\s*$", r"\bby\s*$",
+        r"\bwe\s*$", r"\buse\s*$", r"\bthrough\s*$"
+    ]
+    
+    # Check for very short responses that don't make sense
+    if len(u.split()) <= 2 and not re.search(r"\b(yes|no|ok|okay|thanks|bye|hello|hi)\b", u):
+        # If it's very short and doesn't contain common words, it might be garbled
+        if not re.search(r"\b\d+\b", u):  # Unless it contains numbers
+            return True
+    
+    # Check for garbled patterns
+    for pattern in garbled_patterns:
+        if re.search(pattern, u):
+            return True
+    
+    # Check for incomplete endings
+    for pattern in incomplete_endings:
+        if re.search(pattern, u):
+            return True
+    
+    # Check for excessive repetition of words
+    words = u.split()
+    if len(words) > 2:
+        word_counts = {}
+        for word in words:
+            word_counts[word] = word_counts.get(word, 0) + 1
+        # If any word appears more than once in a short phrase, it might be garbled
+        if max(word_counts.values()) > 1 and len(words) <= 5:
+            return True
+    
+    return False
+
 def interpret_answer(question_text: str, user_text: str) -> Dict[str, Any]:
     """Extract structured answers from natural speech for common question types."""
     q = (question_text or "").lower()
     u = (user_text or "").lower().strip()
+
+    # First check for ambiguous/garbled transcriptions
+    if is_ambiguous_transcription(u):
+        return {"status": "unclear", "kind": "ambiguous", "value": u, "confidence": 0.0}
 
     # Yes/No
     yes_triggers = ["special needs", "sso", "salesforce", "crm integration", "do you", "would you", "are you", "is it", "should we", "can you"]
@@ -213,6 +270,9 @@ def llm_extract_answer(question_text: str, user_text: str) -> Dict[str, Any]:
             "- If user gives a quantity like 'two phone lines' or 'twenty four', set kind='number' and value as integer.\n"
             "- If it's a ZIP like 'two five nine six three', set kind='zip' and 5-digit value.\n"
             "- If yes/no ('yes', 'no', etc.), set kind='yesno' and value true/false.\n"
+            "- If the reply appears garbled, incomplete, or nonsensical (like 'through phone lines we use', 'about to', 'uh can i'), set status='unclear' and kind='ambiguous'.\n"
+            "- If the reply is incomplete or ends with articles/prepositions ('the', 'to', 'we', 'use'), set status='unclear'.\n"
+            "- If words are repeated unnecessarily ('some some', 'two two'), set status='unclear'.\n"
             "- Otherwise set status='unclear'.\n"
             "Respond with JSON only."
         )
@@ -305,7 +365,7 @@ Examples:
                 return intent_data
         
         logger.info(f"INTENT_DETECTION: ❌ No intent found, will use FAQ bot")
-        return None
+            return None
             
     except Exception as e:
         logger.error(f"INTENT_DETECTION: Error using LLM: {e}")
@@ -1130,6 +1190,20 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             if any(k in qtxt for k in ["special needs", "sso", "salesforce", "crm integration"]) and re.search(r"\b(yes|yeah|yep|yup|sure|of course|please|ok|okay|absolutely|i need|i would need)\b", utxt):
                 interp = {"status": "extracted", "kind": "yesno", "value": True, "confidence": 0.95}
 
+            # Handle unclear responses in main question flow
+            if interp.get("status") == "unclear":
+                if interp.get("kind") == "ambiguous":
+                    response_text = "I didn't quite catch that. Could you please repeat your answer more clearly?"
+                else:
+                    response_text = "I didn't quite understand that. Could you please repeat your answer?"
+                add_agent_response_to_history(flow_state, response_text)
+                logger.info(f"ANSWER_INTERPRETER: Handling unclear response ({interp.get('kind', 'unclear')}) with clarification request")
+                return {
+                    "type": "message",
+                    "response": response_text,
+                    "flow_state": flow_state
+                }
+
             # Process the user response and move to next step
             next_step = get_next_flow_step(flow_state, user_message)
             if next_step:
@@ -1374,9 +1448,12 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 
                 if interp.get("status") == "unclear":
                     # Handle unclear questions by asking for clarification
-                    response_text = "I didn't quite understand that. Could you please rephrase your question or ask about something specific?"
+                    if interp.get("kind") == "ambiguous":
+                        response_text = "I didn't quite catch that. Could you please repeat your answer more clearly?"
+                    else:
+                        response_text = "I didn't quite understand that. Could you please rephrase your question or ask about something specific?"
                     add_agent_response_to_history(flow_state, response_text)
-                    logger.info("FAQ_ANSWER_INTERPRETER: Handling unclear question with clarification request")
+                    logger.info(f"FAQ_ANSWER_INTERPRETER: Handling unclear question ({interp.get('kind', 'unclear')}) with clarification request")
                     return {
                         "type": "message",
                         "response": response_text,
