@@ -544,17 +544,27 @@ Instructions:
 7. If the user is clearly asking about pricing, costs, plans, or services, match with "Pricing" intent
 8. If the user wants to speak to a human, agent, or representative, match with "Agent" intent
 
+CRITICAL: Pay special attention to agent/human requests:
+- "speak with someone" → Agent intent
+- "talk to someone" → Agent intent  
+- "connect me with someone" → Agent intent
+- "I want to speak with someone" → Agent intent
+- "Can I speak with someone over the phone" → Agent intent
+- "over the line" or "over the phone" → Agent intent
+
 Respond with ONLY: the exact intent name from the list above, "greeting", or "none" if no intent matches.
 
 Examples:
 - User says "weather" or "weather today" → match with "weather" intent
 - User says "pricing" or "cost" or "I need pricing info" → match with "Pricing" intent  
 - User says "agent" or "human" or "connect me with someone" → match with "Agent" intent
+- User says "speak with someone over the phone" → match with "Agent" intent
 - User says "How are you?" or "Hello" or "Hi there" → respond with "greeting"
 - User says "I need two phone lines" → match with "Pricing" intent (if available)
 """
         
         logger.info(f"INTENT_DETECTION: Analyzing message '{user_message}' for intents: {intent_list}")
+        logger.info(f"INTENT_DETECTION: Available intents mapping: {list(intent_mapping.keys())}")
 
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
@@ -1269,7 +1279,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     
     # Define escalation phrases and helper function here
     escalate_phrases = [
-        "agent", "human", "representative", "connect me", "talk to", "speak to", "someone", "person", "escalate", "transfer"
+        "agent", "human", "representative", "connect me", "talk to", "speak to", "speak with", "someone", "person", "escalate", "transfer", "over the phone", "over the line"
     ]
 
     def _matches_any(phrases: list[str], text: str) -> bool:
@@ -1361,7 +1371,6 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     # Skip intent detection and go directly to flow processing
                     logger.info(f"FLOW_MANAGEMENT: Skipping intent detection, processing as flow response")
                     # Continue to flow processing below
-                    break
         
         # Only run intent detection if we still don't have a flow
         matching_intent = None
@@ -1451,8 +1460,23 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     "next_step": matching_intent["flow_data"].get("next_flow")
                 }
         else:
-            # No matching intent, use FAQ bot
-            logger.info("FLOW_MANAGEMENT: ❌ LLM found no matching intent, using FAQ bot")
+            # No matching intent found, but check for escalation before FAQ fallback
+            logger.info("FLOW_MANAGEMENT: ❌ LLM found no matching intent, checking for escalation")
+            
+            # Double-check for escalation phrases that might have been missed
+            um_low_fallback = (user_message or "").lower().strip()
+            if _matches_any(escalate_phrases, um_low_fallback):
+                response_text = "Connecting you to a human agent. Please wait."
+                add_agent_response_to_history(flow_state, response_text)
+                auto_save_flow_state()  # Save after escalation
+                logger.info("FLOW_MANAGEMENT: Escalation detected in fallback check → initiating transfer")
+                return {
+                    "type": "transfer_initiated",
+                    "response": response_text,
+                    "flow_state": flow_state
+                }
+            
+            # Use FAQ bot as final fallback
             print_flow_status(room_name, flow_state, "❌ NO INTENT FOUND", "Using FAQ bot fallback")
             print(f"🚨 FAQ BOT CALLED: No intent found for '{user_message}'")
             return await get_faq_response(user_message, flow_state=flow_state)

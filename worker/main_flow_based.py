@@ -31,6 +31,20 @@ from livekit.agents import llm
 from livekit.agents.types import NOT_GIVEN, NotGivenOr, DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions
 from livekit import rtc
 
+def preprocess_text_for_tts(text: str) -> str:
+    """Preprocess text to improve TTS pronunciation"""
+    if not text:
+        return text
+    
+    # Fix common acronym pronunciation issues
+    text = text.replace("(SSO)", "S-S-O")  # Pronounce SSO as letters
+    text = text.replace("SSO", "S-S-O")    # Handle SSO without parentheses
+    text = text.replace("CRM", "C-R-M")    # Pronounce CRM as letters
+    text = text.replace("API", "A-P-I")    # Pronounce API as letters
+    text = text.replace("URL", "U-R-L")    # Pronounce URL as letters
+    
+    return text
+
 # Load environment variables
 load_dotenv(dotenv_path=".env")
 
@@ -386,7 +400,7 @@ class FlowBasedAssistant(Agent):
         try:
             if not self._greeted and self.session:
                 async with self._speech_lock:
-                    await self.session.say("Hello! I'm Scott from Alive5. How can I help you today?")
+                    await self.session.say(preprocess_text_for_tts("Hello! I'm Scott from Alive5. How can I help you today?"))
                 self._greeted = True
                 try:
                     await self.send_agent_transcript("Hello! I'm Scott from Alive5. How can I help you today?")
@@ -524,7 +538,7 @@ class FlowBasedAssistant(Agent):
             response_text = _dedupe_sentences(response_text)
 
             async with self._speech_lock:
-                await self.session.say(response_text)
+                await self.session.say(preprocess_text_for_tts(response_text))
 
             try:
                 await self.send_agent_transcript(response_text)
