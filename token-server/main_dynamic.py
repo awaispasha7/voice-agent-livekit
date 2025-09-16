@@ -48,6 +48,14 @@ print(f"OPENAI_KEY: {OPENAI_API_KEY[:10] if OPENAI_API_KEY else 'None'}...")
 print(f"A5_BASE_URL: {A5_BASE_URL}")
 print(f"A5_API_KEY: {A5_API_KEY}")
 
+# Create persistence directory
+PERSISTENCE_DIR = "flow_states"
+if not os.path.exists(PERSISTENCE_DIR):
+    os.makedirs(PERSISTENCE_DIR)
+    print(f"✅ Created persistence directory: {PERSISTENCE_DIR}")
+else:
+    print(f"✅ Using existing persistence directory: {PERSISTENCE_DIR}")
+
 # Intent descriptions for LLM-based detection
 INTENT_DESCRIPTIONS = {
     "sales": "Questions about pricing, plans, demos, buying, or team licenses. Examples include questions about cost, plans, packages, upgrades, or setting up a meeting with sales.",
@@ -137,6 +145,131 @@ class FlowResponse(BaseModel):
     user_message: str
     current_flow_state: Optional[FlowState] = None
     conversation_history: Optional[List[Dict[str, str]]] = None
+
+# Local file-based persistence functions
+def save_flow_state_to_file(room_name: str, flow_state: FlowState) -> bool:
+    """Save flow state to local JSON file"""
+    try:
+        # Sanitize room name for filename
+        safe_room_name = "".join(c for c in room_name if c.isalnum() or c in ('-', '_')).rstrip()
+        file_path = os.path.join(PERSISTENCE_DIR, f"{safe_room_name}.json")
+        
+        # Convert FlowState to dict
+        data = {
+            "current_flow": flow_state.current_flow,
+            "current_step": flow_state.current_step,
+            "flow_data": flow_state.flow_data,
+            "conversation_history": flow_state.conversation_history,
+            "user_responses": flow_state.user_responses,
+            "pending_step": flow_state.pending_step,
+            "pending_expected_kind": flow_state.pending_expected_kind,
+            "pending_asked_at": flow_state.pending_asked_at,
+            "pending_reask_count": flow_state.pending_reask_count,
+            "saved_at": time.time()
+        }
+        
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        logger.info(f"PERSISTENCE: Saved flow state for room {room_name} to {file_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"PERSISTENCE: Error saving flow state: {e}")
+        return False
+
+def load_flow_state_from_file(room_name: str) -> Optional[FlowState]:
+    """Load flow state from local JSON file"""
+    try:
+        # Sanitize room name for filename
+        safe_room_name = "".join(c for c in room_name if c.isalnum() or c in ('-', '_')).rstrip()
+        file_path = os.path.join(PERSISTENCE_DIR, f"{safe_room_name}.json")
+        
+        if not os.path.exists(file_path):
+            logger.info(f"PERSISTENCE: No flow state file found for room {room_name}")
+            return None
+        
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        
+        # Check if file is too old (older than 24 hours)
+        saved_at = data.get("saved_at", 0)
+        if time.time() - saved_at > 24 * 60 * 60:  # 24 hours
+            logger.info(f"PERSISTENCE: Flow state for room {room_name} is too old, ignoring")
+            os.remove(file_path)  # Clean up old file
+            return None
+        
+        flow_state = FlowState(
+            current_flow=data.get("current_flow"),
+            current_step=data.get("current_step"),
+            flow_data=data.get("flow_data"),
+            conversation_history=data.get("conversation_history", []),
+            user_responses=data.get("user_responses"),
+            pending_step=data.get("pending_step"),
+            pending_expected_kind=data.get("pending_expected_kind"),
+            pending_asked_at=data.get("pending_asked_at"),
+            pending_reask_count=data.get("pending_reask_count", 0)
+        )
+        
+        logger.info(f"PERSISTENCE: Loaded flow state for room {room_name} from {file_path}")
+        return flow_state
+        
+    except Exception as e:
+        logger.error(f"PERSISTENCE: Error loading flow state: {e}")
+        return None
+
+def delete_flow_state_from_file(room_name: str) -> bool:
+    """Delete flow state from local JSON file"""
+    try:
+        # Sanitize room name for filename
+        safe_room_name = "".join(c for c in room_name if c.isalnum() or c in ('-', '_')).rstrip()
+        file_path = os.path.join(PERSISTENCE_DIR, f"{safe_room_name}.json")
+        
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.info(f"PERSISTENCE: Deleted flow state file for room {room_name}")
+        else:
+            logger.info(f"PERSISTENCE: No flow state file found to delete for room {room_name}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"PERSISTENCE: Error deleting flow state: {e}")
+        return False
+
+def cleanup_old_flow_states():
+    """Clean up flow state files older than 24 hours"""
+    try:
+        if not os.path.exists(PERSISTENCE_DIR):
+            return
+        
+        current_time = time.time()
+        cleaned_count = 0
+        
+        for filename in os.listdir(PERSISTENCE_DIR):
+            if filename.endswith('.json'):
+                file_path = os.path.join(PERSISTENCE_DIR, filename)
+                try:
+                    with open(file_path, 'r') as f:
+                        data = json.load(f)
+                    
+                    saved_at = data.get("saved_at", 0)
+                    if current_time - saved_at > 24 * 60 * 60:  # 24 hours
+                        os.remove(file_path)
+                        cleaned_count += 1
+                        logger.info(f"PERSISTENCE: Cleaned up old flow state file: {filename}")
+                        
+                except Exception as e:
+                    logger.warning(f"PERSISTENCE: Error processing file {filename}: {e}")
+        
+        if cleaned_count > 0:
+            logger.info(f"PERSISTENCE: Cleaned up {cleaned_count} old flow state files")
+        
+    except Exception as e:
+        logger.error(f"PERSISTENCE: Error during cleanup: {e}")
+
+# Clean up old files on startup
+cleanup_old_flow_states()
 
 def is_ambiguous_transcription(user_text: str) -> bool:
     """Detect if the user text appears to be a garbled/ambiguous transcription."""
@@ -244,14 +377,75 @@ def interpret_answer(question_text: str, user_text: str) -> Dict[str, Any]:
 
     # Texts-per-month quantity
     if "texts" in q:
+        # Look for numbers in various formats
         m = re.search(r"\b(\d{1,5})\b", u)
         if m:
             return {"status": "extracted", "kind": "number", "value": int(m.group(1)), "confidence": 0.85}
+        
+        # Look for word numbers (five hundred, two fifty, etc.)
+        words_to_num = {
+            "one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10,
+            "eleven":11,"twelve":12,"thirteen":13,"fourteen":14,"fifteen":15,"sixteen":16,"seventeen":17,
+            "eighteen":18,"nineteen":19,"twenty":20,"thirty":30,"forty":40,"fifty":50,"sixty":60,
+            "seventy":70,"eighty":80,"ninety":90,"hundred":100,"thousand":1000
+        }
+        
+        # Handle "five hundred" pattern
+        if re.search(r"\bfive\s+hundred\b", u):
+            return {"status": "extracted", "kind": "number", "value": 500, "confidence": 0.9}
+        if re.search(r"\btwo\s+fifty\b", u):
+            return {"status": "extracted", "kind": "number", "value": 250, "confidence": 0.9}
+        if re.search(r"\btwo\s+hundred\b", u):
+            return {"status": "extracted", "kind": "number", "value": 200, "confidence": 0.9}
+        if re.search(r"\bthree\s+hundred\b", u):
+            return {"status": "extracted", "kind": "number", "value": 300, "confidence": 0.9}
+        if re.search(r"\bfour\s+hundred\b", u):
+            return {"status": "extracted", "kind": "number", "value": 400, "confidence": 0.9}
+        if re.search(r"\bsix\s+hundred\b", u):
+            return {"status": "extracted", "kind": "number", "value": 600, "confidence": 0.9}
+        if re.search(r"\bseven\s+hundred\b", u):
+            return {"status": "extracted", "kind": "number", "value": 700, "confidence": 0.9}
+        if re.search(r"\beight\s+hundred\b", u):
+            return {"status": "extracted", "kind": "number", "value": 800, "confidence": 0.9}
+        if re.search(r"\bnine\s+hundred\b", u):
+            return {"status": "extracted", "kind": "number", "value": 900, "confidence": 0.9}
+        
+        # Handle single word numbers
+        for w, n in words_to_num.items():
+            if re.search(rf"\b{w}\b", u) and n <= 1000:  # Only reasonable text message counts
+                return {"status": "extracted", "kind": "number", "value": n, "confidence": 0.8}
 
     return {"status": "unclear", "kind": "text", "value": u, "confidence": 0.0}
 
-def llm_extract_answer(question_text: str, user_text: str) -> Dict[str, Any]:
-    """LLM-based extractor for natural responses when deterministic parsing is unclear.
+def gated_llm_extract_answer(question_text: str, user_text: str) -> Dict[str, Any]:
+    """Always use LLM for answer extraction with deterministic parser context.
+    
+    This is the new robust approach that:
+    1. First runs deterministic parser for initial analysis
+    2. Always calls LLM with parser context for final decision
+    3. Provides more reliable extraction than either method alone
+    
+    Args:
+        question_text: The question being asked
+        user_text: The user's natural language response
+        
+    Returns:
+        Dict with status, kind, value, confidence
+    """
+    # Step 1: Run deterministic parser for initial analysis
+    parser_result = interpret_answer(question_text, user_text)
+    
+    # Step 2: Always call LLM with parser context
+    llm_result = llm_extract_answer(question_text, user_text, parser_result)
+    
+    # Log the comparison for debugging
+    logger.info(f"GATED_LLM: Parser={parser_result}, LLM={llm_result}")
+    
+    # Return LLM result (it has the final decision)
+    return llm_result
+
+def llm_extract_answer(question_text: str, user_text: str, parser_context: Dict[str, Any] = None) -> Dict[str, Any]:
+    """LLM-based extractor for natural responses with deterministic parser context.
     Returns the same schema as interpret_answer. Uses strict JSON output instructions.
     """
     try:
@@ -260,12 +454,20 @@ def llm_extract_answer(question_text: str, user_text: str) -> Dict[str, Any]:
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         system = (
             "You extract structured answers from a user's natural reply. "
+            "You will receive both the raw user input and a deterministic parser's analysis. "
+            "Use the parser's analysis as context, but make your own intelligent decision. "
             "Return a JSON object only, no prose, with keys: status ('extracted'|'unclear'), "
-            "kind ('number'|'zip'|'yesno'|'text'), value, confidence (0..1)."
+            "kind ('number'|'zip'|'yesno'|'text'|'ambiguous'), value, confidence (0..1)."
         )
+        
+        # Build context from parser analysis
+        parser_info = ""
+        if parser_context:
+            parser_info = f"\nParser Analysis: {parser_context.get('status', 'unknown')} - {parser_context.get('kind', 'unknown')} - {parser_context.get('value', 'none')} (confidence: {parser_context.get('confidence', 0)})"
+        
         user = (
             "Question: " + (question_text or "") + "\n"
-            "User reply: " + (user_text or "") + "\n"
+            "User reply: " + (user_text or "") + parser_info + "\n"
             "Rules:\n"
             "- If user gives a quantity like 'two phone lines' or 'twenty four', set kind='number' and value as integer.\n"
             "- If it's a ZIP like 'two five nine six three', set kind='zip' and 5-digit value.\n"
@@ -273,7 +475,8 @@ def llm_extract_answer(question_text: str, user_text: str) -> Dict[str, Any]:
             "- If the reply appears garbled, incomplete, or nonsensical (like 'through phone lines we use', 'about to', 'uh can i'), set status='unclear' and kind='ambiguous'.\n"
             "- If the reply is incomplete or ends with articles/prepositions ('the', 'to', 'we', 'use'), set status='unclear'.\n"
             "- If words are repeated unnecessarily ('some some', 'two two'), set status='unclear'.\n"
-            "- Otherwise set status='unclear'.\n"
+            "- Consider the parser's analysis but make your own decision - you may override the parser if it seems wrong.\n"
+            "- For ambiguous transcriptions, prioritize asking for clarification over guessing.\n"
             "Respond with JSON only."
         )
         resp = client.chat.completions.create(
@@ -336,13 +539,19 @@ Instructions:
 2. Find the intent that best matches what the user is asking about
 3. Consider synonyms and related terms
 4. Be flexible with matching - partial matches are okay
+5. For conversational greetings like "How are you?", "Hello", "Hi", "Hey", "Good morning" - respond with "greeting"
+6. For responses that seem to be answering a question (like "I need two phone lines"), try to match with relevant intents
+7. If the user is clearly asking about pricing, costs, plans, or services, match with "Pricing" intent
+8. If the user wants to speak to a human, agent, or representative, match with "Agent" intent
 
-Respond with ONLY the exact intent name from the list above, or "none" if no intent matches.
+Respond with ONLY: the exact intent name from the list above, "greeting", or "none" if no intent matches.
 
 Examples:
 - User says "weather" or "weather today" → match with "weather" intent
-- User says "pricing" or "cost" → match with "Pricing" intent  
-- User says "agent" or "human" → match with "Agent" intent
+- User says "pricing" or "cost" or "I need pricing info" → match with "Pricing" intent  
+- User says "agent" or "human" or "connect me with someone" → match with "Agent" intent
+- User says "How are you?" or "Hello" or "Hi there" → respond with "greeting"
+- User says "I need two phone lines" → match with "Pricing" intent (if available)
 """
         
         logger.info(f"INTENT_DETECTION: Analyzing message '{user_message}' for intents: {intent_list}")
@@ -358,6 +567,11 @@ Examples:
         detected_intent = response.choices[0].message.content.strip()
         logger.info(f"INTENT_DETECTION: LLM response: '{detected_intent}'")
         
+        # Handle special "greeting" response
+        if detected_intent == "greeting":
+            logger.info(f"INTENT_DETECTION: ✅ Greeting detected")
+            return {"type": "greeting", "intent": "greeting"}
+        
         # Find matching intent
         for intent_name, intent_data in intent_mapping.items():
             if detected_intent.lower() == intent_name.lower():
@@ -365,7 +579,7 @@ Examples:
                 return intent_data
         
         logger.info(f"INTENT_DETECTION: ❌ No intent found, will use FAQ bot")
-            return None
+        return None
             
     except Exception as e:
         logger.error(f"INTENT_DETECTION: Error using LLM: {e}")
@@ -1034,11 +1248,46 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     
     # Get or create flow state for this room
     if room_name not in flow_states:
-        flow_states[room_name] = FlowState()
-        print_flow_status(room_name, flow_states[room_name], "NEW SESSION CREATED", f"User message: '{user_message}'")
+        # Try to load from local file first
+        flow_state = load_flow_state_from_file(room_name)
+        if flow_state:
+            flow_states[room_name] = flow_state
+            print_flow_status(room_name, flow_state, "SESSION RESTORED FROM FILE", f"User message: '{user_message}'")
+            logger.info(f"FLOW_MANAGEMENT: Restored flow state from file for room {room_name}")
+        else:
+            flow_states[room_name] = FlowState()
+            print_flow_status(room_name, flow_states[room_name], "NEW SESSION CREATED", f"User message: '{user_message}'")
+            logger.info(f"FLOW_MANAGEMENT: Created new flow state for room {room_name}")
+    else:
+        logger.info(f"FLOW_MANAGEMENT: Using existing flow state for room {room_name}")
     
     flow_state = flow_states[room_name]
     
+    # Auto-save flow state to file after any changes
+    def auto_save_flow_state():
+        save_flow_state_to_file(room_name, flow_state)
+    
+    # Define escalation phrases and helper function here
+    escalate_phrases = [
+        "agent", "human", "representative", "connect me", "talk to", "speak to", "someone", "person", "escalate", "transfer"
+    ]
+
+    def _matches_any(phrases: list[str], text: str) -> bool:
+        return any(p in text for p in phrases)
+
+    # Check for escalation phrases immediately
+    um_low = (user_message or "").lower().strip()
+    if _matches_any(escalate_phrases, um_low):
+        response_text = "Connecting you to a human agent. Please wait."
+        add_agent_response_to_history(flow_state, response_text)
+        auto_save_flow_state()  # Save after escalation
+        logger.info("FLOW_MANAGEMENT: Global escalation detected → initiating transfer")
+        return {
+            "type": "transfer_initiated",
+            "response": response_text,
+            "flow_state": flow_state
+        }
+
     # Initialize conversation history
     if flow_state.conversation_history is None:
         flow_state.conversation_history = []
@@ -1076,26 +1325,80 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
 
     # If no current flow, try to find matching intent using LLM
     if not flow_state.current_flow:
-        print_flow_status(room_name, flow_state, "SEARCHING FOR INTENT", f"Analyzing message: '{user_message}'")
-        logger.info(f"FLOW_MANAGEMENT: Bot template available: {bot_template is not None}")
-        if bot_template:
-            logger.info(f"FLOW_MANAGEMENT: Bot template data keys: {list(bot_template.get('data', {}).keys())}")
-            # Debug: Show all available intents
-            for flow_key, flow_data in bot_template.get('data', {}).items():
-                if flow_data.get('type') == 'intent_bot':
-                    logger.info(f"FLOW_MANAGEMENT: Available intent '{flow_data.get('text', '')}' in flow {flow_key}")
+        # Check if we can recover flow state from conversation history
+        if flow_state.conversation_history and len(flow_state.conversation_history) > 0:
+            # Look for recent agent messages that might indicate we were in a flow
+            recent_agent_messages = [
+                msg for msg in flow_state.conversation_history[-5:] 
+                if msg.get("role") == "assistant" and msg.get("content")
+            ]
+            
+            # Check if any recent agent message looks like a flow question
+            for msg in recent_agent_messages:
+                content = msg.get("content", "").lower()
+                if any(keyword in content for keyword in ["how many phone lines", "how many texts", "special needs", "sso", "crm"]):
+                    logger.info(f"FLOW_MANAGEMENT: Detected potential flow recovery from conversation history: '{content[:50]}...'")
+                    # Try to recover by starting pricing flow
+                    matching_intent = await detect_flow_intent_with_llm("pricing information")
+                    if matching_intent:
+                        logger.info(f"FLOW_MANAGEMENT: Recovered flow state for pricing intent")
+                        flow_state.current_flow = matching_intent["flow_key"]
+                        flow_state.current_step = matching_intent["flow_data"]["name"]
+                        flow_state.flow_data = matching_intent["flow_data"]
+                        break
+            
+            # Also check if the current user message looks like a flow response
+            user_msg_lower = (user_message or "").lower()
+            if any(keyword in user_msg_lower for keyword in ["phone lines", "text messages", "texts", "three hundred", "two hundred", "five hundred"]):
+                logger.info(f"FLOW_MANAGEMENT: User message looks like flow response, attempting recovery")
+                # Try to recover by starting pricing flow
+                matching_intent = await detect_flow_intent_with_llm("pricing information")
+                if matching_intent:
+                    logger.info(f"FLOW_MANAGEMENT: Recovered flow state from user message context")
+                    flow_state.current_flow = matching_intent["flow_key"]
+                    flow_state.current_step = matching_intent["flow_data"]["name"]
+                    flow_state.flow_data = matching_intent["flow_data"]
+                    # Skip intent detection and go directly to flow processing
+                    logger.info(f"FLOW_MANAGEMENT: Skipping intent detection, processing as flow response")
+                    # Continue to flow processing below
+                    break
         
-        matching_intent = await detect_flow_intent_with_llm(user_message)
-        logger.info(f"FLOW_MANAGEMENT: Intent detection result: {matching_intent}")
-        print(f"🔍 INTENT DETECTION: '{user_message}' -> {matching_intent}")
+        # Only run intent detection if we still don't have a flow
+        matching_intent = None
+        if not flow_state.current_flow:
+            print_flow_status(room_name, flow_state, "SEARCHING FOR INTENT", f"Analyzing message: '{user_message}'")
+            logger.info(f"FLOW_MANAGEMENT: Bot template available: {bot_template is not None}")
+            if bot_template:
+                logger.info(f"FLOW_MANAGEMENT: Bot template data keys: {list(bot_template.get('data', {}).keys())}")
+                # Debug: Show all available intents
+                for flow_key, flow_data in bot_template.get('data', {}).items():
+                    if flow_data.get('type') == 'intent_bot':
+                        logger.info(f"FLOW_MANAGEMENT: Available intent '{flow_data.get('text', '')}' in flow {flow_key}")
+            
+            matching_intent = await detect_flow_intent_with_llm(user_message)
+            logger.info(f"FLOW_MANAGEMENT: Intent detection result: {matching_intent}")
+            print(f"🔍 INTENT DETECTION: '{user_message}' -> {matching_intent}")
         
         if matching_intent:
+            # Handle special greeting case
+            if matching_intent.get("type") == "greeting":
+                response_text = "Hi there! I'm here to help you with the information you need about our business communication services, including SMS texting, live chat, chatbots, and more. How can I assist you today?"
+                add_agent_response_to_history(flow_state, response_text)
+                auto_save_flow_state()  # Save after greeting response
+                logger.info("FLOW_MANAGEMENT: Greeting detected, providing friendly response")
+                return {
+                    "type": "message",
+                    "response": response_text,
+                    "flow_state": flow_state
+                }
+            
             logger.info(f"FLOW_MANAGEMENT: ✅ INTENT DETECTED - {matching_intent['intent']} -> {matching_intent['flow_key']}")
             logger.info(f"FLOW_MANAGEMENT: Flow data: {matching_intent['flow_data']}")
             
             flow_state.current_flow = matching_intent["flow_key"]
             flow_state.current_step = matching_intent["flow_data"]["name"]
             flow_state.flow_data = matching_intent["flow_data"]
+            auto_save_flow_state()  # Save after flow state changes
             
             logger.info(f"FLOW_MANAGEMENT: LLM started flow {flow_state.current_flow} for intent: {matching_intent['intent']}")
             logger.info(f"FLOW_MANAGEMENT: Current step set to: {flow_state.current_step}")
@@ -1108,6 +1411,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
                 flow_state.current_step = next_flow.get("name")
                 flow_state.flow_data = next_flow
+                auto_save_flow_state()  # Save after step transition
                 
                 print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
                                 f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
@@ -1173,16 +1477,9 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 logger.info("FLOW_MANAGEMENT: Farewell detected during question → conversation_end")
                 return {"type": "conversation_end", "response": response_text, "flow_state": flow_state}
             
-            # Try interpreter first to handle natural speech
-            interp = interpret_answer(current_step_data.get("text", ""), user_message or "")
-            logger.info(f"ANSWER_INTERPRETER: {interp}")
-            if interp.get("status") != "extracted":
-                # Gated LLM extraction if unclear
-                llm_interp = llm_extract_answer(current_step_data.get("text", ""), user_message or "")
-                logger.info(f"ANSWER_LLM: {llm_interp}")
-                # Prefer LLM only if it extracted with reasonable confidence
-                if llm_interp.get("status") == "extracted" and float(llm_interp.get("confidence", 0)) >= 0.6:
-                    interp = llm_interp
+            # Use gated LLM approach for robust answer extraction
+            interp = gated_llm_extract_answer(current_step_data.get("text", ""), user_message or "")
+            logger.info(f"GATED_LLM_EXTRACT: {interp}")
 
             # Extra yes/no fallback for special-needs/SSO style questions
             qtxt = (current_step_data.get("text") or "").lower()
@@ -1243,7 +1540,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     flow_state.flow_data = nxt
                     step_type = nxt.get("type", "unknown")
                     response_text = nxt.get("text", "")
-                    logger.info("FLOW_MANAGEMENT: Interpreter-based progression applied")
+                    logger.info(f"FLOW_MANAGEMENT: Interpreter-based progression applied - extracted {interp.get('kind')}: {interp.get('value')}")
                     print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
                     # Update pending lock
                     if step_type == 'question':
@@ -1314,7 +1611,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     flow_state.flow_data = nxt
                     step_type = nxt.get("type", "unknown")
                     response_text = nxt.get("text", "")
-                    logger.info(f"FLOW_MANAGEMENT: Heuristic progressed numeric answer to next step {flow_state.current_step}")
+                    logger.info(f"FLOW_MANAGEMENT: Heuristic progressed numeric answer ({qty}) to next step {flow_state.current_step}")
                     print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
                     add_agent_response_to_history(flow_state, response_text)
                     return {
@@ -1387,89 +1684,39 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             if current_step_data and current_step_data.get("answers") and current_step_data.get("type") in ("faq", "message"):
                 answers = current_step_data.get("answers", {}) or {}
                 um = (user_message or "").lower().strip()
-                
-                # Heuristics for escalation vs end - check these FIRST
-                escalate_phrases = [
-                    "agent", "human", "representative", "connect me", "talk to", "speak to", "someone", "person", "escalate", "transfer"
-                ]
+
+                # Check for escalation phrases in FAQ step (escalation should work everywhere)
+                if _matches_any(escalate_phrases, um):
+                    response_text = "Connecting you to a human agent. Please wait."
+                    add_agent_response_to_history(flow_state, response_text)
+                    logger.info("FLOW_MANAGEMENT: Escalation detected in FAQ step → initiating transfer")
+                    return {
+                        "type": "transfer_initiated",
+                        "response": response_text,
+                        "flow_state": flow_state
+                    }
+
+                # Check for end phrases
                 end_phrases = [
                     "thanks", "thank you", "that is all", "that's all", "thats all", "bye", "goodbye", "all good", "great, thanks", "no more"
                 ]
 
-                def _matches_any(phrases: list[str]) -> bool:
-                    return any(p in um for p in phrases)
-
-                # Decide branch - prioritize escalation and end phrases
-                branch = None
-                if _matches_any(escalate_phrases) and "moreAction" in answers:
-                    branch = "moreAction"
-                elif _matches_any(end_phrases) and "noAction" in answers:
+                if _matches_any(end_phrases, um):
                     branch = "noAction"
-
-                if branch:
                     node = answers.get(branch) or {}
                     response_text = node.get("text", "")
-                    next_flow = node.get("next_flow")
-                    logger.info(f"FLOW_MANAGEMENT: ANSWERS branch '{branch}' selected. Next_flow: {bool(next_flow)}")
                     add_agent_response_to_history(flow_state, response_text)
-
-                    # Transition if next_flow exists
-                    if next_flow:
-                        old = flow_state.current_step
-                        flow_state.current_step = next_flow.get("name")
-                        flow_state.flow_data = next_flow
-                        logger.info(f"FLOW_MANAGEMENT: ANSWERS transition {old} → {flow_state.current_step}")
-                        print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old} → To: {flow_state.current_step} | Type: {next_flow.get('type')} | Response: '{response_text}'")
-
-                        # If this is an Agent handoff, expose as flow_started for frontend intent update
-                        flow_name = None
-                        nf_text = (next_flow.get("text") or "").strip()
-                        if nf_text.lower().startswith("intent: agent"):
-                            flow_name = "Agent"
-                        return {
-                            "type": "flow_started" if flow_name else (next_flow.get("type", "message")),
-                            "flow_name": flow_name,
-                            "response": response_text,
-                            "next_step": next_flow.get("next_flow"),
-                            "flow_state": flow_state
-                        }
-
-                    # No next_flow: just return the branch message
-                    # If this was a noAction branch, mark as conversation_end for graceful close
                     return {
                         "type": "conversation_end" if branch == "noAction" else node.get("type", "message"),
                         "response": response_text,
                         "flow_state": flow_state
                     }
-                
-                # If no escalation/end branch was selected, try answer interpreter for unclear questions
-                interp = interpret_answer(current_step_data.get("text", ""), user_message or "")
-                logger.info(f"FAQ_ANSWER_INTERPRETER: {interp}")
-                
-                if interp.get("status") == "unclear":
-                    # Handle unclear questions by asking for clarification
-                    if interp.get("kind") == "ambiguous":
-                        response_text = "I didn't quite catch that. Could you please repeat your answer more clearly?"
-                    else:
-                        response_text = "I didn't quite understand that. Could you please rephrase your question or ask about something specific?"
-                    add_agent_response_to_history(flow_state, response_text)
-                    logger.info(f"FAQ_ANSWER_INTERPRETER: Handling unclear question ({interp.get('kind', 'unclear')}) with clarification request")
-                    return {
-                        "type": "message",
-                        "response": response_text,
-                        "flow_state": flow_state
-                    }
-                elif interp.get("status") == "extracted":
-                    # Handle clear questions by transitioning to question handling
-                    logger.info("FAQ_ANSWER_INTERPRETER: Clear question detected, transitioning to question handling")
-                    # Reset to question handling flow
-                    flow_state.current_step = "question"
-                    flow_state.flow_data = bot_template.get("question", {})
-                    return {
-                        "type": "message",
-                        "response": "I understand you have a question. Let me help you with that.",
-                        "flow_state": flow_state
-                    }
+
+                # For FAQ steps, treat user responses as general questions and use FAQ bot
+                logger.info("FAQ_ANSWER_INTERPRETER: User response in FAQ step, routing to FAQ bot")
+                return await get_faq_response(user_message, flow_state=flow_state)
+
+                # ... existing code ...
     
     # Check for intent shift even when in a flow using LLM
     print_flow_status(room_name, flow_state, "CHECKING FOR INTENT SHIFT", f"Current flow: {flow_state.current_flow}")
