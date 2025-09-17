@@ -8,6 +8,18 @@ from dotenv import load_dotenv
 from typing import Dict, Any, Optional, Union, Literal, AsyncIterable
 import json
 import re
+import os, psutil, threading, time
+
+def monitor_memory():
+    process = psutil.Process(os.getpid())
+    while True:
+        mem = process.memory_info().rss / (1024 * 1024)  # Resident Set Size in MB
+        cpu = process.cpu_percent(interval=None)
+        print(f"[WORKER-MEM] {mem:.1f} MB | CPU: {cpu:.1f}%")
+        time.sleep(5)  # print every 5 seconds
+
+threading.Thread(target=monitor_memory, daemon=True).start()
+
 
 from livekit.agents import (
     AgentSession,
