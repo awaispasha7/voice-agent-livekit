@@ -1,0 +1,63 @@
+{
+  "current_flow": null,
+  "current_step": null,
+  "flow_data": null,
+  "conversation_history": [
+    {
+      "role": "user",
+      "content": "Um, can I speak with someone over the phone?",
+      "timestamp": "2025-09-18T14:52:28.170229"
+    },
+    {
+      "role": "assistant",
+      "content": "I'm here to help! How can I assist you today?",
+      "timestamp": "2025-09-18T14:52:28.170229"
+    },
+    {
+      "role": "user",
+      "content": "I not speak with someone else?",
+      "timestamp": "2025-09-18T14:52:28.170229"
+    },
+    {
+      "role": "assistant",
+      "content": "Sorry, I didn't catch that. I'm here to help! How can I assist you today?",
+      "timestamp": "2025-09-18T14:52:28.170229"
+    },
+    {
+      "role": "user",
+      "content": "Uh, I'm looking forward to speak with someone over the phone so that I can, uh,",
+      "timestamp": "2025-09-18T14:52:28.170229"
+    },
+    {
+      "role": "assistant",
+      "content": "Sorry, I didn't catch that. I'm here to help! How can I assist you today?",
+      "timestamp": "2025-09-18T14:52:28.170229"
+    },
+    {
+      "role": "user",
+      "content": "Uh, never mind.",
+      "timestamp": "2025-09-18T14:52:28.170229"
+    },
+    {
+      "role": "user",
+      "content": "Uh, never mind.Thanks.",
+      "timestamp": "2025-09-18T14:52:28.170229"
+    },
+    {
+      "role": "assistant",
+      "content": "I understand you're no longer looking for information. If you have any questions about Alive5's chatbot, messaging services, or customer engagement features in the future, I'd be happy to help.",
+      "timestamp": "2025-09-18T14:52:36.825240"
+    },
+    {
+      "role": "assistant",
+      "content": "Connecting you to a human agent. Please wait.",
+      "timestamp": "2025-09-18T14:52:57.843523"
+    }
+  ],
+  "user_responses": null,
+  "pending_step": null,
+  "pending_expected_kind": null,
+  "pending_asked_at": null,
+  "pending_reask_count": 0,
+  "saved_at": 1758221577.8435237
+}

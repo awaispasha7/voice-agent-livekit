@@ -64,7 +64,7 @@ class DynamicVoiceAgent {
         for (const baseUrl of urls) {
             try {
                 const url = baseUrl + endpoint;
-                console.log(`🔄 Trying API call to: ${url}`);
+                // console.log(`🔄 Trying API call to: ${url}`);
                 
                 const response = await fetch(url, {
                     ...options,
@@ -72,7 +72,7 @@ class DynamicVoiceAgent {
                 });
                 
                 if (response.ok) {
-                    console.log(`✅ API call successful to: ${url}`);
+                    // console.log(`✅ API call successful to: ${url}`);
                     return response;
                 } else {
                     console.warn(`⚠️ API call failed with status ${response.status} to: ${url}`);
@@ -482,7 +482,7 @@ class DynamicVoiceAgent {
                 try {
                     const data = JSON.parse(new TextDecoder().decode(payload));
                     if (data.type === 'agent_transcript') {
-                        console.log('🤖 Agent transcript via data received:', data);
+                        // console.log('🤖 Agent transcript via data received:', data);
                         this.handleAgentTranscription(data.message, { identity: data.speaker });
                     }
                 } catch (error) {

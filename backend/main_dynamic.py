@@ -528,54 +528,53 @@ async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, A
         intent_list = ", ".join(available_intents)
         
         prompt = f"""
-You are an intent classifier. Compare the user's message with the available intents and find the best match.
+You are an intent classifier. Your job is to match the user's message to one of the available intents.
 
 Available intents: {intent_list}
 
 User message: "{user_message}"
 
-Instructions:
-1. Look at the user's message and compare it with each available intent
-2. Find the intent that best matches what the user is asking about
-3. Consider synonyms and related terms
-4. Be flexible with matching - partial matches are okay
-5. For conversational greetings like "How are you?", "Hello", "Hi", "Hey", "Good morning" - respond with "greeting"
-6. For responses that seem to be answering a question (like "I need two phone lines"), try to match with relevant intents
-7. If the user is clearly asking about pricing, costs, plans, or services, match with "Pricing" intent
-8. If the user wants to speak to a human, agent, or representative, match with "Agent" intent
+ANALYSIS STEPS:
+1. Read the user's message carefully
+2. Identify what the user is asking for or wants to do
+3. Match it to the most appropriate intent from the list above
+4. Consider the meaning and intent behind the words, not just exact matches
 
-CRITICAL: Pay special attention to agent/human requests:
-- "speak with someone" → Agent intent
-- "talk to someone" → Agent intent  
-- "connect me with someone" → Agent intent
-- "I want to speak with someone" → Agent intent
-- "Can I speak with someone over the phone" → Agent intent
-- "over the line" or "over the phone" → Agent intent
+SPECIAL CASES:
+- Greetings like "Hello", "Hi", "How are you?" → respond with "greeting"
+- Agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone" → match with "Agent"
+- Pricing questions like "cost", "price", "plans", "how much" → match with "Pricing"
+- Weather questions → match with "weather"
 
-Respond with ONLY: the exact intent name from the list above, "greeting", or "none" if no intent matches.
+IMPORTANT: The user said: "{user_message}"
+Think about what they really want. Are they asking to speak to a person? Do they want pricing information? Are they asking about weather?
+
+Respond with ONLY the exact intent name from the list above, "greeting", or "none" if no intent matches.
 
 Examples:
-- User says "weather" or "weather today" → match with "weather" intent
-- User says "pricing" or "cost" or "I need pricing info" → match with "Pricing" intent  
-- User says "agent" or "human" or "connect me with someone" → match with "Agent" intent
-- User says "speak with someone over the phone" → match with "Agent" intent
-- User says "How are you?" or "Hello" or "Hi there" → respond with "greeting"
-- User says "I need two phone lines" → match with "Pricing" intent (if available)
+- "Can I speak with someone over the phone?" → Agent (they want to talk to a human)
+- "What's the weather like?" → weather
+- "How much does it cost?" → Pricing
+- "Hello there" → greeting
+- "I need help with billing" → Agent (they want human help)
 """
         
         logger.info(f"INTENT_DETECTION: Analyzing message '{user_message}' for intents: {intent_list}")
         logger.info(f"INTENT_DETECTION: Available intents mapping: {list(intent_mapping.keys())}")
+        print(f"🔍 INTENT DETECTION: Available intents: {intent_list}")
+        print(f"🔍 INTENT DETECTION: User message: '{user_message}'")
 
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=20,
-            temperature=0.1
+            max_tokens=50,
+            temperature=0.0
         )
         
         detected_intent = response.choices[0].message.content.strip()
         logger.info(f"INTENT_DETECTION: LLM response: '{detected_intent}'")
+        print(f"🔍 INTENT DETECTION: LLM returned: '{detected_intent}'")
         
         # Handle special "greeting" response
         if detected_intent == "greeting":
@@ -586,9 +585,11 @@ Examples:
         for intent_name, intent_data in intent_mapping.items():
             if detected_intent.lower() == intent_name.lower():
                 logger.info(f"INTENT_DETECTION: ✅ Intent found: '{intent_name}'")
+                print(f"✅ INTENT MATCHED: '{detected_intent}' -> '{intent_name}'")
                 return intent_data
         
         logger.info(f"INTENT_DETECTION: ❌ No intent found, will use FAQ bot")
+        print(f"❌ INTENT NOT FOUND: '{detected_intent}' not in {list(intent_mapping.keys())}")
         return None
             
     except Exception as e:

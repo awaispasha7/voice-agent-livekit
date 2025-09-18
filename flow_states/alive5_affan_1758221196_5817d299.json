@@ -1,0 +1,91 @@
+{
+  "current_flow": "Flow_3",
+  "current_step": "faq_130c3f4a-bf10-4cf7-a294-41c6edd39e7a",
+  "flow_data": {
+    "type": "faq",
+    "text": "Feel free to ask any question!",
+    "name": "faq_130c3f4a-bf10-4cf7-a294-41c6edd39e7a",
+    "answers": {
+      "noAction": {
+        "type": "message",
+        "text": "Glad I could help!",
+        "name": "message_a3ba0204-48e4-4b70-8c45-44b5c50f2c1c",
+        "next_flow": null
+      },
+      "moreAction": {
+        "type": "message",
+        "text": "Sorry, I could not help, let me connect you to an agent.",
+        "name": "message_630a9b7b-e615-4a2f-905b-4e74f734d368",
+        "next_flow": {
+          "type": "message",
+          "text": "Intent: Agent",
+          "name": "message_10212762-a5ad-4861-a64b-9be50c760952",
+          "next_flow": null
+        }
+      }
+    },
+    "next_flow": null
+  },
+  "conversation_history": [
+    {
+      "role": "assistant",
+      "content": "How many texts do you send a month (in and out)?",
+      "timestamp": "2025-09-18T14:49:09.361403"
+    },
+    {
+      "role": "user",
+      "content": "I believe I said about",
+      "timestamp": "2025-09-18T14:49:09.361403"
+    },
+    {
+      "role": "user",
+      "content": "200 text messages.",
+      "timestamp": "2025-09-18T14:49:09.361403"
+    },
+    {
+      "role": "assistant",
+      "content": "Do you have any special needs such as Single Sign On S-S-O, Salesforce C-R-M integration?",
+      "timestamp": "2025-09-18T14:49:09.361403"
+    },
+    {
+      "role": "user",
+      "content": "Yeah.",
+      "timestamp": "2025-09-18T14:49:09.361403"
+    },
+    {
+      "role": "user",
+      "content": "I need the CRM integration as well.",
+      "timestamp": "2025-09-18T14:49:09.361403"
+    },
+    {
+      "role": "assistant",
+      "content": "Thanks for providing all your details. Please hold while we generate the best plan for you and a link to sign up:",
+      "timestamp": "2025-09-18T14:49:09.361403"
+    },
+    {
+      "role": "user",
+      "content": "Okay. Sounds great.",
+      "timestamp": "2025-09-18T14:49:09.361403"
+    },
+    {
+      "role": "assistant",
+      "content": "Feel free to ask any question!",
+      "timestamp": "2025-09-18T14:49:09.864730"
+    },
+    {
+      "role": "assistant",
+      "content": "Connecting you to a human agent. Please wait.",
+      "timestamp": "2025-09-18T14:49:22.753959"
+    }
+  ],
+  "user_responses": {
+    "question_44436800-db46-43b9-8e0b-df9a7b3d565c": "I need about two phone lines, please.",
+    "question_ae051e94-daf6-4d3d-b4fa-296647392d64": "I believe I said about 200 text messages.",
+    "question_9f623583-221b-4fea-b30d-ca1c5d25a9bf": "Yeah.I need the CRM integration as well."
+  },
+  "pending_step": null,
+  "pending_expected_kind": null,
+  "pending_asked_at": 1758221317.368751,
+  "pending_reask_count": 0,
+  "saved_at": 1758221362.7539592
+}
