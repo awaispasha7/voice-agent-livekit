@@ -251,7 +251,8 @@ class DynamicVoiceAgent {
             
             if (!response.ok) throw new Error('Failed to get connection details');
             const connectionDetails = await response.json();
-            console.log('Connection details received:', connectionDetails);
+            // console.log('Connection details received:', connectionDetails);
+            console.log('Successfully received connection details');
             
             this.currentRoomName = connectionDetails.roomName;
             
