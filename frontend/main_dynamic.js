@@ -28,6 +28,22 @@ class DynamicVoiceAgent {
         this.finalTranscript = "";
         this.lastTranscriptUpdate = Date.now();
         
+        // Configuration
+        this.config = {
+            API_BASE_URL: window.API_BASE_URL || window.BACKEND_URL || 'http://localhost:8000',
+            ENDPOINTS: {
+                CONNECTION_DETAILS: '/api/connection_details',
+                PROCESS_FLOW_MESSAGE: '/api/process_flow_message',
+                UPDATE_SESSION: '/api/sessions/update',
+                DELETE_ROOM: '/api/rooms'
+            },
+            CONNECTION: {
+                MAX_ATTEMPTS: 3,
+                RETRY_DELAY: 2000,
+                TIMEOUT: 10000
+            }
+        };
+        
         this.bindEvents();
         this.updateDisplay();
     }
@@ -36,6 +52,37 @@ class DynamicVoiceAgent {
         const timestamp = Date.now();
         const random = Math.random().toString(36).substring(2, 8);
         return `session_${timestamp}_${random}`;
+    }
+    
+    // Helper function to try multiple URLs if one fails
+    async fetchWithFallback(endpoint, options = {}) {
+        const urls = [
+            this.config.API_BASE_URL,
+            'https://voice-agent-backend.onrender.com'  // Render URL as fallback
+        ];
+        
+        for (const baseUrl of urls) {
+            try {
+                const url = baseUrl + endpoint;
+                console.log(`🔄 Trying API call to: ${url}`);
+                
+                const response = await fetch(url, {
+                    ...options,
+                    timeout: this.config.CONNECTION.TIMEOUT
+                });
+                
+                if (response.ok) {
+                    console.log(`✅ API call successful to: ${url}`);
+                    return response;
+                } else {
+                    console.warn(`⚠️ API call failed with status ${response.status} to: ${url}`);
+                }
+            } catch (error) {
+                console.warn(`❌ API call failed to ${baseUrl + endpoint}:`, error.message);
+            }
+        }
+        
+        throw new Error(`All API endpoints failed for ${endpoint}`);
     }
     
     hashMessage(message) {
@@ -189,7 +236,7 @@ class DynamicVoiceAgent {
             document.getElementById('joinBtn').disabled = true;
             
             // Get connection details
-            const response = await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/connection_details', {
+            const response = await this.fetchWithFallback(this.config.ENDPOINTS.CONNECTION_DETAILS, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -603,7 +650,7 @@ class DynamicVoiceAgent {
                 conversation_history: this.conversationHistory
             });
             
-            const response = await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/process_flow_message', {
+            const response = await this.fetchWithFallback(this.config.ENDPOINTS.PROCESS_FLOW_MESSAGE, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -985,7 +1032,7 @@ class DynamicVoiceAgent {
     
     async updateSessionIntent(intent) {
         try {
-            await fetch('https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/sessions/update', {
+            await this.fetchWithFallback(this.config.ENDPOINTS.UPDATE_SESSION, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1155,7 +1202,7 @@ class DynamicVoiceAgent {
                 console.log('Disconnected from room:', this.currentRoomName);
                 
                 if (this.currentRoomName) {
-                    fetch(`https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com/api/rooms/${this.currentRoomName}`, {
+                    this.fetchWithFallback(`${this.config.ENDPOINTS.DELETE_ROOM}/${this.currentRoomName}`, {
                         method: 'DELETE'
                     }).catch(e => console.warn('Session cleanup notification failed:', e));
                 }

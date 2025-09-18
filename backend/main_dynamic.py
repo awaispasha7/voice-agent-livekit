@@ -18,7 +18,7 @@ import httpx
 
 
 # Load environment variables
-load_dotenv(dotenv_path="../.env")
+load_dotenv(dotenv_path=".env")
 
 app = FastAPI(title="Alive5 Voice Agent Server", version="2.0")
 logger = logging.getLogger("token-server")

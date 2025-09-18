@@ -630,6 +630,31 @@
         <!-- Conversation Log will be dynamically added here -->
     </div>
 
+    <!-- Environment Configuration -->
+    <script>
+        // Set environment variables for the frontend
+        // These can be overridden by Vercel environment variables or build-time injection
+        window.API_BASE_URL = 'API_BASE_URL_PLACEHOLDER';
+        window.BACKEND_URL = 'BACKEND_URL_PLACEHOLDER';
+        window.FRONTEND_URL = 'FRONTEND_URL_PLACEHOLDER';
+        
+        // If placeholders weren't replaced, use defaults
+        if (window.API_BASE_URL === 'API_BASE_URL_PLACEHOLDER') {
+            window.API_BASE_URL = 'http://localhost:8000';
+        }
+        if (window.BACKEND_URL === 'BACKEND_URL_PLACEHOLDER') {
+            window.BACKEND_URL = 'http://localhost:8000';
+        }
+        if (window.FRONTEND_URL === 'FRONTEND_URL_PLACEHOLDER') {
+            window.FRONTEND_URL = 'http://localhost:3000';
+        }
+        
+        console.log('🔧 Frontend Configuration:');
+        console.log('API Base URL:', window.API_BASE_URL);
+        console.log('Backend URL:', window.BACKEND_URL);
+        console.log('Frontend URL:', window.FRONTEND_URL);
+    </script>
+    
     <script src="main_dynamic.js"></script>
 </body>
 </html>

@@ -1,0 +1,46 @@
+services:
+  # Backend API Service (Free Plan)
+  - type: web
+    name: voice-agent-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=$PORT
+    envVars:
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: LIVEKIT_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: A5_BASE_URL
+        sync: false
+      - key: A5_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
+
+  # Worker Service (Free Plan - Background Worker)
+  - type: worker
+    name: voice-agent-worker
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python backend/worker/main_flow_based.py
+    envVars:
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: LIVEKIT_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: A5_BASE_URL
+        sync: false
+      - key: A5_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
