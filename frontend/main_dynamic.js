@@ -330,7 +330,7 @@ class DynamicVoiceAgent {
                 try {
                     // Check if metadata is valid JSON string
                     if (!metadata || metadata.trim() === '') {
-                        console.log('Empty worker metadata received');
+                        // console.log('Empty worker metadata received');
                         return;
                     }
                     
@@ -349,7 +349,7 @@ class DynamicVoiceAgent {
         
         // Handle audio tracks from agent
         this.room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
-            console.log('Track subscribed:', track.kind, 'from participant:', participant.identity);
+            // console.log('Track subscribed:', track.kind, 'from participant:', participant.identity);
             
             if (track.kind === 'audio') {
                 let audioElement = document.getElementById(`audio-${participant.sid}`);
@@ -359,7 +359,7 @@ class DynamicVoiceAgent {
                     audioElement.autoplay = true;
                     audioElement.controls = false;
                     document.body.appendChild(audioElement);
-                    console.log('Created audio element for', participant.identity);
+                    // console.log('Created audio element for', participant.identity);
                 }
                 
                 track.attach(audioElement);
@@ -579,7 +579,7 @@ class DynamicVoiceAgent {
     }
     
     handleAgentTranscription(transcriptText, participantInfo) {
-        console.log('Agent transcription:', transcriptText, 'from:', participantInfo.identity);
+        // console.log('Agent transcription:', transcriptText, 'from:', participantInfo.identity);
         
         // Ensure this is clearly marked as coming from the agent, not the user
         const agentIdentity = participantInfo.identity === 'Scott_AI_Agent' ? '🤖 Scott (AI)' : 
