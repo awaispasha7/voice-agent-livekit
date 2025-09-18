@@ -1,0 +1,18 @@
+{
+  "current_flow": null,
+  "current_step": null,
+  "flow_data": null,
+  "conversation_history": [
+    {
+      "role": "assistant",
+      "content": "Connecting you to a human agent. Please wait.",
+      "timestamp": "2025-09-18T15:24:46.192642"
+    }
+  ],
+  "user_responses": null,
+  "pending_step": null,
+  "pending_expected_kind": null,
+  "pending_asked_at": null,
+  "pending_reask_count": 0,
+  "saved_at": 1758223486.1926425
+}

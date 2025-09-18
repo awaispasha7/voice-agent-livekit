@@ -501,8 +501,10 @@ def llm_extract_answer(question_text: str, user_text: str, parser_context: Dict[
 async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, Any]]:
     """Detect flow intent using LLM - simple and direct approach"""
     try:
+        print(f"🔍 INTENT_DETECTION: Starting detection for: '{user_message}'")
         if not bot_template or not bot_template.get("data"):
             logger.warning("INTENT_DETECTION: No bot template available")
+            print(f"❌ INTENT_DETECTION: No bot template available")
             return None
         
         # Extract available intents from template
@@ -1375,6 +1377,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         
         # Only run intent detection if we still don't have a flow
         matching_intent = None
+        print(f"🔍 FLOW CHECK: current_flow = '{flow_state.current_flow}', current_step = '{flow_state.current_step}'")
         if not flow_state.current_flow:
             print_flow_status(room_name, flow_state, "SEARCHING FOR INTENT", f"Analyzing message: '{user_message}'")
             logger.info(f"FLOW_MANAGEMENT: Bot template available: {bot_template is not None}")
@@ -1385,11 +1388,15 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     if flow_data.get('type') == 'intent_bot':
                         logger.info(f"FLOW_MANAGEMENT: Available intent '{flow_data.get('text', '')}' in flow {flow_key}")
             
+            print(f"🔍 CALLING INTENT DETECTION for: '{user_message}'")
             matching_intent = await detect_flow_intent_with_llm(user_message)
             logger.info(f"FLOW_MANAGEMENT: Intent detection result: {matching_intent}")
             print(f"🔍 INTENT DETECTION: '{user_message}' -> {matching_intent}")
+        else:
+            print(f"🔍 SKIPPING INTENT DETECTION: Already in flow '{flow_state.current_flow}'")
         
         if matching_intent:
+            print(f"✅ INTENT FOUND: {matching_intent}")
             # Handle special greeting case
             if matching_intent.get("type") == "greeting":
                 response_text = "Hi there! I'm here to help you with the information you need about our business communication services, including SMS texting, live chat, chatbots, and more. How can I assist you today?"
@@ -1797,6 +1804,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     logger.info("FLOW_MANAGEMENT: Unexpected flow state, using FAQ bot as fallback")
     logger.info(f"FLOW_MANAGEMENT: Current flow state - flow: {flow_state.current_flow}, step: {flow_state.current_step}")
     print_flow_status(room_name, flow_state, "❌ UNEXPECTED STATE", "Using FAQ bot fallback")
+    print(f"❌ FALLBACK TO FAQ: No intent found for '{user_message}'")
     return await get_faq_response(user_message, flow_state=flow_state)
 
 async def get_faq_response(user_message: str, bot_id: str = None, flow_state: FlowState = None) -> Dict[str, Any]:
