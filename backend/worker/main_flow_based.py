@@ -299,7 +299,7 @@ class FlowBasedLLM(llm.LLM):
 
 
 # Backend configuration
-BACKEND_URL = "https://voice-agent-livekit-backend-9f8ec30b9fba.herokuapp.com"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 BACKEND_TIMEOUT = 25  # Increased timeout to reduce read timeouts
 BACKEND_RETRY_INTERVAL = 30
 BACKEND_MAX_RETRIES = 10
