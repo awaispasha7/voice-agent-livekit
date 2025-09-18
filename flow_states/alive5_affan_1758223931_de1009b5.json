@@ -1,0 +1,58 @@
+{
+  "current_flow": null,
+  "current_step": null,
+  "flow_data": null,
+  "conversation_history": [
+    {
+      "role": "system",
+      "content": "Flow-based voice assistant for Alive5 Support",
+      "timestamp": "2025-09-18T15:38:19.253216"
+    },
+    {
+      "role": "assistant",
+      "content": "Hello! I'm Scott from Alive5. How can I help you today?",
+      "timestamp": "2025-09-18T15:38:19.253216"
+    },
+    {
+      "role": "user",
+      "content": "Hey, Scott. Can I speak with someone over the phone?",
+      "timestamp": "2025-09-18T15:38:19.253216"
+    },
+    {
+      "role": "assistant",
+      "content": "Hello! Connecting you to a human agent. Please wait.",
+      "timestamp": "2025-09-18T15:38:19.253216"
+    },
+    {
+      "role": "user",
+      "content": "Are you there?",
+      "timestamp": "2025-09-18T15:38:19.253216"
+    },
+    {
+      "role": "assistant",
+      "content": "Yes, I'm here! How can I help you today? You can ask me a question, and I'll do my best to answer it using the available information.",
+      "timestamp": "2025-09-18T15:38:19.253216"
+    },
+    {
+      "role": "user",
+      "content": "Escalation logic.",
+      "timestamp": "2025-09-18T15:38:19.253216"
+    },
+    {
+      "role": "assistant",
+      "content": "Based on the search results provided, there is no specific information about escalation logic in the Alive5 platform. The search results mention various features such as live chat, SMS, chatbots, Facebook Messenger integration, CRM integration, team inbox, thread ownership, and automated messaging capabilities, but do not explicitly describe any escalation logic or processes for routing conversations to different team members based on specific triggers or conditions.",
+      "timestamp": "2025-09-18T15:38:28.376943"
+    },
+    {
+      "role": "assistant",
+      "content": "Connecting you to a human agent. Please wait.",
+      "timestamp": "2025-09-18T15:38:40.364711"
+    }
+  ],
+  "user_responses": null,
+  "pending_step": null,
+  "pending_expected_kind": null,
+  "pending_asked_at": null,
+  "pending_reask_count": 0,
+  "saved_at": 1758224320.3647113
+}

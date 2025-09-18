@@ -469,7 +469,7 @@ class FlowBasedAssistant(Agent):
             elif any(b in lower_text for b in byes):
                 polite_reply = "Thanks for calling Alive5. Have a great day!"
             elif any(a in lower_text for a in affirmations):
-                polite_reply = "Okay, that sounds great."
+                polite_reply = "Okay."
 
             # Initialize clarification trackers
             if not hasattr(self, "_last_question_text"):

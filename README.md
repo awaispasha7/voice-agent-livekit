@@ -1,107 +1,288 @@
-# Alive5 Voice Agent Project
+# 🎙️ Alive5 Voice Agent - LiveKit Integration
 
-This project implements a dynamic voice agent using LiveKit, FastAPI, and Alive5 flow integration. It consists of three main components: a worker that processes voice data, a backend API for authentication and flow management, and a web interface for user interaction.
+A sophisticated AI-powered voice agent system that provides intelligent conversation flows, intent detection, and seamless human agent transfers. Built with LiveKit for real-time voice communication and powered by OpenAI GPT for intelligent responses.
 
-## 🚀 New Hosting Stack
+## 🌟 Key Features
 
-| Component   | Hosting Choice     | Cost (Monthly)           |
-| ----------- | ------------------ | ------------------------ |
-| Frontend    | Vercel (Free)      | \$0                      |
-| Backend API | Render Free        | \$0                      |
-| Worker      | Render Free        | \$0                      |
-| **Total**   |                    | **\$0/month**            |
+- **🎯 Intelligent Intent Detection**: AI-powered recognition of user intents (Pricing, Weather, Agent requests)
+- **🔄 Dynamic Flow Management**: Context-aware conversation flows with state persistence
+- **👥 Seamless Agent Transfer**: Automatic escalation to human agents when needed
+- **🎤 Real-time Voice Processing**: LiveKit integration for high-quality voice communication
+- **📊 Session Management**: Complete conversation tracking and state management
+- **🔧 Environment-based Configuration**: Flexible deployment across different environments
 
-## Project Structure
+## 🏗️ Architecture Overview
 
 ```
-voice-agent-livekit-affan/
-├── backend/
-│   ├── main_dynamic.py      # FastAPI server with flow management
-│   └── worker/
-│       ├── main_flow_based.py   # 🚀 Flow-based worker
-│       └── README.md            # Worker documentation
-├── frontend/
-│   ├── index.html           # Main HTML file
-│   └── main_dynamic.js      # Frontend with flow processing
-├── requirements.txt         # Backend dependencies
-├── render.yaml              # Render deployment config
-├── .python-version          # Python version specification
-├── DEPLOYMENT.md            # Detailed deployment guide
-└── README.md                # Project documentation
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Frontend      │    │   Backend API   │    │   Worker        │
+│   (Vercel)      │◄──►│   (Render)      │◄──►│   (Render)      │
+│                 │    │                 │    │                 │
+│ • Voice UI      │    │ • Flow Logic    │    │ • LiveKit       │
+│ • Real-time     │    │ • Intent        │    │ • Voice         │
+│   Communication │    │   Detection     │    │   Processing    │
+│ • Session Mgmt  │    │ • API Endpoints │    │ • Agent Logic   │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-## Quick Start
+## 🚀 Quick Start
+
+### Prerequisites
+- Python 3.11+
+- Node.js (for frontend)
+- LiveKit account
+- OpenAI API key
+- Alive5 API credentials
 
 ### Local Development
 
-1. **Clone the repository:**
+1. **Clone and Setup**
    ```bash
    git clone <repository-url>
    cd voice-agent-livekit-affan
-   ```
-
-2. **Install dependencies:**
-   ```bash
    pip install -r requirements.txt
    ```
 
-3. **Create a .env file with your API keys:**
+2. **Environment Configuration**
    ```bash
-   OPENAI_API_KEY=your_openai_key
-   LIVEKIT_URL=your_livekit_url
-   LIVEKIT_API_KEY=your_livekit_key
-   LIVEKIT_API_SECRET=your_livekit_secret
-   A5_BASE_URL=https://api-v2-stage.alive5.com
-   A5_API_KEY=your_alive5_key
+   cp .env.example .env
+   # Edit .env with your credentials
    ```
 
-4. **Run the services:**
-   - **Backend API:**
-     ```bash
-     uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=8000
-     ```
-   
-   - **Worker:**
-     ```bash
-     python backend/worker/main_flow_based.py dev
-     ```
-
-5. **Access the web interface:**
+3. **Start Backend**
    ```bash
-   cd frontend
-   python -m http.server 3000
+   uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=8000
    ```
-   Open http://localhost:3000
 
-   **Note**: The frontend will automatically connect to `http://localhost:8000` for the backend API.
+4. **Start Worker**
+   ```bash
+   python backend/worker/main_flow_based.py
+   ```
+
+5. **Open Frontend**
+   ```bash
+   # Open frontend/index.html in browser
+   # Or serve with a local server
+   ```
+
+## 🎯 Intent Detection System
+
+### Supported Intents
+
+| Intent | Trigger Phrases | Response |
+|--------|----------------|----------|
+| **Agent Transfer** | "speak with someone", "talk to an agent", "over the phone" | "Connecting you to a human agent. Please wait." |
+| **Pricing** | "pricing", "cost", "how much", "plans" | Dynamic pricing flow with questions |
+| **Weather** | "weather", "forecast", "temperature" | Weather information flow |
+| **Greeting** | "hello", "hi", "hey", "good morning" | Friendly welcome message |
+
+### Intent Detection Flow
+
+```
+User Input → Escalation Check → Agent Transfer (if detected)
+     ↓ (if no escalation)
+LLM Intent Detection → Flow Processing → Response
+```
+
+## 🔄 Conversation Flow Examples
+
+### 1. Agent Transfer Flow
+```
+User: "Can I speak with someone over the phone?"
+System: "Connecting you to a human agent. Please wait."
+Result: Transfer initiated
+```
+
+### 2. Pricing Flow
+```
+User: "I need pricing information"
+System: "How many phone lines do you need?"
+User: "5 lines"
+System: "How many texts do you send a month?"
+User: "2000 texts"
+System: "Do you have any special needs like SSO or CRM integration?"
+User: "Yes, we need Salesforce integration"
+System: "Thanks for providing all your details. Please hold while we generate the best plan for you..."
+```
+
+### 3. Weather Flow
+```
+User: "What's the weather like?"
+System: "What is your zip code?"
+User: "90210"
+System: [Weather information provided]
+```
+
+## 🛠️ API Endpoints
+
+### Core Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/connection_details` | POST | Get LiveKit connection details |
+| `/api/process_flow_message` | POST | Process user message through flow system |
+| `/api/sessions/update` | POST | Update session information |
+| `/api/rooms/{room_name}` | DELETE | Clean up room resources |
+| `/health` | GET | Health check endpoint |
+
+### Request/Response Examples
+
+#### Connection Details
+```json
+POST /api/connection_details
+{
+  "participant_name": "user123",
+  "room_name": "session_123"
+}
+
+Response:
+{
+  "serverUrl": "wss://alive5-x7iklos9.livekit.cloud",
+  "roomName": "session_123",
+  "participantToken": "eyJhbGciOiJIUzI1NiIs...",
+  "participantName": "user123",
+  "sessionId": "session_123"
+}
+```
+
+#### Flow Message Processing
+```json
+POST /api/process_flow_message
+{
+  "room_name": "session_123",
+  "user_message": "I need pricing information",
+  "conversation_history": [...]
+}
+
+Response:
+{
+  "status": "processed",
+  "room_name": "session_123",
+  "user_message": "I need pricing information",
+  "flow_result": {
+    "type": "flow_started",
+    "flow_name": "Pricing",
+    "response": "How many phone lines do you need?",
+    "next_step": {...}
+  }
+}
+```
+
+## 🔧 Configuration
+
+### Environment Variables
+
+```bash
+# LiveKit Configuration
+LIVEKIT_URL=wss://your-livekit-url
+LIVEKIT_API_KEY=your-api-key
+LIVEKIT_API_SECRET=your-api-secret
+
+# OpenAI Configuration
+OPENAI_API_KEY=your-openai-key
+
+# Alive5 Configuration
+A5_BASE_URL=https://api-v2-stage.alive5.com
+A5_API_KEY=your-a5-api-key
+A5_FAQ_BOT_ID=your-faq-bot-id
+
+# Application URLs
+FRONTEND_URL=https://your-frontend-url
+BACKEND_URL=http://localhost:8000
+```
+
+### Frontend Configuration
+
+The frontend automatically detects the environment and configures API endpoints:
+
+```javascript
+// Automatic configuration
+const CONFIG = {
+    API_BASE_URL: window.API_BASE_URL || 'http://localhost:8000',
+    FRONTEND_URL: window.FRONTEND_URL || 'http://localhost:3000',
+    // ... other settings
+};
+```
+
+## 🚀 Deployment
 
 ### Production Deployment
 
-**Frontend**: Already deployed at [https://voice-agent-livekit-affan.vercel.app/](https://voice-agent-livekit-affan.vercel.app/)
+1. **Frontend (Vercel)**
+   - Deploy `frontend/` directory to Vercel
+   - Set environment variables in Vercel dashboard
+   - Automatic HTTPS and CDN
 
-For backend and worker deployment, see [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions on deploying to Render.
+2. **Backend (Render)**
+   - Connect GitHub repository to Render
+   - Configure build command: `pip install -r requirements.txt`
+   - Set start command: `uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=$PORT`
 
-## Features
+3. **Worker (Render)**
+   - Deploy as Background Worker
+   - Set start command: `python backend/worker/main_flow_based.py`
 
-### 🚀 Flow-Based System (Recommended)
-- **Dynamic template loading** from Alive5 API
-- **Structured conversation flows** (pricing, support, billing, agent transfer)
-- **Real-time template updates** without code changes
-- **Fallback to FAQ bot** for general questions
+### Cost Breakdown
 
+| Service | Plan | Monthly Cost |
+|---------|------|--------------|
+| Frontend (Vercel) | Free | $0 |
+| Backend (Render) | Free | $0 |
+| Worker (Render) | Free | $0 |
+| **Total** | | **$0/month** |
 
+## 📊 Monitoring & Logging
 
-## Usage
+### Log Levels
+- **INFO**: Normal operation logs
+- **WARNING**: Non-critical issues
+- **ERROR**: Critical errors requiring attention
+- **DEBUG**: Detailed debugging information
 
-- **Flow-based worker**: Follows client-defined conversation templates
-- **Token server**: Generates authentication tokens and manages flow processing
-- **Web interface**: Real-time voice interaction with live transcript display
-- **Testing**: `python worker/main_flow_based.py test`
+### Key Metrics
+- Session duration
+- Intent detection accuracy
+- Response times
+- Error rates
+- Transfer success rates
 
-## Contributing
+## 🔍 Troubleshooting
 
-Contributions are welcome! Please submit a pull request or open an issue for any enhancements or bug fixes.
+### Common Issues
 
-## License
+1. **Intent Detection Not Working**
+   - Check OpenAI API key
+   - Verify bot template is loaded
+   - Review LLM response logs
 
-This project is licensed under the MIT License. See the LICENSE file for more details.
+2. **Voice Connection Issues**
+   - Verify LiveKit credentials
+   - Check network connectivity
+   - Review browser permissions
+
+3. **Flow State Issues**
+   - Check flow_states directory permissions
+   - Verify session persistence
+   - Review conversation history
+
+### Debug Mode
+
+Enable detailed logging by setting:
+```bash
+export LOG_LEVEL=DEBUG
+```
+
+## 🤝 Support
+
+For technical support or questions:
+- Check the troubleshooting section
+- Review logs for error details
+- Contact the development team
+
+## 📄 License
+
+This project is proprietary software. All rights reserved.
+
+---
+
+**Built with ❤️ for Alive5**
