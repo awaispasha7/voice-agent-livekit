@@ -57,8 +57,7 @@ class DynamicVoiceAgent {
     // Helper function to try multiple URLs if one fails
     async fetchWithFallback(endpoint, options = {}) {
         const urls = [
-            this.config.API_BASE_URL,
-            'https://voice-agent-backend.onrender.com'  // Render URL as fallback
+            this.config.API_BASE_URL
         ];
         
         for (const baseUrl of urls) {
