@@ -213,12 +213,12 @@ const CONFIG = {
    - Set environment variables in Vercel dashboard
    - Automatic HTTPS and CDN
 
-2. **Backend (Render)**
+2. **Backend (Render Web Service)**
    - Connect GitHub repository to Render
    - Configure build command: `pip install -r requirements.txt`
    - Set start command: `uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=$PORT`
 
-3. **Worker (Render)**
+3. **Worker (Render Background Worker)**
    - Deploy as Background Worker
    - Set start command: `python backend/worker/main_flow_based.py`
 
@@ -227,8 +227,8 @@ const CONFIG = {
 | Service | Plan | Monthly Cost |
 |---------|------|--------------|
 | Frontend (Vercel) | Free | $0 |
-| Backend (Render) | Free | $0 |
-| Worker (Render) | Free | $0 |
+| Backend (Render Web Service) | Free | $0 |
+| Worker (Render Background Worker) | Free | $0 |
 | **Total** | | **$0/month** |
 
 ## 📊 Monitoring & Logging

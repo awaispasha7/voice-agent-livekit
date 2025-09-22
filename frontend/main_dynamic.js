@@ -322,7 +322,7 @@ class DynamicVoiceAgent {
             document.getElementById('joinBtn').disabled = true;
             
             this.createTranscriptContainer();
-            console.log('Room connected - transcript container created');
+            console.log('Room connected Successfully');
         });
         
         // Handle participant metadata changes (worker status signals)
