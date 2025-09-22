@@ -19,8 +19,8 @@ pip install -r requirements.txt
 
 ### Run Services Locally
 ```bash
-# Backend API (port 80 requires root on Linux)
-sudo uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=80
+# Backend API (runs on port 8000, proxied by Nginx on port 80)
+uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=8000
 
 # Worker
 python backend/worker/main_flow_based.py start
@@ -44,9 +44,9 @@ python backend/worker/main_flow_based.py start
 ```
 
 ### Service URLs
-- **Backend API**: http://18.210.238.67
-- **Health Check**: http://18.210.238.67/health
-- **Template Status**: http://18.210.238.67/api/template_status
+- **Backend API**: https://18.210.238.67.nip.io
+- **Health Check**: https://18.210.238.67.nip.io/health
+- **Template Status**: https://18.210.238.67.nip.io/api/template_status
 
 ## 🔧 Management
 
@@ -94,13 +94,14 @@ LIVEKIT_API_KEY=your-livekit-key
 LIVEKIT_API_SECRET=your-livekit-secret
 A5_API_KEY=your-alive5-key
 A5_BASE_URL=https://api-v2-stage.alive5.com
-BACKEND_URL=http://18.210.238.67
+BACKEND_URL=https://18.210.238.67.nip.io
 ```
 
 ## 🎯 Key Features
 
 - **Smart Deployment**: Only syncs missing/changed files
-- **Port 80 Support**: Backend runs on standard HTTP port
+- **HTTPS Support**: Secure communication with SSL certificates
+- **Auto-Renewal**: SSL certificates automatically renew via Let's Encrypt
 - **Service Management**: Systemd services with auto-restart
 - **Real-time Logs**: Easy log monitoring with PowerShell scripts
 - **Health Monitoring**: Built-in health checks and status endpoints
