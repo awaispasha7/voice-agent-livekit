@@ -16,7 +16,7 @@ A sophisticated AI-powered voice agent system that provides intelligent conversa
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   Frontend      │    │   Backend API   │    │   Worker        │
-│   (Vercel)      │◄──►│   (Render)      │◄──►│   (Render)      │
+│   (Vercel)      │◄──►│   (Server)      │◄──►│   (Server)      │
 │                 │    │                 │    │                 │
 │ • Voice UI      │    │ • Flow Logic    │    │ • LiveKit       │
 │ • Real-time     │    │ • Intent        │    │ • Voice         │
@@ -213,22 +213,28 @@ const CONFIG = {
    - Set environment variables in Vercel dashboard
    - Automatic HTTPS and CDN
 
-2. **Backend (Render Web Service)**
-   - Connect GitHub repository to Render
-   - Configure build command: `pip install -r requirements.txt`
-   - Set start command: `uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=$PORT`
+2. **Backend & Worker (Client Server)**
+   - Deploy both backend and worker on client's server
+   - Configure environment variables on server
+   - Set up process management (systemd, PM2, or Docker)
+   - Configure reverse proxy (nginx) for backend API
 
-3. **Worker (Render Background Worker)**
-   - Deploy as Background Worker
-   - Set start command: `python backend/worker/main_flow_based.py`
+### Deployment Commands
+
+```bash
+# Backend API
+uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=8000
+
+# Worker
+python backend/worker/main_flow_based.py
+```
 
 ### Cost Breakdown
 
 | Service | Plan | Monthly Cost |
 |---------|------|--------------|
 | Frontend (Vercel) | Free | $0 |
-| Backend (Render Web Service) | Free | $0 |
-| Worker (Render Background Worker) | Free | $0 |
+| Backend & Worker (Client Server) | Client Provided | $0 |
 | **Total** | | **$0/month** |
 
 ## 📊 Monitoring & Logging
