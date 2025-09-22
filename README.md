@@ -44,9 +44,9 @@ python backend/worker/main_flow_based.py start
 ```
 
 ### Service URLs
-- **Backend API**: https://18.210.238.67.nip.io
-- **Health Check**: https://18.210.238.67.nip.io/health
-- **Template Status**: https://18.210.238.67.nip.io/api/template_status
+- **Backend API**: http://18.210.238.67.nip.io
+- **Health Check**: http://18.210.238.67.nip.io/health
+- **Template Status**: http://18.210.238.67.nip.io/api/template_status
 
 ## 🔧 Management
 
@@ -94,14 +94,13 @@ LIVEKIT_API_KEY=your-livekit-key
 LIVEKIT_API_SECRET=your-livekit-secret
 A5_API_KEY=your-alive5-key
 A5_BASE_URL=https://api-v2-stage.alive5.com
-BACKEND_URL=https://18.210.238.67.nip.io
+BACKEND_URL=http://18.210.238.67.nip.io
 ```
 
 ## 🎯 Key Features
 
 - **Smart Deployment**: Only syncs missing/changed files
-- **HTTPS Support**: Secure communication with SSL certificates
-- **Auto-Renewal**: SSL certificates automatically renew via Let's Encrypt
+- **HTTP-Only**: Simple setup using port 80 only (no SSL required)
 - **Service Management**: Systemd services with auto-restart
 - **Real-time Logs**: Easy log monitoring with PowerShell scripts
 - **Health Monitoring**: Built-in health checks and status endpoints
