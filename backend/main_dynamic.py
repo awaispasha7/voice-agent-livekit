@@ -15,6 +15,8 @@ import logging
 import re
 import openai
 import httpx
+import hashlib
+import threading
 
 
 # Load environment variables
@@ -39,6 +41,10 @@ LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 A5_BASE_URL = os.getenv("A5_BASE_URL")
 A5_API_KEY = os.getenv("A5_API_KEY")
+
+# Template polling configuration
+TEMPLATE_POLLING_INTERVAL = int(os.getenv("TEMPLATE_POLLING_INTERVAL", "1"))  # hours
+TEMPLATE_POLLING_ENABLED = os.getenv("TEMPLATE_POLLING_ENABLED", "true").lower() == "true"
 
 print(f"Loaded credentials:")
 print(f"API_KEY: {LIVEKIT_API_KEY}")
@@ -93,6 +99,199 @@ def _find_step_by_text(template: Dict[str, Any], target_text: str) -> Optional[D
     except Exception:
         return None
     return None
+
+
+class TemplateManager:
+    """Manages template storage, hashing, and scheduled polling"""
+    
+    def __init__(self):
+        self.template_data = None
+        self.template_hash = None
+        self.last_updated = None
+        self.polling_active = False
+        self.polling_thread = None
+        self.polling_interval = TEMPLATE_POLLING_INTERVAL
+        self.polling_enabled = TEMPLATE_POLLING_ENABLED
+        
+    def generate_template_hash(self, template_data: Dict[str, Any]) -> str:
+        """Generate SHA-256 hash of template data"""
+        if not template_data:
+            return ""
+        
+        # Sort keys for consistent hashing
+        template_json = json.dumps(template_data, sort_keys=True, separators=(',', ':'))
+        return hashlib.sha256(template_json.encode('utf-8')).hexdigest()
+    
+    async def fetch_template_from_api(self) -> Optional[Dict[str, Any]]:
+        """Fetch template from Alive5 API"""
+        try:
+            print(f"🔄 TEMPLATE_POLLING: Fetching template from {A5_BASE_URL}/1.0/org-botchain/generate-template")
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{A5_BASE_URL}/1.0/org-botchain/generate-template",
+                    headers={
+                        "X-A5-APIKEY": A5_API_KEY,
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "botchain_name": "dustin-gpt",
+                        "org_name": "alive5stage0"
+                    },
+                    timeout=30.0
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ TEMPLATE_POLLING: Successfully fetched template")
+                    return result
+                else:
+                    print(f"❌ TEMPLATE_POLLING: API returned status {response.status_code}: {response.text}")
+                    return None
+                    
+        except Exception as e:
+            print(f"❌ TEMPLATE_POLLING: Failed to fetch template: {str(e)}")
+            logger.error(f"TEMPLATE_POLLING: Failed to fetch template: {str(e)}")
+            return None
+    
+    async def fetch_and_store_template(self) -> bool:
+        """Fetch template from Alive5 API and store with hash"""
+        try:
+            # Fetch from Alive5 API
+            template_data = await self.fetch_template_from_api()
+            
+            if not template_data:
+                return False
+            
+            # Generate hash
+            new_hash = self.generate_template_hash(template_data)
+            
+            # Store template and hash
+            self.template_data = template_data
+            self.template_hash = new_hash
+            self.last_updated = datetime.now()
+            
+            print(f"✅ TEMPLATE_POLLING: Template updated - Hash: {new_hash[:8]}...")
+            logger.info(f"TEMPLATE_POLLING: Template updated - Hash: {new_hash[:8]}...")
+            return True
+            
+        except Exception as e:
+            print(f"❌ TEMPLATE_POLLING: Failed to fetch and store template: {str(e)}")
+            logger.error(f"TEMPLATE_POLLING: Failed to fetch and store template: {str(e)}")
+            return False
+    
+    async def check_template_updates(self) -> bool:
+        """Check if template has changed by comparing hashes"""
+        try:
+            # Fetch current template from API
+            current_template = await self.fetch_template_from_api()
+            
+            if not current_template:
+                return False
+            
+            current_hash = self.generate_template_hash(current_template)
+            
+            # Compare with stored hash
+            if current_hash != self.template_hash:
+                print(f"🔄 TEMPLATE_POLLING: Template changed - Old: {self.template_hash[:8] if self.template_hash else 'None'}... New: {current_hash[:8]}...")
+                logger.info(f"TEMPLATE_POLLING: Template changed - Old: {self.template_hash[:8] if self.template_hash else 'None'}... New: {current_hash[:8]}...")
+                
+                # Update stored template
+                self.template_data = current_template
+                self.template_hash = current_hash
+                self.last_updated = datetime.now()
+                
+                return True  # Template updated
+            else:
+                print(f"✅ TEMPLATE_POLLING: Template unchanged - Hash: {current_hash[:8]}...")
+                logger.debug(f"TEMPLATE_POLLING: Template unchanged - Hash: {current_hash[:8]}...")
+                return False  # No changes
+                
+        except Exception as e:
+            print(f"❌ TEMPLATE_POLLING: Failed to check template updates: {str(e)}")
+            logger.error(f"TEMPLATE_POLLING: Failed to check template updates: {str(e)}")
+            return False
+    
+    def start_polling(self, interval_hours: int = None):
+        """Start background polling thread"""
+        if not self.polling_enabled:
+            print("⚠️ TEMPLATE_POLLING: Polling disabled via environment variable")
+            return
+            
+        if self.polling_active:
+            print("⚠️ TEMPLATE_POLLING: Polling already active")
+            logger.warning("TEMPLATE_POLLING: Polling already active")
+            return
+        
+        if interval_hours:
+            self.polling_interval = interval_hours
+        
+        self.polling_active = True
+        self.polling_thread = threading.Thread(
+            target=self._polling_worker,
+            daemon=True
+        )
+        self.polling_thread.start()
+        print(f"🚀 TEMPLATE_POLLING: Started template polling every {self.polling_interval} hour(s)")
+        logger.info(f"TEMPLATE_POLLING: Started template polling every {self.polling_interval} hour(s)")
+    
+    def stop_polling(self):
+        """Stop background polling thread"""
+        if not self.polling_active:
+            return
+            
+        self.polling_active = False
+        if self.polling_thread:
+            self.polling_thread.join(timeout=5)
+        print("🛑 TEMPLATE_POLLING: Stopped template polling")
+        logger.info("TEMPLATE_POLLING: Stopped template polling")
+    
+    def _polling_worker(self):
+        """Background worker for polling"""
+        import asyncio
+        
+        # Create new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        interval_seconds = self.polling_interval * 3600
+        
+        while self.polling_active:
+            try:
+                # Check for updates
+                updated = loop.run_until_complete(self.check_template_updates())
+                
+                if updated:
+                    print("🔄 TEMPLATE_POLLING: Template updated via polling")
+                    logger.info("TEMPLATE_POLLING: Template updated via polling")
+                else:
+                    print("✅ TEMPLATE_POLLING: Template check completed - no updates")
+                    logger.debug("TEMPLATE_POLLING: Template check completed - no updates")
+                    
+            except Exception as e:
+                print(f"❌ TEMPLATE_POLLING: Polling error: {str(e)}")
+                logger.error(f"TEMPLATE_POLLING: Polling error: {str(e)}")
+            
+            # Wait for next poll
+            time.sleep(interval_seconds)
+        
+        loop.close()
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get current template status and polling info"""
+        return {
+            "template_loaded": self.template_data is not None,
+            "last_updated": self.last_updated.isoformat() if self.last_updated else None,
+            "template_hash": self.template_hash[:8] + "..." if self.template_hash else None,
+            "polling_active": self.polling_active,
+            "polling_enabled": self.polling_enabled,
+            "polling_interval_hours": self.polling_interval,
+            "template_size": len(json.dumps(self.template_data)) if self.template_data else 0
+        }
+
+
+# Global template manager instance
+template_manager = None
 
 # Request models
 class ConnectionRequest(BaseModel):
@@ -1046,54 +1245,47 @@ async def get_faq_bot_response(request: GetFAQResponseRequest):
 
 # Flow Management Functions
 async def initialize_bot_template():
-    """Initialize the bot template on startup"""
-    global bot_template
+    """Initialize the bot template on startup using TemplateManager"""
+    global bot_template, template_manager
+    
     try:
         print("\n" + "="*80)
-        print("🚀 INITIALIZING BOT TEMPLATE")
+        print("🚀 INITIALIZING BOT TEMPLATE WITH POLLING SYSTEM")
         print("="*80)
-        logger.info("FLOW_MANAGEMENT: Initializing bot template...")
+        logger.info("FLOW_MANAGEMENT: Initializing bot template with polling system...")
         
-        print(f"🔧 TEMPLATE LOADING: Making request to {A5_BASE_URL}/1.0/org-botchain/generate-template")
-        print(f"🔧 TEMPLATE LOADING: API Key: {A5_API_KEY[:10] if A5_API_KEY else 'None'}...")
-        print(f"🔧 TEMPLATE LOADING: Request payload: {{'botchain_name': 'dustin-gpt', 'org_name': 'alive5stage0'}}")
+        # Initialize template manager
+        template_manager = TemplateManager()
         
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{A5_BASE_URL}/1.0/org-botchain/generate-template",
-                headers={
-                    "X-A5-APIKEY": A5_API_KEY,
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "botchain_name": "dustin-gpt",
-                    "org_name": "alive5stage0"
-                }
-            )
+        # Fetch initial template
+        success = await template_manager.fetch_and_store_template()
+        
+        if success:
+            # Set the global bot_template for backward compatibility
+            bot_template = template_manager.template_data
             
-            print(f"🔧 TEMPLATE LOADING: Response status: {response.status_code}")
-            print(f"🔧 TEMPLATE LOADING: Response text: {response.text}")
-            response.raise_for_status()
-            result = response.json()
-            bot_template = result
+            logger.info("FLOW_MANAGEMENT: Bot template initialized successfully with polling")
+            print("✅ TEMPLATE LOADED SUCCESSFULLY WITH POLLING SYSTEM")
+            print(f"📊 Template contains {len(bot_template['data'])} flows:")
+            for flow_key, flow_data in bot_template["data"].items():
+                flow_type = flow_data.get("type", "unknown")
+                flow_text = flow_data.get("text", "")
+                print(f"   🔹 {flow_key}: {flow_type} - '{flow_text}'")
+            print(f"🔐 Template Hash: {template_manager.template_hash[:8]}...")
+            print(f"⏰ Last Updated: {template_manager.last_updated}")
+            print(f"🔄 Polling Enabled: {template_manager.polling_enabled}")
+            print(f"⏱️ Polling Interval: {template_manager.polling_interval} hour(s)")
+            print("="*80)
             
-            if result.get("code") == 200 and result.get("data"):
-                logger.info("FLOW_MANAGEMENT: Bot template initialized successfully")
-                
-                # Print template structure
-                print("✅ TEMPLATE LOADED SUCCESSFULLY")
-                print(f"📊 Available Flows: {len(result['data'])}")
-                for flow_key, flow_data in result["data"].items():
-                    flow_type = flow_data.get("type", "unknown")
-                    flow_text = flow_data.get("text", "")
-                    print(f"   🔹 {flow_key}: {flow_type} - '{flow_text}'")
-                
-                print("="*80 + "\n")
-                return bot_template
-            else:
-                logger.error(f"FLOW_MANAGEMENT: Invalid template response: {result}")
-                print(f"❌ TEMPLATE LOAD FAILED: {result}")
-                return None
+            # Start polling
+            template_manager.start_polling()
+            
+            return bot_template
+        else:
+            logger.error("FLOW_MANAGEMENT: Failed to initialize bot template")
+            print("❌ TEMPLATE LOAD FAILED")
+            return None
+            
     except Exception as e:
         logger.error(f"FLOW_MANAGEMENT: Failed to initialize bot template: {str(e)}")
         print(f"❌ TEMPLATE INITIALIZATION ERROR: {str(e)}")
@@ -1907,15 +2099,24 @@ async def process_flow_message_endpoint(request: ProcessFlowMessageRequest):
 # Template Management Endpoints
 @app.post("/api/refresh_template")
 async def refresh_template():
-    """Refresh the bot template from Alive5 API"""
+    """Refresh the bot template from Alive5 API using TemplateManager"""
     try:
-        global bot_template
-        new_template = await initialize_bot_template()
-        if new_template:
+        if not template_manager:
+            raise HTTPException(status_code=500, detail="Template manager not initialized")
+        
+        success = await template_manager.fetch_and_store_template()
+        
+        if success:
+            # Update global bot_template for backward compatibility
+            global bot_template
+            bot_template = template_manager.template_data
+            
             return {
                 "status": "success",
                 "message": "Template refreshed successfully",
-                "template_version": new_template.get("code", "unknown")
+                "template_version": bot_template.get("code", "unknown"),
+                "template_hash": template_manager.template_hash[:8] + "...",
+                "last_updated": template_manager.last_updated.isoformat()
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to refresh template")
@@ -1945,6 +2146,82 @@ async def get_template_info():
         "template_version": bot_template.get("code", "unknown"),
         "flows": flows,
         "total_flows": len(flows)
+    }
+
+@app.get("/api/template_status")
+async def get_template_status():
+    """Get current template status and polling info"""
+    if not template_manager:
+        return {
+            "status": "not_initialized",
+            "message": "Template manager not initialized"
+        }
+    
+    status = template_manager.get_status()
+    
+    # Add additional info
+    status.update({
+        "template_available": bot_template is not None,
+        "available_intents": list(bot_template.get("data", {}).keys()) if bot_template else []
+    })
+    
+    return status
+
+@app.post("/api/force_template_update")
+async def force_template_update():
+    """Manually trigger template update"""
+    if not template_manager:
+        raise HTTPException(status_code=500, detail="Template manager not initialized")
+    
+    try:
+        success = await template_manager.fetch_and_store_template()
+        
+        if success:
+            # Update global bot_template for backward compatibility
+            global bot_template
+            bot_template = template_manager.template_data
+            
+            return {
+                "success": True,
+                "message": "Template updated successfully",
+                "timestamp": datetime.now().isoformat(),
+                "template_hash": template_manager.template_hash[:8] + "...",
+                "last_updated": template_manager.last_updated.isoformat()
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Failed to update template",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+    except Exception as e:
+        logger.error(f"Force template update error: {e}")
+        raise HTTPException(status_code=500, detail=f"Template update failed: {str(e)}")
+
+@app.post("/api/template_polling/start")
+async def start_template_polling():
+    """Start template polling"""
+    if not template_manager:
+        raise HTTPException(status_code=500, detail="Template manager not initialized")
+    
+    template_manager.start_polling()
+    return {
+        "success": True,
+        "message": "Template polling started",
+        "interval_hours": template_manager.polling_interval
+    }
+
+@app.post("/api/template_polling/stop")
+async def stop_template_polling():
+    """Stop template polling"""
+    if not template_manager:
+        raise HTTPException(status_code=500, detail="Template manager not initialized")
+    
+    template_manager.stop_polling()
+    return {
+        "success": True,
+        "message": "Template polling stopped"
     }
 
 @app.get("/api/flow_states")
