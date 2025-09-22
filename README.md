@@ -28,6 +28,17 @@ python backend/worker/main_flow_based.py
 ## 🌐 Production Deployment
 
 ### Server: 18.210.238.67 (Ubuntu 24)
+
+#### PowerShell (Windows)
+```powershell
+# Deploy to client server
+.\deploy-to-client-server.ps1
+
+# Test deployment
+.\test-deployment.ps1
+```
+
+#### Bash (Linux/Mac)
 ```bash
 # Deploy to client server
 chmod +x deploy-to-client-server.sh
