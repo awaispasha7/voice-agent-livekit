@@ -637,11 +637,17 @@ class DynamicVoiceAgent {
     
     async sendTranscriptForFlowProcessing(transcript) {
         try {
+            // Get configuration values from form
+            const botchainName = document.getElementById('botchainName')?.value?.trim() || null;
+            const orgName = document.getElementById('orgName')?.value?.trim() || null;
+            
             // Send conversation history to backend for flow processing
             const requestData = {
                 room_name: this.currentRoomName,
                 user_message: transcript,
-                conversation_history: this.conversationHistory
+                conversation_history: this.conversationHistory,
+                botchain_name: botchainName,
+                org_name: orgName
             };
             
             console.log('📤 Sending to backend:', {
@@ -702,11 +708,140 @@ class DynamicVoiceAgent {
             type: 'system'
         });
         
-        // Update intent display if flow started
-        if (flowType === 'flow_started') {
-            const flowName = flowResult.flow_name || 'Unknown';
-            this.handleIntentUpdate(flowName, 'Flow System');
+        // Handle different flow types
+        switch (flowType) {
+            case 'flow_started':
+                const flowName = flowResult.flow_name || 'Unknown';
+                this.handleIntentUpdate(flowName, 'Flow System');
+                break;
+                
+            case 'agent_handoff':
+                this.handleAgentHandoff(flowResult);
+                break;
+                
+            case 'action_completed':
+                this.handleActionCompleted(flowResult);
+                break;
+                
+            case 'condition_evaluated':
+                this.handleConditionEvaluated(flowResult);
+                break;
+                
+            case 'greeting':
+                this.handleGreeting(flowResult);
+                break;
+                
+            case 'transfer_initiated':
+                // Legacy escalation type - treat as agent handoff
+                this.handleAgentHandoff(flowResult);
+                break;
+                
+            default:
+                // Handle other flow types
+                if (flowType && flowType !== 'message') {
+                    this.handleIntentUpdate(flowType, 'Bot System');
+                }
+                break;
         }
+    }
+    
+    handleAgentHandoff(flowResult) {
+        console.log('🤖 Agent handoff initiated:', flowResult);
+        
+        const escalationReason = flowResult.escalation_reason || 'unknown';
+        const reasonText = this.getEscalationReasonText(escalationReason);
+        
+        // Show special UI for agent handoff
+        this.addLogEntry({
+            speaker: 'System',
+            message: `👤 ${reasonText}`,
+            type: 'system'
+        });
+        
+        // Show toast notification
+        this.showToast('Connecting to human agent...', 'info');
+        
+        // Update status
+        this.showStatus('Agent handoff in progress...', 'info');
+        
+        // You could add additional logic here like:
+        // - Notifying the backend about agent handoff
+        // - Updating UI to show "Waiting for agent"
+        // - Starting a timer for agent response
+    }
+    
+    getEscalationReasonText(reason) {
+        const reasonMap = {
+            'user_requested_agent': 'User requested human agent - connecting...',
+            'fallback_escalation': 'No intent found, escalating to human agent...',
+            'faq_step_escalation': 'FAQ step escalation - connecting to human agent...',
+            'unknown': 'Connecting to human agent...'
+        };
+        return reasonMap[reason] || reasonMap['unknown'];
+    }
+    
+    handleActionCompleted(flowResult) {
+        console.log('⚡ Action completed:', flowResult);
+        
+        const actionData = flowResult.action_data || {};
+        
+        // Show action completion in log
+        this.addLogEntry({
+            speaker: 'System',
+            message: `⚡ Action completed: ${actionData.action_type || 'Unknown'}`,
+            type: 'system'
+        });
+        
+        // Show toast notification
+        this.showToast('Action completed successfully!', 'success');
+        
+        // Handle specific action types
+        if (actionData.url_opened) {
+            this.addLogEntry({
+                speaker: 'System',
+                message: `🔗 URL opened: ${actionData.url_opened}`,
+                type: 'system'
+            });
+        }
+        
+        if (actionData.email_sent) {
+            this.addLogEntry({
+                speaker: 'System',
+                message: `📧 Email sent to: ${actionData.recipient}`,
+                type: 'system'
+            });
+        }
+    }
+    
+    handleConditionEvaluated(flowResult) {
+        console.log('🔀 Condition evaluated:', flowResult);
+        
+        const conditionResult = flowResult.condition_result || {};
+        
+        // Show condition result in log
+        this.addLogEntry({
+            speaker: 'System',
+            message: `🔀 Condition ${conditionResult.condition_met ? 'met' : 'not met'}: ${conditionResult.variable_name || 'Unknown'}`,
+            type: 'system'
+        });
+        
+        // Show toast notification
+        const status = conditionResult.condition_met ? 'Condition met!' : 'Condition not met';
+        this.showToast(status, conditionResult.condition_met ? 'success' : 'warning');
+    }
+    
+    handleGreeting(flowResult) {
+        console.log('👋 Greeting handled:', flowResult);
+        
+        // Show greeting in log
+        this.addLogEntry({
+            speaker: 'System',
+            message: '👋 Greeting bot activated',
+            type: 'system'
+        });
+        
+        // Show toast notification
+        this.showToast('Welcome! Greeting bot is active.', 'info');
     }
     
     updateTranscriptDisplay(transcriptText, isFinal) {

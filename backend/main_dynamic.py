@@ -275,82 +275,35 @@ class TemplateManager:
             logger.error(f"TEMPLATE_POLLING: Failed to check template updates: {str(e)}")
             return False
     
-    def start_polling(self, interval_hours: int = None):
-        """Start background polling thread"""
-        if not self.polling_enabled:
-            print("⚠️ TEMPLATE_POLLING: Polling disabled via environment variable")
-            return
-            
-        if self.polling_active:
-            print("⚠️ TEMPLATE_POLLING: Polling already active")
-            logger.warning("TEMPLATE_POLLING: Polling already active")
-            return
-        
-        if interval_hours:
-            self.polling_interval = interval_hours
-        
-        self.polling_active = True
-        self.polling_thread = threading.Thread(
-            target=self._polling_worker,
-            daemon=True
-        )
-        self.polling_thread.start()
-        print(f"🚀 TEMPLATE_POLLING: Started template polling every {self.polling_interval} hour(s)")
-        logger.info(f"TEMPLATE_POLLING: Started template polling every {self.polling_interval} hour(s)")
+    # Polling mechanism removed - templates loaded on-demand
     
-    def stop_polling(self):
-        """Stop background polling thread"""
-        if not self.polling_active:
-            return
-            
-        self.polling_active = False
-        if self.polling_thread:
-            self.polling_thread.join(timeout=5)
-        print("🛑 TEMPLATE_POLLING: Stopped template polling")
-        logger.info("TEMPLATE_POLLING: Stopped template polling")
+    # stop_polling method removed - no longer needed
     
-    def _polling_worker(self):
-        """Background worker for polling"""
-        import asyncio
-        
-        # Create new event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        interval_seconds = self.polling_interval * 3600
-        
-        while self.polling_active:
-            try:
-                # Check for updates
-                updated = loop.run_until_complete(self.check_template_updates())
-                
-                if updated:
-                    print("🔄 TEMPLATE_POLLING: Template updated via polling")
-                    logger.info("TEMPLATE_POLLING: Template updated via polling")
-                else:
-                    print("✅ TEMPLATE_POLLING: Template check completed - no updates")
-                    logger.debug("TEMPLATE_POLLING: Template check completed - no updates")
-                    
-            except Exception as e:
-                print(f"❌ TEMPLATE_POLLING: Polling error: {str(e)}")
-                logger.error(f"TEMPLATE_POLLING: Polling error: {str(e)}")
-            
-            # Wait for next poll
-            time.sleep(interval_seconds)
-        
-        loop.close()
+    # _polling_worker method removed - no longer needed
     
     def get_status(self) -> Dict[str, Any]:
-        """Get current template status and polling info"""
+        """Get current template status"""
         return {
             "template_loaded": self.template_data is not None,
             "last_updated": self.last_updated.isoformat() if self.last_updated else None,
             "template_hash": self.template_hash[:8] + "..." if self.template_hash else None,
-            "polling_active": self.polling_active,
-            "polling_enabled": self.polling_enabled,
-            "polling_interval_hours": self.polling_interval,
-            "template_size": len(json.dumps(self.template_data)) if self.template_data else 0
+            "template_size": len(json.dumps(self.template_data)) if self.template_data else 0,
+            "template_available": self.template_data is not None,
+            "available_intents": self._get_available_intents() if self.template_data else []
         }
+    
+    def _get_available_intents(self) -> List[str]:
+        """Get list of available intents from template"""
+        if not self.template_data or not self.template_data.get("data"):
+            return []
+        
+        intents = []
+        for flow_key, flow_data in self.template_data["data"].items():
+            if flow_data.get("type") == "intent_bot":
+                intent_name = flow_data.get("text", "")
+                if intent_name:
+                    intents.append(intent_name)
+        return intents
 
 
 # Global template manager instance
@@ -387,6 +340,8 @@ class ProcessFlowMessageRequest(BaseModel):
     room_name: str
     user_message: str
     conversation_history: List[Dict[str, str]] = Field(default_factory=list)
+    botchain_name: Optional[str] = None
+    org_name: Optional[str] = None
 
 # Flow management models
 class FlowState(BaseModel):
@@ -1341,8 +1296,7 @@ async def initialize_bot_template():
             print(f"⏱️ Polling Interval: {template_manager.polling_interval} hour(s)")
             print("="*80)
             
-            # Start polling
-            template_manager.start_polling()
+            # Polling removed - templates loaded on-demand
             
             # Verify global variable is set
             print(f"🔍 VERIFICATION: bot_template is {'✅ SET' if bot_template is not None else '❌ NONE'}")
@@ -1362,6 +1316,48 @@ async def initialize_bot_template():
         return None
 
     # Removed mock template: always fetch from Alive5 API per client requirement
+
+async def initialize_bot_template_with_config(botchain_name: str, org_name: str):
+    """Initialize bot template with custom configuration"""
+    global bot_template, template_manager
+    
+    logger.info(f"🚀 INITIALIZING BOT TEMPLATE WITH CUSTOM CONFIG: {botchain_name}/{org_name}")
+    print(f"🚀 INITIALIZING BOT TEMPLATE WITH CUSTOM CONFIG: {botchain_name}/{org_name}")
+    
+    try:
+        # Create temporary template manager with custom config
+        temp_template_manager = TemplateManager()
+        temp_template_manager.a5_botchain_name = botchain_name
+        temp_template_manager.a5_org_name = org_name
+        
+        # Fetch template with custom config
+        success = await temp_template_manager.fetch_and_store_template()
+        
+        if success:
+            bot_template = temp_template_manager.template_data
+            template_manager = temp_template_manager  # Update global manager
+            
+            logger.info("✅ CUSTOM TEMPLATE LOADED SUCCESSFULLY")
+            print("✅ CUSTOM TEMPLATE LOADED SUCCESSFULLY")
+            
+            # Print template summary
+            if bot_template and bot_template.get("data"):
+                print(f"📊 Custom template contains {len(bot_template['data'])} flows:")
+                for flow_key, flow_data in bot_template["data"].items():
+                    flow_type = flow_data.get("type", "unknown")
+                    flow_text = flow_data.get("text", "N/A")
+                    print(f"   🔹 {flow_key}: {flow_type} - '{flow_text}'")
+            
+            return bot_template
+        else:
+            logger.error("❌ CUSTOM TEMPLATE LOAD FAILED")
+            print("❌ CUSTOM TEMPLATE LOAD FAILED")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ CUSTOM TEMPLATE INITIALIZATION ERROR: {e}")
+        print(f"❌ CUSTOM TEMPLATE INITIALIZATION ERROR: {e}")
+        return None
 
 # Removed find_matching_intent - now using LLM-based detection
 
@@ -1517,9 +1513,25 @@ def print_flow_status(room_name: str, flow_state: FlowState, action: str, detail
         print(f"📝 Details: {details}")
     print("="*80 + "\n")
 
-async def process_flow_message(room_name: str, user_message: str, frontend_conversation_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
+async def process_flow_message(room_name: str, user_message: str, frontend_conversation_history: List[Dict[str, str]] = None, botchain_name: str = None, org_name: str = None) -> Dict[str, Any]:
     """Process user message through the flow system"""
     global bot_template
+    
+    # Check if we need to load template with custom configuration
+    if botchain_name and org_name:
+        logger.info(f"FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name}")
+        try:
+            await initialize_bot_template_with_config(botchain_name, org_name)
+        except Exception as e:
+            logger.error(f"FLOW_MANAGEMENT: Error loading template with custom config: {e}")
+            return {
+                "status": "error",
+                "message": "Failed to load bot configuration",
+                "flow_result": {
+                    "type": "error",
+                    "response": "I'm experiencing technical difficulties. Please try again in a moment."
+                }
+            }
     
     # Ensure bot template is loaded before processing
     if bot_template is None:
@@ -1549,6 +1561,40 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             }
     
     logger.info(f"FLOW_MANAGEMENT: Processing message for room {room_name}: '{user_message}'")
+    
+    # Check for greeting bot in template first
+    greeting_bot = None
+    if bot_template and bot_template.get("data"):
+        for flow_key, flow_data in bot_template["data"].items():
+            if flow_data.get("type") == "greeting":
+                greeting_bot = {
+                    "flow_key": flow_key,
+                    "flow_data": flow_data
+                }
+                logger.info(f"FLOW_MANAGEMENT: Found greeting bot: {flow_key}")
+                break
+    
+    # If greeting bot found and this is the first message, execute it directly
+    if greeting_bot and not frontend_conversation_history:
+        logger.info("FLOW_MANAGEMENT: Executing greeting bot flow directly")
+        print(f"🎯 GREETING BOT: Executing flow {greeting_bot['flow_key']}")
+        
+        # Get or create flow state for this room
+        flow_state = get_or_create_flow_state(room_name)
+        flow_state.current_flow = greeting_bot["flow_key"]
+        flow_state.current_step = greeting_bot["flow_data"]["name"]
+        flow_state.flow_data = greeting_bot["flow_data"]
+        
+        # Execute greeting flow
+        greeting_response = greeting_bot["flow_data"].get("text", "Hello! How can I help you today?")
+        add_agent_response_to_history(flow_state, greeting_response)
+        auto_save_flow_state()
+        
+        return {
+            "type": "greeting",
+            "response": greeting_response,
+            "flow_state": flow_state
+        }
     
     # Get or create flow state for this room
     if room_name not in flow_states:
@@ -1582,14 +1628,16 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     # Check for escalation phrases immediately
     um_low = (user_message or "").lower().strip()
     if _matches_any(escalate_phrases, um_low):
-        response_text = "Connecting you to a human agent. Please wait."
+        response_text = "I'm connecting you with a human agent. Please hold on."
         add_agent_response_to_history(flow_state, response_text)
         auto_save_flow_state()  # Save after escalation
-        logger.info("FLOW_MANAGEMENT: Global escalation detected → initiating transfer")
+        logger.info("FLOW_MANAGEMENT: Global escalation detected → initiating agent handoff")
         return {
-            "type": "transfer_initiated",
+            "type": "agent_handoff",
             "response": response_text,
-            "flow_state": flow_state
+            "flow_state": flow_state,
+            "agent_required": True,
+            "escalation_reason": "user_requested_agent"
         }
 
     # Initialize conversation history
@@ -1765,14 +1813,16 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             # Double-check for escalation phrases that might have been missed
             um_low_fallback = (user_message or "").lower().strip()
             if _matches_any(escalate_phrases, um_low_fallback):
-                response_text = "Connecting you to a human agent. Please wait."
+                response_text = "I'm connecting you with a human agent. Please hold on."
                 add_agent_response_to_history(flow_state, response_text)
                 auto_save_flow_state()  # Save after escalation
-                logger.info("FLOW_MANAGEMENT: Escalation detected in fallback check → initiating transfer")
+                logger.info("FLOW_MANAGEMENT: Escalation detected in fallback check → initiating agent handoff")
                 return {
-                    "type": "transfer_initiated",
+                    "type": "agent_handoff",
                     "response": response_text,
-                    "flow_state": flow_state
+                    "flow_state": flow_state,
+                    "agent_required": True,
+                    "escalation_reason": "fallback_escalation"
                 }
             
             # Use FAQ bot as final fallback
@@ -2003,6 +2053,57 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                             "flow_state": flow_state
                         }
 
+            # Handle Agent Bot - Human agent handoff
+            if current_step_data and current_step_data.get("type") == "agent":
+                logger.info("FLOW_MANAGEMENT: Agent bot step detected")
+                print_flow_status(room_name, flow_state, "👤 AGENT HANDOFF", f"Agent: '{current_step_data.get('text', '')}'")
+                
+                # Agent bot response
+                agent_response = current_step_data.get("text", "I'm connecting you with a human agent. Please hold on.")
+                add_agent_response_to_history(flow_state, agent_response)
+                auto_save_flow_state()
+                
+                return {
+                    "type": "agent_handoff",
+                    "response": agent_response,
+                    "flow_state": flow_state,
+                    "agent_required": True
+                }
+            
+            # Handle Action Bot - Backend actions
+            if current_step_data and current_step_data.get("type") == "action":
+                logger.info("FLOW_MANAGEMENT: Action bot step detected")
+                print_flow_status(room_name, flow_state, "⚡ ACTION BOT", f"Action: '{current_step_data.get('text', '')}'")
+                
+                # Execute action bot functionality
+                action_result = await execute_action_bot(current_step_data, flow_state)
+                add_agent_response_to_history(flow_state, action_result["response"])
+                auto_save_flow_state()
+                
+                return {
+                    "type": "action_completed",
+                    "response": action_result["response"],
+                    "flow_state": flow_state,
+                    "action_data": action_result.get("action_data")
+                }
+            
+            # Handle Condition Bot - Variable-based routing
+            if current_step_data and current_step_data.get("type") == "condition":
+                logger.info("FLOW_MANAGEMENT: Condition bot step detected")
+                print_flow_status(room_name, flow_state, "🔀 CONDITION BOT", f"Condition: '{current_step_data.get('text', '')}'")
+                
+                # Evaluate condition and route accordingly
+                condition_result = await evaluate_condition_bot(current_step_data, flow_state, user_message)
+                add_agent_response_to_history(flow_state, condition_result["response"])
+                auto_save_flow_state()
+                
+                return {
+                    "type": "condition_evaluated",
+                    "response": condition_result["response"],
+                    "flow_state": flow_state,
+                    "condition_result": condition_result.get("condition_result")
+                }
+            
             # Handle template 'answers' on FAQ/message steps (noAction / moreAction)
             if current_step_data and current_step_data.get("answers") and current_step_data.get("type") in ("faq", "message"):
                 answers = current_step_data.get("answers", {}) or {}
@@ -2010,13 +2111,15 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
 
                 # Check for escalation phrases in FAQ step (escalation should work everywhere)
                 if _matches_any(escalate_phrases, um):
-                    response_text = "Connecting you to a human agent. Please wait."
+                    response_text = "I'm connecting you with a human agent. Please hold on."
                     add_agent_response_to_history(flow_state, response_text)
-                    logger.info("FLOW_MANAGEMENT: Escalation detected in FAQ step → initiating transfer")
+                    logger.info("FLOW_MANAGEMENT: Escalation detected in FAQ step → initiating agent handoff")
                     return {
-                        "type": "transfer_initiated",
+                        "type": "agent_handoff",
                         "response": response_text,
-                        "flow_state": flow_state
+                        "flow_state": flow_state,
+                        "agent_required": True,
+                        "escalation_reason": "faq_step_escalation"
                     }
 
                 # Check for end phrases
@@ -2168,6 +2271,140 @@ async def get_faq_response(user_message: str, bot_id: str = None, flow_state: Fl
             "response": error_response
         }
 
+async def execute_action_bot(action_data: Dict[str, Any], flow_state: FlowState) -> Dict[str, Any]:
+    """Execute action bot functionality"""
+    try:
+        action_type = action_data.get("action_type", "unknown")
+        action_text = action_data.get("text", "Action completed.")
+        
+        logger.info(f"ACTION_BOT: Executing action type: {action_type}")
+        
+        if action_type == "webhook":
+            # Execute webhook action
+            webhook_url = action_data.get("webhook_url")
+            if webhook_url:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                    response = await client.post(webhook_url, json={
+                        "user_message": action_text,
+                        "flow_state": flow_state.dict() if flow_state else None
+                    })
+                    response.raise_for_status()
+                    result = response.json()
+                    return {
+                        "response": result.get("message", "Webhook executed successfully."),
+                        "action_data": result
+                    }
+        
+        elif action_type == "email":
+            # Execute email action
+            email_data = action_data.get("email_data", {})
+            # Here you would integrate with your email service
+            return {
+                "response": "Email sent successfully.",
+                "action_data": {"email_sent": True, "recipient": email_data.get("to")}
+            }
+        
+        elif action_type == "url":
+            # Execute URL action
+            url = action_data.get("url")
+            if url:
+                return {
+                    "response": f"Opening URL: {url}",
+                    "action_data": {"url_opened": url}
+                }
+        
+        # Default action response
+        return {
+            "response": action_text,
+            "action_data": {"action_type": action_type}
+        }
+        
+    except Exception as e:
+        logger.error(f"ACTION_BOT: Error executing action: {e}")
+        return {
+            "response": "I'm sorry, there was an error executing that action. Please try again.",
+            "action_data": {"error": str(e)}
+        }
+
+async def evaluate_condition_bot(condition_data: Dict[str, Any], flow_state: FlowState, user_message: str) -> Dict[str, Any]:
+    """Evaluate condition bot and route accordingly"""
+    try:
+        condition_type = condition_data.get("condition_type", "variable")
+        condition_text = condition_data.get("text", "Condition evaluated.")
+        
+        logger.info(f"CONDITION_BOT: Evaluating condition type: {condition_type}")
+        
+        if condition_type == "variable":
+            # Check variable value from flow state
+            variable_name = condition_data.get("variable_name")
+            expected_value = condition_data.get("expected_value")
+            
+            if variable_name and flow_state.user_responses:
+                actual_value = flow_state.user_responses.get(variable_name, "")
+                condition_met = str(actual_value).lower() == str(expected_value).lower()
+                
+                if condition_met:
+                    # Condition met - follow true path
+                    next_flow = condition_data.get("true_flow")
+                    response = condition_data.get("true_response", "Condition met.")
+                else:
+                    # Condition not met - follow false path
+                    next_flow = condition_data.get("false_flow")
+                    response = condition_data.get("false_response", "Condition not met.")
+                
+                # Update flow state if next_flow is provided
+                if next_flow:
+                    flow_state.current_step = next_flow.get("name")
+                    flow_state.flow_data = next_flow
+                
+                return {
+                    "response": response,
+                    "condition_result": {
+                        "condition_met": condition_met,
+                        "variable_name": variable_name,
+                        "expected_value": expected_value,
+                        "actual_value": actual_value
+                    }
+                }
+        
+        elif condition_type == "user_input":
+            # Check user input against condition
+            condition_pattern = condition_data.get("condition_pattern", "")
+            condition_met = condition_pattern.lower() in user_message.lower()
+            
+            if condition_met:
+                next_flow = condition_data.get("true_flow")
+                response = condition_data.get("true_response", "Input matches condition.")
+            else:
+                next_flow = condition_data.get("false_flow")
+                response = condition_data.get("false_response", "Input doesn't match condition.")
+            
+            if next_flow:
+                flow_state.current_step = next_flow.get("name")
+                flow_state.flow_data = next_flow
+            
+            return {
+                "response": response,
+                "condition_result": {
+                    "condition_met": condition_met,
+                    "pattern": condition_pattern,
+                    "user_input": user_message
+                }
+            }
+        
+        # Default condition response
+        return {
+            "response": condition_text,
+            "condition_result": {"condition_type": condition_type}
+        }
+        
+    except Exception as e:
+        logger.error(f"CONDITION_BOT: Error evaluating condition: {e}")
+        return {
+            "response": "I'm sorry, there was an error evaluating that condition. Please try again.",
+            "condition_result": {"error": str(e)}
+        }
+
 # New Flow-based Processing Endpoint
 @app.post("/api/process_flow_message")
 async def process_flow_message_endpoint(request: ProcessFlowMessageRequest):
@@ -2181,8 +2418,14 @@ async def process_flow_message_endpoint(request: ProcessFlowMessageRequest):
         
         logger.info(f"FLOW_PROCESSING: Room {room_name}, Message: '{user_message}'")
         
-        # Process through flow system with conversation history
-        flow_result = await process_flow_message(room_name, user_message, request.conversation_history)
+        # Process through flow system with conversation history and custom config
+        flow_result = await process_flow_message(
+            room_name, 
+            user_message, 
+            request.conversation_history,
+            request.botchain_name,
+            request.org_name
+        )
         
         # Update session if we have one
         if room_name in active_sessions:
@@ -2340,30 +2583,7 @@ async def force_template_update_get():
         logger.error(f"Force template update error: {e}")
         raise HTTPException(status_code=500, detail=f"Template update failed: {str(e)}")
 
-@app.post("/api/template_polling/start")
-async def start_template_polling():
-    """Start template polling"""
-    if not template_manager:
-        raise HTTPException(status_code=500, detail="Template manager not initialized")
-    
-    template_manager.start_polling()
-    return {
-        "success": True,
-        "message": "Template polling started",
-        "interval_hours": template_manager.polling_interval
-    }
-
-@app.post("/api/template_polling/stop")
-async def stop_template_polling():
-    """Stop template polling"""
-    if not template_manager:
-        raise HTTPException(status_code=500, detail="Template manager not initialized")
-    
-    template_manager.stop_polling()
-    return {
-        "success": True,
-        "message": "Template polling stopped"
-    }
+# Polling endpoints removed - templates loaded on-demand
 
 @app.get("/api/flow_states")
 def get_flow_states():
