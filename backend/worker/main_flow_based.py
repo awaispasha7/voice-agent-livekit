@@ -58,7 +58,33 @@ def preprocess_text_for_tts(text: str) -> str:
     return text
 
 # Load environment variables
-load_dotenv(dotenv_path=".env")
+# Try multiple possible paths for .env file
+import os
+from pathlib import Path
+
+# Get the current file's directory
+current_dir = Path(__file__).parent
+# Try different possible .env locations
+env_paths = [
+    current_dir / "../../.env",  # Relative to worker directory
+    current_dir / "../../../.env",  # Relative to project root
+    Path("/home/ubuntu/alive5-voice-agent/.env"),  # Absolute production path
+    Path(".env"),  # Current working directory
+]
+
+env_loaded = False
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(dotenv_path=str(env_path))
+        print(f"✅ Loaded .env from: {env_path}")
+        env_loaded = True
+        break
+
+if not env_loaded:
+    print("⚠️ No .env file found in any expected location")
+    print(f"   Searched paths: {[str(p) for p in env_paths]}")
+    # Fallback to default behavior
+    load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -73,6 +99,11 @@ logger.setLevel(logging.INFO)
 logging.getLogger("livekit.agents.utils.aio.duplex_unix").setLevel(logging.WARNING)
 logging.getLogger("livekit.agents.cli.watcher").setLevel(logging.WARNING)
 logging.getLogger("livekit.agents.ipc.channel").setLevel(logging.WARNING)
+
+# Debug: Show current working directory and file locations
+print(f"🔍 DEBUG: Current working directory: {os.getcwd()}")
+print(f"🔍 DEBUG: Worker file location: {__file__}")
+print(f"🔍 DEBUG: Environment variables loaded: {env_loaded}")
 
 # Verify environment variables
 required_vars = ["OPENAI_API_KEY", "DEEPGRAM_API_KEY", "CARTESIA_API_KEY", "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"]

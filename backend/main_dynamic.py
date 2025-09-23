@@ -20,7 +20,33 @@ import threading
 
 
 # Load environment variables
-load_dotenv(dotenv_path=".env")
+# Try multiple possible paths for .env file
+import os
+from pathlib import Path
+
+# Get the current file's directory
+current_dir = Path(__file__).parent
+# Try different possible .env locations
+env_paths = [
+    current_dir / "../.env",  # Relative to backend directory
+    current_dir / "../../.env",  # Relative to project root
+    Path("/home/ubuntu/alive5-voice-agent/.env"),  # Absolute production path
+    Path(".env"),  # Current working directory
+]
+
+env_loaded = False
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(dotenv_path=str(env_path))
+        print(f"✅ Loaded .env from: {env_path}")
+        env_loaded = True
+        break
+
+if not env_loaded:
+    print("⚠️ No .env file found in any expected location")
+    print(f"   Searched paths: {[str(p) for p in env_paths]}")
+    # Fallback to default behavior
+    load_dotenv()
 
 app = FastAPI(title="Alive5 Voice Agent Server", version="2.0")
 logger = logging.getLogger("token-server")
@@ -65,6 +91,11 @@ print(f"A5_FAQ_URL: {A5_FAQ_URL}")
 print(f"A5_BOTCHAIN_NAME: {A5_BOTCHAIN_NAME}")
 print(f"A5_ORG_NAME: {A5_ORG_NAME}")
 print(f"FAQ_BOT_ID: {FAQ_BOT_ID}")
+
+# Debug: Show current working directory and file locations
+print(f"🔍 DEBUG: Current working directory: {os.getcwd()}")
+print(f"🔍 DEBUG: Backend file location: {__file__}")
+print(f"🔍 DEBUG: Environment variables loaded: {env_loaded}")
 
 # Create persistence directory
 PERSISTENCE_DIR = "flow_states"
@@ -125,6 +156,18 @@ class TemplateManager:
         self.polling_interval = TEMPLATE_POLLING_INTERVAL
         self.polling_enabled = TEMPLATE_POLLING_ENABLED
         
+        # Load environment variables directly to ensure they're available
+        self.a5_base_url = os.getenv("A5_BASE_URL")
+        self.a5_template_url = os.getenv("A5_TEMPLATE_URL", "/1.0/org-botchain/generate-template")
+        self.a5_api_key = os.getenv("A5_API_KEY")
+        self.a5_botchain_name = os.getenv("A5_BOTCHAIN_NAME", "dustin-gpt")
+        self.a5_org_name = os.getenv("A5_ORG_NAME", "alive5stage0")
+        
+        # Debug: Print loaded values
+        print(f"🔍 TEMPLATE_MANAGER: A5_BASE_URL = {repr(self.a5_base_url)}")
+        print(f"🔍 TEMPLATE_MANAGER: A5_TEMPLATE_URL = {repr(self.a5_template_url)}")
+        print(f"🔍 TEMPLATE_MANAGER: A5_API_KEY = {repr(self.a5_api_key)}")
+        
     def generate_template_hash(self, template_data: Dict[str, Any]) -> str:
         """Generate SHA-256 hash of template data"""
         if not template_data:
@@ -137,19 +180,26 @@ class TemplateManager:
     async def fetch_template_from_api(self) -> Optional[Dict[str, Any]]:
         """Fetch template from Alive5 API"""
         try:
-            template_endpoint = f"{A5_BASE_URL}{A5_TEMPLATE_URL}"
+            # Check if required variables are loaded
+            if not self.a5_base_url or not self.a5_api_key:
+                print(f"❌ TEMPLATE_POLLING: Missing required environment variables")
+                print(f"   A5_BASE_URL: {repr(self.a5_base_url)}")
+                print(f"   A5_API_KEY: {repr(self.a5_api_key)}")
+                return None
+            
+            template_endpoint = f"{self.a5_base_url}{self.a5_template_url}"
             print(f"🔄 TEMPLATE_POLLING: Fetching template from {template_endpoint}")
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     template_endpoint,
                     headers={
-                        "X-A5-APIKEY": A5_API_KEY,
+                        "X-A5-APIKEY": self.a5_api_key,
                         "Content-Type": "application/json"
                     },
                     json={
-                        "botchain_name": A5_BOTCHAIN_NAME,
-                        "org_name": A5_ORG_NAME
+                        "botchain_name": self.a5_botchain_name,
+                        "org_name": self.a5_org_name
                     },
                     timeout=30.0
                 )
@@ -1294,6 +1344,10 @@ async def initialize_bot_template():
             # Start polling
             template_manager.start_polling()
             
+            # Verify global variable is set
+            print(f"🔍 VERIFICATION: bot_template is {'✅ SET' if bot_template is not None else '❌ NONE'}")
+            logger.info(f"FLOW_MANAGEMENT: Global bot_template set: {bot_template is not None}")
+            
             return bot_template
         else:
             logger.error("FLOW_MANAGEMENT: Failed to initialize bot template")
@@ -1303,6 +1357,8 @@ async def initialize_bot_template():
     except Exception as e:
         logger.error(f"FLOW_MANAGEMENT: Failed to initialize bot template: {str(e)}")
         print(f"❌ TEMPLATE INITIALIZATION ERROR: {str(e)}")
+        import traceback
+        print(f"❌ TRACEBACK: {traceback.format_exc()}")
         return None
 
     # Removed mock template: always fetch from Alive5 API per client requirement
@@ -1463,6 +1519,35 @@ def print_flow_status(room_name: str, flow_state: FlowState, action: str, detail
 
 async def process_flow_message(room_name: str, user_message: str, frontend_conversation_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
     """Process user message through the flow system"""
+    global bot_template
+    
+    # Ensure bot template is loaded before processing
+    if bot_template is None:
+        logger.warning("FLOW_MANAGEMENT: Bot template not loaded, attempting to initialize...")
+        print("⚠️ BOT TEMPLATE NOT LOADED - ATTEMPTING INITIALIZATION")
+        try:
+            await initialize_bot_template()
+            if bot_template is None:
+                logger.error("FLOW_MANAGEMENT: Failed to initialize bot template during request processing")
+                return {
+                    "status": "error",
+                    "message": "Bot template not available. Please try again.",
+                    "flow_result": {
+                        "type": "error",
+                        "response": "I'm experiencing technical difficulties. Please try again in a moment."
+                    }
+                }
+        except Exception as e:
+            logger.error(f"FLOW_MANAGEMENT: Error initializing bot template during request: {e}")
+            return {
+                "status": "error", 
+                "message": "Bot initialization failed",
+                "flow_result": {
+                    "type": "error",
+                    "response": "I'm experiencing technical difficulties. Please try again in a moment."
+                }
+            }
+    
     logger.info(f"FLOW_MANAGEMENT: Processing message for room {room_name}: '{user_message}'")
     
     # Get or create flow state for this room
