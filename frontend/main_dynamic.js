@@ -63,7 +63,7 @@ class DynamicVoiceAgent {
         for (const baseUrl of urls) {
             try {
                 const url = baseUrl + endpoint;
-                console.log(`🔄 Trying API call to: ${url}`);
+                // console.log(`🔄 Trying API call to: ${url}`);
                 
                 const response = await fetch(url, {
                     ...options,
@@ -71,13 +71,13 @@ class DynamicVoiceAgent {
                 });
                 
                 if (response.ok) {
-                    console.log(`✅ API call successful to: ${url}`);
+                    // console.log(`✅ API call successful to: ${url}`);
                     return response;
                 } else {
-                    console.warn(`⚠️ API call failed with status ${response.status} to: ${url}`);
+                    // console.warn(`⚠️ API call failed with status ${response.status} to: ${url}`);
                 }
             } catch (error) {
-                console.warn(`❌ API call failed to ${baseUrl + endpoint}:`, error.message);
+                // console.warn(`❌ API call failed to ${baseUrl + endpoint}:`, error.message);
             }
         }
         
