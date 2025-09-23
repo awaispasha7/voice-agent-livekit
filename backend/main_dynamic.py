@@ -1562,39 +1562,8 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     
     logger.info(f"FLOW_MANAGEMENT: Processing message for room {room_name}: '{user_message}'")
     
-    # Check for greeting bot in template first
-    greeting_bot = None
-    if bot_template and bot_template.get("data"):
-        for flow_key, flow_data in bot_template["data"].items():
-            if flow_data.get("type") == "greeting":
-                greeting_bot = {
-                    "flow_key": flow_key,
-                    "flow_data": flow_data
-                }
-                logger.info(f"FLOW_MANAGEMENT: Found greeting bot: {flow_key}")
-                break
-    
-    # If greeting bot found and this is the first message, execute it directly
-    if greeting_bot and not frontend_conversation_history:
-        logger.info("FLOW_MANAGEMENT: Executing greeting bot flow directly")
-        print(f"🎯 GREETING BOT: Executing flow {greeting_bot['flow_key']}")
-        
-        # Get or create flow state for this room
-        flow_state = get_or_create_flow_state(room_name)
-        flow_state.current_flow = greeting_bot["flow_key"]
-        flow_state.current_step = greeting_bot["flow_data"]["name"]
-        flow_state.flow_data = greeting_bot["flow_data"]
-        
-        # Execute greeting flow
-        greeting_response = greeting_bot["flow_data"].get("text", "Hello! How can I help you today?")
-        add_agent_response_to_history(flow_state, greeting_response)
-        auto_save_flow_state()
-        
-        return {
-            "type": "greeting",
-            "response": greeting_response,
-            "flow_state": flow_state
-        }
+    # Note: Greeting bot is now handled by the worker in on_enter() method
+    # This ensures the greeting is sent immediately when the user joins the room
     
     # Get or create flow state for this room
     if room_name not in flow_states:
@@ -2584,6 +2553,47 @@ async def force_template_update_get():
         raise HTTPException(status_code=500, detail=f"Template update failed: {str(e)}")
 
 # Polling endpoints removed - templates loaded on-demand
+
+@app.get("/api/get_greeting")
+async def get_greeting():
+    """Get greeting from template if available"""
+    try:
+        global bot_template
+        
+        # Check if template is loaded
+        if not bot_template or not bot_template.get("data"):
+            return {
+                "greeting_available": False,
+                "greeting_text": None,
+                "message": "No template loaded"
+            }
+        
+        # Look for greeting bot in template
+        for flow_key, flow_data in bot_template["data"].items():
+            if flow_data.get("type") == "greeting":
+                greeting_text = flow_data.get("text", "")
+                logger.info(f"🎯 GREETING API: Found greeting bot: {flow_key} - '{greeting_text}'")
+                return {
+                    "greeting_available": True,
+                    "greeting_text": greeting_text,
+                    "flow_key": flow_key
+                }
+        
+        # No greeting bot found
+        logger.info("🎯 GREETING API: No greeting bot found in template")
+        return {
+            "greeting_available": False,
+            "greeting_text": None,
+            "message": "No greeting bot found in template"
+        }
+        
+    except Exception as e:
+        logger.error(f"🎯 GREETING API: Error getting greeting: {e}")
+        return {
+            "greeting_available": False,
+            "greeting_text": None,
+            "error": str(e)
+        }
 
 @app.get("/api/flow_states")
 def get_flow_states():

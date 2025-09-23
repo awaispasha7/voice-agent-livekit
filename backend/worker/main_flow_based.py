@@ -440,19 +440,60 @@ class FlowBasedAssistant(Agent):
         """Called when the agent enters the room"""
         logger.info(f"🎤 AGENT ENTERED ROOM: {self.session_id}")
         
-        # Speak greeting directly via TTS so it doesn't rely on LLM
+        # Check for greeting bot in template first, then fall back to hardcoded greeting
         try:
             if not self._greeted and self.session:
-                async with self._speech_lock:
-                    await self.session.say(preprocess_text_for_tts("Hello! I'm Scott from Alive5. How can I help you today?"))
-                self._greeted = True
-                try:
-                    await self.send_agent_transcript("Hello! I'm Scott from Alive5. How can I help you today?")
-                except Exception:
-                    pass
-                logger.info(f"👋 Initial greeting sent for {self.session_id}")
+                # Try to get greeting from backend template
+                greeting_response = await self._get_greeting_from_backend()
+                
+                if greeting_response:
+                    # Use greeting from template
+                    async with self._speech_lock:
+                        await self.session.say(preprocess_text_for_tts(greeting_response))
+                    self._greeted = True
+                    try:
+                        await self.send_agent_transcript(greeting_response)
+                    except Exception:
+                        pass
+                    logger.info(f"👋 Template greeting sent for {self.session_id}: {greeting_response}")
+                else:
+                    # Fall back to hardcoded greeting
+                    hardcoded_greeting = "Hello! I'm Scott from Alive5. How can I help you today?"
+                    async with self._speech_lock:
+                        await self.session.say(preprocess_text_for_tts(hardcoded_greeting))
+                    self._greeted = True
+                    try:
+                        await self.send_agent_transcript(hardcoded_greeting)
+                    except Exception:
+                        pass
+                    logger.info(f"👋 Hardcoded greeting sent for {self.session_id}")
         except Exception as e:
             logger.error(f"❌ Failed to send initial greeting: {e}", exc_info=True)
+    
+    async def _get_greeting_from_backend(self) -> Optional[str]:
+        """Get greeting from backend template if available"""
+        try:
+            # Call backend to get greeting from template
+            backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+            greeting_endpoint = f"{backend_url}/api/get_greeting"
+            
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                response = await client.get(greeting_endpoint)
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("greeting_available"):
+                        greeting_text = result.get("greeting_text", "")
+                        logger.info(f"🎯 GREETING BOT: Found greeting in template: {greeting_text}")
+                        return greeting_text
+                    else:
+                        logger.info("🎯 GREETING BOT: No greeting bot found in template")
+                        return None
+                else:
+                    logger.warning(f"🎯 GREETING BOT: Backend call failed with status {response.status_code}")
+                    return None
+        except Exception as e:
+            logger.warning(f"🎯 GREETING BOT: Failed to get greeting from backend: {e}")
+            return None
     
     async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
         """Called when user finishes speaking; aggregate multiple turns before processing"""
