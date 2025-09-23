@@ -107,7 +107,7 @@ User=root
 Group=root
 WorkingDirectory=/home/ubuntu/alive5-voice-agent
 Environment=PATH=/home/ubuntu/alive5-voice-agent/venv/bin
-ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python -m uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=80
+ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python -m uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=8000
 Restart=always
 RestartSec=10
 
