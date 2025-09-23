@@ -1799,16 +1799,18 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             print(f"🚨 FAQ BOT CALLED: No intent found for '{user_message}'")
             return await get_faq_response(user_message, flow_state=flow_state)
     
-    # If we're already in a flow, check if this is a response to a question
+    # If we're already in a flow, check if this is a response to a question or greeting
     if flow_state.current_flow and flow_state.current_step:
         logger.info(f"FLOW_MANAGEMENT: Already in flow {flow_state.current_flow}, step {flow_state.current_step}")
         logger.info(f"FLOW_MANAGEMENT: Flow data: {flow_state.flow_data}")
         
-        # Check if current step is a question and user provided a response
+        # Check if current step is a question, greeting, or message and user provided a response
         current_step_data = flow_state.flow_data
-        if current_step_data and current_step_data.get("type") == "question":
-            logger.info(f"FLOW_MANAGEMENT: Current step is a question, processing user response: '{user_message}'")
-            # Global farewell within question context
+        if current_step_data and current_step_data.get("type") in ["question", "greeting", "message"]:
+            step_type = current_step_data.get("type")
+            logger.info(f"FLOW_MANAGEMENT: Current step is a {step_type}, processing user response: '{user_message}'")
+            
+            # Global farewell within any step context
             um_low_q = (user_message or "").lower().strip()
             farewell_markers_q = [
                 "bye", "goodbye", "that is all", "that's all", "thats all", "thanks, bye", "thank you, bye", "end call", "hang up", "we are done", "we're done", "okay, bye", "okay that's all", "ok that's all", "ok bye"
@@ -1816,184 +1818,333 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             if any(m in um_low_q for m in farewell_markers_q):
                 response_text = "Thanks for calling Alive5. Have a great day! Goodbye!"
                 add_agent_response_to_history(flow_state, response_text)
-                logger.info("FLOW_MANAGEMENT: Farewell detected during question → conversation_end")
+                logger.info("FLOW_MANAGEMENT: Farewell detected during step → conversation_end")
                 return {"type": "conversation_end", "response": response_text, "flow_state": flow_state}
             
-            # Use gated LLM approach for robust answer extraction
-            interp = gated_llm_extract_answer(current_step_data.get("text", ""), user_message or "")
-            logger.info(f"GATED_LLM_EXTRACT: {interp}")
-
-            # Extra yes/no fallback for special-needs/SSO style questions
-            qtxt = (current_step_data.get("text") or "").lower()
-            utxt = (user_message or "").lower()
-            if any(k in qtxt for k in ["special needs", "sso", "salesforce", "crm integration"]) and re.search(r"\b(yes|yeah|yep|yup|sure|of course|please|ok|okay|absolutely|i need|i would need)\b", utxt):
-                interp = {"status": "extracted", "kind": "yesno", "value": True, "confidence": 0.95}
-
-            # Handle unclear responses in main question flow
-            if interp.get("status") == "unclear":
-                if interp.get("kind") == "ambiguous":
-                    response_text = "I didn't quite catch that. Could you please repeat your answer more clearly?"
-                else:
-                    response_text = "I didn't quite understand that. Could you please repeat your answer?"
-                add_agent_response_to_history(flow_state, response_text)
-                logger.info(f"ANSWER_INTERPRETER: Handling unclear response ({interp.get('kind', 'unclear')}) with clarification request")
-                return {
-                    "type": "message",
-                    "response": response_text,
-                    "flow_state": flow_state
-                }
-
-            # Process the user response and move to next step
-            next_step = get_next_flow_step(flow_state, user_message)
-            if next_step:
-                logger.info(f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
-                old_step = flow_state.current_step
-                flow_state.current_step = next_step["step_name"]
-                flow_state.flow_data = next_step["step_data"]
-                step_type = next_step["step_data"].get("type", "unknown")
+            # Handle greeting and message steps differently from question steps
+            if step_type in ["greeting", "message"]:
+                logger.info(f"FLOW_MANAGEMENT: Processing {step_type} step response")
+                # For greeting/message steps, check if user wants to continue to next step or change intent
                 
-                logger.info(f"FLOW_MANAGEMENT: STEP TRANSITION - From: {old_step} → To: {next_step['step_name']} | Type: {step_type}")
-                print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION", 
-                                f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{next_step['step_data'].get('text', '')}'")
+                # Check for intent shift - if user mentions something that matches an intent, switch flows
+                matching_intent = await detect_flow_intent_with_llm(user_message)
+                if matching_intent and matching_intent.get("type") != "greeting":
+                    logger.info(f"FLOW_MANAGEMENT: Intent shift detected from {step_type} to {matching_intent['intent']}")
+                    print_flow_status(room_name, flow_state, "🔄 INTENT SHIFT DETECTED", 
+                                    f"From: {flow_state.current_flow} → To: {matching_intent['flow_key']} | Intent: {matching_intent['intent']}")
+                    
+                    # Update flow state to new intent
+                    flow_state.current_flow = matching_intent["flow_key"]
+                    flow_state.current_step = matching_intent["flow_data"]["name"]
+                    flow_state.flow_data = matching_intent["flow_data"]
+                    auto_save_flow_state()
+                    
+                    # Check if this intent has a next_flow and automatically transition to it
+                    next_flow = matching_intent["flow_data"].get("next_flow")
+                    if next_flow:
+                        logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
+                        flow_state.current_step = next_flow.get("name")
+                        flow_state.flow_data = next_flow
+                        auto_save_flow_state()
+                        
+                        print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
+                                        f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
+                        
+                        response_text = next_flow.get("text", "")
+                        add_agent_response_to_history(flow_state, response_text)
+                        
+                        return {
+                            "type": "flow_started",
+                            "flow_name": matching_intent["intent"],
+                            "response": response_text,
+                            "next_step": next_flow.get("next_flow")
+                        }
+                    else:
+                        # No next_flow, use intent response
+                        response_text = matching_intent["flow_data"].get("text", "")
+                        if not response_text or response_text == "N/A":
+                            response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+                        add_agent_response_to_history(flow_state, response_text)
+                        
+                        return {
+                            "type": "flow_started",
+                            "flow_name": matching_intent["intent"],
+                            "response": response_text,
+                            "next_step": matching_intent["flow_data"].get("next_flow")
+                        }
                 
-                # Handle different step types
-                response_text = next_step["step_data"].get("text", "")
-                # Set pending question lock if next is a question
-                if step_type == 'question':
-                    flow_state.pending_step = next_step['step_name']
-                    flow_state.pending_expected_kind = 'number' if ('phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
-                    flow_state.pending_asked_at = time.time()
-                    flow_state.pending_reask_count = 0
-                else:
-                    flow_state.pending_step = None
-                add_agent_response_to_history(flow_state, response_text)
-                
-                return {
-                    "type": step_type,
-                    "response": response_text,
-                    "flow_state": flow_state
-                }
-            else:
-                # If interpreter extracted something, attempt progression even if answers don't match strictly
-                if interp.get("status") == "extracted" and current_step_data.get("next_flow"):
-                    nxt = current_step_data["next_flow"]
+                # No intent shift detected, continue with current flow
+                logger.info(f"FLOW_MANAGEMENT: No intent shift detected, continuing with {step_type} flow")
+                # Process the user response and move to next step
+                next_step = get_next_flow_step(flow_state, user_message)
+                if next_step:
+                    logger.info(f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
                     old_step = flow_state.current_step
-                    flow_state.current_step = nxt.get("name")
-                    flow_state.flow_data = nxt
-                    step_type = nxt.get("type", "unknown")
-                    response_text = nxt.get("text", "")
-                    logger.info(f"FLOW_MANAGEMENT: Interpreter-based progression applied - extracted {interp.get('kind')}: {interp.get('value')}")
-                    print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
-                    # Update pending lock
+                    flow_state.current_step = next_step["step_name"]
+                    flow_state.flow_data = next_step["step_data"]
+                    step_type = next_step["step_data"].get("type", "unknown")
+                    
+                    logger.info(f"FLOW_MANAGEMENT: STEP TRANSITION - From: {old_step} → To: {next_step['step_name']} | Type: {step_type}")
+                    print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION", 
+                                    f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{next_step['step_data'].get('text', '')}'")
+                    
+                    # Handle different step types
+                    response_text = next_step["step_data"].get("text", "")
+                    # Set pending question lock if next is a question
                     if step_type == 'question':
-                        flow_state.pending_step = flow_state.current_step
+                        flow_state.pending_step = next_step['step_name']
+                        flow_state.pending_expected_kind = 'number' if ('phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
+                        flow_state.pending_asked_at = time.time()
+                    
+                    add_agent_response_to_history(flow_state, response_text)
+                    auto_save_flow_state()
+                    
+                    return {
+                        "type": "flow_continued",
+                        "response": response_text,
+                        "next_step": next_step["step_data"].get("next_flow"),
+                        "flow_state": flow_state
+                    }
+                else:
+                    # No next step found, check if this is a greeting that should continue to intent detection
+                    if step_type == "greeting":
+                        logger.info("FLOW_MANAGEMENT: Greeting step completed, checking for intent in user response")
+                        # Try to detect intent from user response
+                        matching_intent = await detect_flow_intent_with_llm(user_message)
+                        if matching_intent and matching_intent.get("type") != "greeting":
+                            logger.info(f"FLOW_MANAGEMENT: Intent detected after greeting: {matching_intent['intent']}")
+                            # Switch to intent flow
+                            flow_state.current_flow = matching_intent["flow_key"]
+                            flow_state.current_step = matching_intent["flow_data"]["name"]
+                            flow_state.flow_data = matching_intent["flow_data"]
+                            auto_save_flow_state()
+                            
+                            # Check if this intent has a next_flow and automatically transition to it
+                            next_flow = matching_intent["flow_data"].get("next_flow")
+                            if next_flow:
+                                logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
+                                flow_state.current_step = next_flow.get("name")
+                                flow_state.flow_data = next_flow
+                                auto_save_flow_state()
+                                
+                                print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
+                                                f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
+                                
+                                response_text = next_flow.get("text", "")
+                                add_agent_response_to_history(flow_state, response_text)
+                                
+                                return {
+                                    "type": "flow_started",
+                                    "flow_name": matching_intent["intent"],
+                                    "response": response_text,
+                                    "next_step": next_flow.get("next_flow")
+                                }
+                            else:
+                                # No next_flow, use intent response
+                                response_text = matching_intent["flow_data"].get("text", "")
+                                if not response_text or response_text == "N/A":
+                                    response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+                                add_agent_response_to_history(flow_state, response_text)
+                                
+                                return {
+                                    "type": "flow_started",
+                                    "flow_name": matching_intent["intent"],
+                                    "response": response_text,
+                                    "next_step": matching_intent["flow_data"].get("next_flow")
+                                }
+                        else:
+                            # No intent detected, provide a helpful response
+                            response_text = "I'm here to help you with information about our business communication services. What would you like to know about?"
+                            add_agent_response_to_history(flow_state, response_text)
+                            auto_save_flow_state()
+                            
+                            return {
+                                "type": "message",
+                                "response": response_text,
+                                "flow_state": flow_state
+                            }
+                    else:
+                        # No next step and not a greeting, use FAQ fallback
+                        logger.info("FLOW_MANAGEMENT: No next step found, using FAQ fallback")
+                        return await get_faq_response(user_message, flow_state=flow_state)
+            
+            # Handle question steps (existing logic)
+            if step_type == "question":
+                # Use gated LLM approach for robust answer extraction
+                interp = gated_llm_extract_answer(current_step_data.get("text", ""), user_message or "")
+                logger.info(f"GATED_LLM_EXTRACT: {interp}")
+
+                # Extra yes/no fallback for special-needs/SSO style questions
+                qtxt = (current_step_data.get("text") or "").lower()
+                utxt = (user_message or "").lower()
+                if any(k in qtxt for k in ["special needs", "sso", "salesforce", "crm integration"]) and re.search(r"\b(yes|yeah|yep|yup|sure|of course|please|ok|okay|absolutely|i need|i would need)\b", utxt):
+                    interp = {"status": "extracted", "kind": "yesno", "value": True, "confidence": 0.95}
+
+                # Handle unclear responses in main question flow
+                if interp.get("status") == "unclear":
+                    if interp.get("kind") == "ambiguous":
+                        response_text = "I didn't quite catch that. Could you please repeat your answer more clearly?"
+                    else:
+                        response_text = "I didn't quite understand that. Could you please repeat your answer?"
+                    add_agent_response_to_history(flow_state, response_text)
+                    logger.info(f"ANSWER_INTERPRETER: Handling unclear response ({interp.get('kind', 'unclear')}) with clarification request")
+                    return {
+                        "type": "message",
+                        "response": response_text,
+                        "flow_state": flow_state
+                    }
+
+                # Process the user response and move to next step
+                next_step = get_next_flow_step(flow_state, user_message)
+                if next_step:
+                    logger.info(f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
+                    old_step = flow_state.current_step
+                    flow_state.current_step = next_step["step_name"]
+                    flow_state.flow_data = next_step["step_data"]
+                    step_type = next_step["step_data"].get("type", "unknown")
+                    
+                    logger.info(f"FLOW_MANAGEMENT: STEP TRANSITION - From: {old_step} → To: {next_step['step_name']} | Type: {step_type}")
+                    print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION", 
+                                    f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{next_step['step_data'].get('text', '')}'")
+                    
+                    # Handle different step types
+                    response_text = next_step["step_data"].get("text", "")
+                    # Set pending question lock if next is a question
+                    if step_type == 'question':
+                        flow_state.pending_step = next_step['step_name']
                         flow_state.pending_expected_kind = 'number' if ('phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
                         flow_state.pending_asked_at = time.time()
                         flow_state.pending_reask_count = 0
                     else:
                         flow_state.pending_step = None
                     add_agent_response_to_history(flow_state, response_text)
-                    return {"type": step_type, "response": response_text, "flow_state": flow_state}
-
-                # Heuristics: try to interpret common free-form answers to advance flow instead of falling back
-                qtext = (current_step_data.get("text") or "").lower()
-                ur = (user_message or "").lower()
-
-                def _extract_digits_from_words(t: str) -> str:
-                    words_map = {
-                        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
-                        "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"
+                    
+                    return {
+                        "type": step_type,
+                        "response": response_text,
+                        "flow_state": flow_state
                     }
-                    parts = re.findall(r"\d|zero|one|two|three|four|five|six|seven|eight|nine", t)
-                    return "".join(words_map.get(p, p) for p in parts)
-
-                def _extract_quantity(t: str) -> Optional[int]:
-                    m = re.search(r"\b(\d{1,3})\b", t)
-                    if m:
-                        return int(m.group(1))
-                    words_to_num = {
-                        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-                        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-                        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
-                        "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
-                        "nineteen": 19, "twenty": 20
-                    }
-                    for w, v in words_to_num.items():
-                        if f" {w} " in f" {t} ":
-                            return v
-                    return None
-
-                advanced = False
-                if "zip" in qtext or "zipcode" in qtext or "zip code" in qtext:
-                    zip_digits = _extract_digits_from_words(ur)
-                    if len(zip_digits) >= 5 and current_step_data.get("next_flow"):
-                        # Proceed to next step (FAQ for weather flow)
+                else:
+                    # If interpreter extracted something, attempt progression even if answers don't match strictly
+                    if interp.get("status") == "extracted" and current_step_data.get("next_flow"):
                         nxt = current_step_data["next_flow"]
                         old_step = flow_state.current_step
                         flow_state.current_step = nxt.get("name")
                         flow_state.flow_data = nxt
                         step_type = nxt.get("type", "unknown")
                         response_text = nxt.get("text", "")
-                        logger.info(f"FLOW_MANAGEMENT: Heuristic progressed ZIP question to next step {flow_state.current_step}")
+                        logger.info(f"FLOW_MANAGEMENT: Interpreter-based progression applied - extracted {interp.get('kind')}: {interp.get('value')}")
+                        print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
+                        # Update pending lock
+                        if step_type == 'question':
+                            flow_state.pending_step = flow_state.current_step
+                            flow_state.pending_expected_kind = 'number' if ('phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
+                            flow_state.pending_asked_at = time.time()
+                            flow_state.pending_reask_count = 0
+                        else:
+                            flow_state.pending_step = None
+                        add_agent_response_to_history(flow_state, response_text)
+                        return {"type": step_type, "response": response_text, "flow_state": flow_state}
+
+                    # Heuristics: try to interpret common free-form answers to advance flow instead of falling back
+                    qtext = (current_step_data.get("text") or "").lower()
+                    ur = (user_message or "").lower()
+
+                    def _extract_digits_from_words(t: str) -> str:
+                        words_map = {
+                            "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+                            "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"
+                        }
+                        parts = re.findall(r"\d|zero|one|two|three|four|five|six|seven|eight|nine", t)
+                        return "".join(words_map.get(p, p) for p in parts)
+
+                    def _extract_quantity(t: str) -> Optional[int]:
+                        m = re.search(r"\b(\d{1,3})\b", t)
+                        if m:
+                            return int(m.group(1))
+                        words_to_num = {
+                            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+                            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+                            "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+                            "nineteen": 19, "twenty": 20
+                        }
+                        for w, v in words_to_num.items():
+                            if f" {w} " in f" {t} ":
+                                return v
+                        return None
+
+                    advanced = False
+                    if "zip" in qtext or "zipcode" in qtext or "zip code" in qtext:
+                        zip_digits = _extract_digits_from_words(ur)
+                        if len(zip_digits) >= 5 and current_step_data.get("next_flow"):
+                            # Proceed to next step (FAQ for weather flow)
+                            nxt = current_step_data["next_flow"]
+                            old_step = flow_state.current_step
+                            flow_state.current_step = nxt.get("name")
+                            flow_state.flow_data = nxt
+                            step_type = nxt.get("type", "unknown")
+                            response_text = nxt.get("text", "")
+                            logger.info(f"FLOW_MANAGEMENT: Heuristic progressed ZIP question to next step {flow_state.current_step}")
+                            print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
+                            add_agent_response_to_history(flow_state, response_text)
+                            advanced = True
+                            return {
+                                "type": step_type,
+                                "response": response_text,
+                                "flow_state": flow_state
+                            }
+
+                    qty = _extract_quantity(ur)
+                    if not advanced and qty is not None and current_step_data.get("next_flow"):
+                        # Proceed to next question in pricing regardless of specific answer bucket
+                        nxt = current_step_data["next_flow"]
+                        old_step = flow_state.current_step
+                        flow_state.current_step = nxt.get("name")
+                        flow_state.flow_data = nxt
+                        step_type = nxt.get("type", "unknown")
+                        response_text = nxt.get("text", "")
+                        logger.info(f"FLOW_MANAGEMENT: Heuristic progressed numeric answer ({qty}) to next step {flow_state.current_step}")
                         print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
                         add_agent_response_to_history(flow_state, response_text)
-                        advanced = True
                         return {
                             "type": step_type,
                             "response": response_text,
                             "flow_state": flow_state
                         }
 
-                qty = _extract_quantity(ur)
-                if not advanced and qty is not None and current_step_data.get("next_flow"):
-                    # Proceed to next question in pricing regardless of specific answer bucket
-                    nxt = current_step_data["next_flow"]
-                    old_step = flow_state.current_step
-                    flow_state.current_step = nxt.get("name")
-                    flow_state.flow_data = nxt
-                    step_type = nxt.get("type", "unknown")
-                    response_text = nxt.get("text", "")
-                    logger.info(f"FLOW_MANAGEMENT: Heuristic progressed numeric answer ({qty}) to next step {flow_state.current_step}")
-                    print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
-                    add_agent_response_to_history(flow_state, response_text)
-                    return {
-                        "type": step_type,
-                        "response": response_text,
-                        "flow_state": flow_state
-                    }
+                    # If user utterance is too short/stopwordy, re-ask the same question instead of falling back
+                    tokens = re.findall(r"\w+", ur)
+                    if len(tokens) <= 2:
+                        response_text = current_step_data.get("text", "")
+                        add_agent_response_to_history(flow_state, response_text)
+                        logger.info("FLOW_MANAGEMENT: Re-asking current question due to low-information user response")
+                        return {
+                            "type": "question",
+                            "response": response_text,
+                            "flow_state": flow_state
+                        }
 
-                # If user utterance is too short/stopwordy, re-ask the same question instead of falling back
-                tokens = re.findall(r"\w+", ur)
-                if len(tokens) <= 2:
+                    logger.info("FLOW_MANAGEMENT: ❌ No next step found for question response (after heuristics)")
+                    # Re-ask the same question instead of immediate FAQ
                     response_text = current_step_data.get("text", "")
+                    flow_state.pending_reask_count = (flow_state.pending_reask_count or 0) + 1
+                    flow_state.pending_asked_at = time.time()
                     add_agent_response_to_history(flow_state, response_text)
-                    logger.info("FLOW_MANAGEMENT: Re-asking current question due to low-information user response")
-                    return {
-                        "type": "question",
-                        "response": response_text,
-                        "flow_state": flow_state
-                    }
+                    return {"type": "question", "response": response_text, "flow_state": flow_state}
+            else:
+                logger.info(f"FLOW_MANAGEMENT: Current step is not a question (type: {current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift or answers branch")
 
-                logger.info("FLOW_MANAGEMENT: ❌ No next step found for question response (after heuristics)")
-                # Re-ask the same question instead of immediate FAQ
-                response_text = current_step_data.get("text", "")
-                flow_state.pending_reask_count = (flow_state.pending_reask_count or 0) + 1
-                flow_state.pending_asked_at = time.time()
-                add_agent_response_to_history(flow_state, response_text)
-                return {"type": "question", "response": response_text, "flow_state": flow_state}
-        else:
-            logger.info(f"FLOW_MANAGEMENT: Current step is not a question (type: {current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift or answers branch")
-
-            # If current step is a message with a next_flow of type 'faq', auto-transition so that
-            # subsequent user utterances evaluate the FAQ node's answers.
-            if current_step_data and current_step_data.get("type") == "message":
-                nf = current_step_data.get("next_flow")
-                # If next_flow is faq, auto-transition
-                if isinstance(nf, dict) and nf.get("type") == "faq":
-                    old = flow_state.current_step
-                    flow_state.current_step = nf.get("name")
-                    flow_state.flow_data = nf
-                    logger.info(f"FLOW_MANAGEMENT: Auto-transitioned message → faq for answers handling: {old} → {flow_state.current_step}")
+                # If current step is a message with a next_flow of type 'faq', auto-transition so that
+                # subsequent user utterances evaluate the FAQ node's answers.
+                if current_step_data and current_step_data.get("type") == "message":
+                    nf = current_step_data.get("next_flow")
+                    # If next_flow is faq, auto-transition
+                    if isinstance(nf, dict) and nf.get("type") == "faq":
+                        old = flow_state.current_step
+                        flow_state.current_step = nf.get("name")
+                        flow_state.flow_data = nf
+                        logger.info(f"FLOW_MANAGEMENT: Auto-transitioned message → faq for answers handling: {old} → {flow_state.current_step}")
                     current_step_data = flow_state.flow_data
                 # If there's no explicit next_flow, but the template contains a faq node with the expected text, jump to it
                 elif not nf and bot_template:
