@@ -2595,6 +2595,80 @@ async def get_greeting():
             "error": str(e)
         }
 
+@app.post("/api/initialize_greeting_flow")
+async def initialize_greeting_flow(request: dict):
+    """Initialize greeting bot flow in backend when worker sends greeting"""
+    try:
+        room_name = request.get("room_name")
+        greeting_text = request.get("greeting_text")
+        
+        if not room_name or not greeting_text:
+            return {
+                "success": False,
+                "error": "Missing room_name or greeting_text"
+            }
+        
+        global bot_template
+        
+        # Find the greeting bot in template
+        greeting_flow_key = None
+        greeting_flow_data = None
+        
+        if bot_template and bot_template.get("data"):
+            for flow_key, flow_data in bot_template["data"].items():
+                if flow_data.get("type") == "greeting" and flow_data.get("text") == greeting_text:
+                    greeting_flow_key = flow_key
+                    greeting_flow_data = flow_data
+                    break
+        
+        if not greeting_flow_key or not greeting_flow_data:
+            return {
+                "success": False,
+                "error": f"Greeting bot not found for text: {greeting_text}"
+            }
+        
+        # Initialize flow state for this room
+        if room_name not in flow_states:
+            # Try to load from local file first
+            flow_state = load_flow_state_from_file(room_name)
+            if flow_state:
+                flow_states[room_name] = flow_state
+            else:
+                flow_states[room_name] = FlowState()
+        
+        # Get the flow state (should never be None at this point)
+        flow_state = flow_states[room_name]
+        if flow_state is None:
+            flow_states[room_name] = FlowState()
+            flow_state = flow_states[room_name]
+        
+        # Set up greeting flow
+        flow_state.current_flow = greeting_flow_key
+        flow_state.current_step = greeting_flow_data.get("name", greeting_flow_key)
+        flow_state.flow_data = greeting_flow_data
+        
+        # Add greeting to conversation history
+        add_agent_response_to_history(flow_state, greeting_text)
+        
+        # Save flow state
+        save_flow_state_to_file(room_name, flow_state)
+        
+        logger.info(f"🎯 GREETING FLOW INIT: Initialized greeting flow {greeting_flow_key} for room {room_name}")
+        print(f"🎯 GREETING FLOW INIT: Room {room_name} -> Flow: {greeting_flow_key}, Step: {flow_state.current_step}")
+        
+        return {
+            "success": True,
+            "flow_key": greeting_flow_key,
+            "flow_data": greeting_flow_data
+        }
+        
+    except Exception as e:
+        logger.error(f"🎯 GREETING FLOW INIT: Error initializing greeting flow: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 @app.get("/api/flow_states")
 def get_flow_states():
     """Get all current flow states for debugging"""

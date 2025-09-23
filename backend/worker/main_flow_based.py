@@ -456,6 +456,9 @@ class FlowBasedAssistant(Agent):
                     except Exception:
                         pass
                     logger.info(f"👋 Template greeting sent for {self.session_id}: {greeting_response}")
+                    
+                    # Initialize greeting bot flow in backend
+                    await self._initialize_greeting_flow_in_backend(greeting_response)
                 else:
                     # Fall back to hardcoded greeting
                     hardcoded_greeting = "Hello! I'm Scott from Alive5. How can I help you today?"
@@ -494,6 +497,34 @@ class FlowBasedAssistant(Agent):
         except Exception as e:
             logger.warning(f"🎯 GREETING BOT: Failed to get greeting from backend: {e}")
             return None
+    
+    async def _initialize_greeting_flow_in_backend(self, greeting_text: str):
+        """Initialize greeting bot flow in backend so it knows about the flow state"""
+        try:
+            # Call backend to initialize greeting flow
+            backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+            init_endpoint = f"{backend_url}/api/initialize_greeting_flow"
+            
+            # Get room name from session
+            room_name = self.session_id if hasattr(self, 'session_id') else "unknown"
+            
+            payload = {
+                "room_name": room_name,
+                "greeting_text": greeting_text
+            }
+            
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                response = await client.post(init_endpoint, json=payload)
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("success"):
+                        logger.info(f"🎯 GREETING FLOW: Initialized greeting flow in backend for room {room_name}")
+                    else:
+                        logger.warning(f"🎯 GREETING FLOW: Failed to initialize greeting flow: {result.get('error')}")
+                else:
+                    logger.warning(f"🎯 GREETING FLOW: Backend call failed with status {response.status_code}")
+        except Exception as e:
+            logger.warning(f"🎯 GREETING FLOW: Failed to initialize greeting flow in backend: {e}")
     
     async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
         """Called when user finishes speaking; aggregate multiple turns before processing"""
