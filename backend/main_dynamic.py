@@ -2169,7 +2169,39 @@ async def get_template_status():
 
 @app.post("/api/force_template_update")
 async def force_template_update():
-    """Manually trigger template update"""
+    """Manually trigger template update (POST method)"""
+    if not template_manager:
+        raise HTTPException(status_code=500, detail="Template manager not initialized")
+    
+    try:
+        success = await template_manager.fetch_and_store_template()
+        
+        if success:
+            # Update global bot_template for backward compatibility
+            global bot_template
+            bot_template = template_manager.template_data
+            
+            return {
+                "success": True,
+                "message": "Template updated successfully",
+                "timestamp": datetime.now().isoformat(),
+                "template_hash": template_manager.template_hash[:8] + "...",
+                "last_updated": template_manager.last_updated.isoformat()
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Failed to update template",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+    except Exception as e:
+        logger.error(f"Force template update error: {e}")
+        raise HTTPException(status_code=500, detail=f"Template update failed: {str(e)}")
+
+@app.get("/api/force_template_update")
+async def force_template_update_get():
+    """Manually trigger template update (GET method for easy browser access)"""
     if not template_manager:
         raise HTTPException(status_code=500, detail="Template manager not initialized")
     
