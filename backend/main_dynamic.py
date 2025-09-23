@@ -2044,15 +2044,29 @@ async def get_faq_response(user_message: str, bot_id: str = None, flow_state: Fl
             response.raise_for_status()
             result = response.json()
             
-            print(f"✅ FAQ BOT RESPONSE: {result['data']['answer'][:100]}...")
+            # Check if result has valid data structure
+            if not result or not result.get("data") or not result["data"].get("answer"):
+                print(f"⚠️ FAQ BOT RESPONSE: No valid answer received from API")
+                error_response = "I'm sorry, I'm having trouble processing your request. Let me connect you to a human agent."
+                if flow_state:
+                    add_agent_response_to_history(flow_state, error_response)
+                return {
+                    "type": "fallback",
+                    "response": error_response,
+                    "urls": [],
+                    "bot_id": bot_id
+                }
+            
+            answer = result["data"]["answer"]
+            print(f"✅ FAQ BOT RESPONSE: {answer[:100]}...")
             
             # Add agent response to conversation history if flow_state is provided
             if flow_state:
-                add_agent_response_to_history(flow_state, result["data"]["answer"])
+                add_agent_response_to_history(flow_state, answer)
             
             return {
                 "type": "faq_response",
-                "response": result["data"]["answer"],
+                "response": answer,
                 "urls": result["data"].get("urls", []),
                 "bot_id": bot_id
             }
