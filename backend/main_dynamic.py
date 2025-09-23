@@ -42,6 +42,13 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 A5_BASE_URL = os.getenv("A5_BASE_URL")
 A5_API_KEY = os.getenv("A5_API_KEY")
 
+# Alive5 API endpoints - fully configurable
+A5_TEMPLATE_URL = os.getenv("A5_TEMPLATE_URL", "/1.0/org-botchain/generate-template")
+A5_FAQ_URL = os.getenv("A5_FAQ_URL", "/public/1.0/get-faq-bot-response-by-bot-id")
+A5_BOTCHAIN_NAME = os.getenv("A5_BOTCHAIN_NAME", "dustin-gpt")
+A5_ORG_NAME = os.getenv("A5_ORG_NAME", "alive5stage0")
+FAQ_BOT_ID = os.getenv("FAQ_BOT_ID", "default-bot-id")
+
 # Template polling configuration
 TEMPLATE_POLLING_INTERVAL = int(os.getenv("TEMPLATE_POLLING_INTERVAL", "1"))  # hours
 TEMPLATE_POLLING_ENABLED = os.getenv("TEMPLATE_POLLING_ENABLED", "true").lower() == "true"
@@ -53,6 +60,11 @@ print(f"URL: {LIVEKIT_URL}")
 print(f"OPENAI_KEY: {OPENAI_API_KEY[:10] if OPENAI_API_KEY else 'None'}...")
 print(f"A5_BASE_URL: {A5_BASE_URL}")
 print(f"A5_API_KEY: {A5_API_KEY}")
+print(f"A5_TEMPLATE_URL: {A5_TEMPLATE_URL}")
+print(f"A5_FAQ_URL: {A5_FAQ_URL}")
+print(f"A5_BOTCHAIN_NAME: {A5_BOTCHAIN_NAME}")
+print(f"A5_ORG_NAME: {A5_ORG_NAME}")
+print(f"FAQ_BOT_ID: {FAQ_BOT_ID}")
 
 # Create persistence directory
 PERSISTENCE_DIR = "flow_states"
@@ -125,18 +137,19 @@ class TemplateManager:
     async def fetch_template_from_api(self) -> Optional[Dict[str, Any]]:
         """Fetch template from Alive5 API"""
         try:
-            print(f"🔄 TEMPLATE_POLLING: Fetching template from {A5_BASE_URL}/1.0/org-botchain/generate-template")
+            template_endpoint = f"{A5_BASE_URL}{A5_TEMPLATE_URL}"
+            print(f"🔄 TEMPLATE_POLLING: Fetching template from {template_endpoint}")
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{A5_BASE_URL}/1.0/org-botchain/generate-template",
+                    template_endpoint,
                     headers={
                         "X-A5-APIKEY": A5_API_KEY,
                         "Content-Type": "application/json"
                     },
                     json={
-                        "botchain_name": "dustin-gpt",
-                        "org_name": "alive5stage0"
+                        "botchain_name": A5_BOTCHAIN_NAME,
+                        "org_name": A5_ORG_NAME
                     },
                     timeout=30.0
                 )
@@ -1187,18 +1200,18 @@ async def generate_template(request: GenerateTemplateRequest):
     Generate a template using the Alive5 API
     """
     try:
-        logger.info(f"ALIVE5_API: Generating template for {request.botchain_name} in org {request.org_name}")
+        logger.info(f"ALIVE5_API: Generating template for {A5_BOTCHAIN_NAME} in org {A5_ORG_NAME}")
         
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{A5_BASE_URL}/1.0/org-botchain/generate-template",
+                f"{A5_BASE_URL}{A5_TEMPLATE_URL}",
                 headers={
                     "X-A5-APIKEY": A5_API_KEY,
                     "Content-Type": "application/json"
                 },
                 json={
-                    "botchain_name": request.botchain_name,
-                    "org_name": request.org_name
+                    "botchain_name": A5_BOTCHAIN_NAME,
+                    "org_name": A5_ORG_NAME
                 }
             )
             response.raise_for_status()
@@ -1221,8 +1234,9 @@ async def get_faq_bot_response(request: GetFAQResponseRequest):
         logger.info(f"ALIVE5_API: Getting FAQ response for bot {request.bot_id} with question: {request.faq_question}")
         
         async with httpx.AsyncClient() as client:
+            faq_endpoint = f"{A5_BASE_URL}{A5_FAQ_URL}"
             response = await client.post(
-                f"{A5_BASE_URL}/public/1.0/get-faq-bot-response-by-bot-id",
+                faq_endpoint,
                 headers={
                     "X-A5-APIKEY": A5_API_KEY,
                     "Content-Type": "application/json"
@@ -2008,20 +2022,16 @@ async def get_faq_response(user_message: str, bot_id: str = None, flow_state: Fl
         
         # Use provided bot_id or an explicit default from env/constant (template 'name' is NOT a bot_id)
         if not bot_id:
-            env_bot_id = os.getenv("A5_FAQ_BOT_ID")
-            if env_bot_id and env_bot_id.strip():
-                bot_id = env_bot_id.strip()
-            else:
-                # Fallback to known bot id shared by client
-                bot_id = "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"
+            bot_id = FAQ_BOT_ID
         
         logger.info(f"FAQ_RESPONSE: Using bot_id: {bot_id}")
         print(f"🤖 FAQ BOT CALL: Bot ID: {bot_id} | Question: '{user_message}'")
         
         # FAQ may take ~15s; set a generous timeout
         async with httpx.AsyncClient(timeout=httpx.Timeout(35.0)) as client:
+            faq_endpoint = f"{A5_BASE_URL}{A5_FAQ_URL}"
             response = await client.post(
-                f"{A5_BASE_URL}/public/1.0/get-faq-bot-response-by-bot-id",
+                faq_endpoint,
                 headers={
                     "X-A5-APIKEY": A5_API_KEY,
                     "Content-Type": "application/json"
