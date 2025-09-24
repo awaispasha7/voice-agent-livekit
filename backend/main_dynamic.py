@@ -1926,6 +1926,66 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                             "next_step": matching_intent["flow_data"].get("next_flow")
                         }
                 
+                # Special case: If we're in a greeting flow and user mentions something that should trigger intent detection
+                # but it's not detected as a specific intent, complete the greeting flow and allow intent detection
+                if step_type == "greeting" and not matching_intent:
+                    # Check if user message contains keywords that suggest they want to discuss a topic
+                    intent_keywords = ["marketing", "sales", "campaign", "strategy", "business", "service", "help", "information", "about"]
+                    if any(keyword in user_message.lower() for keyword in intent_keywords):
+                        logger.info("FLOW_MANAGEMENT: User mentioned topic keywords during greeting flow, completing greeting and allowing intent detection")
+                        # Complete the greeting flow
+                        flow_state.current_flow = None
+                        flow_state.current_step = None
+                        flow_state.flow_data = None
+                        flow_state.pending_step = None
+                        flow_state.pending_expected_kind = None
+                        flow_state.pending_asked_at = None
+                        auto_save_flow_state()
+                        
+                        # Now try to detect intent again
+                        matching_intent = await detect_flow_intent_with_llm(user_message)
+                        if matching_intent and matching_intent.get("type") != "greeting":
+                            logger.info(f"FLOW_MANAGEMENT: Intent detected after greeting completion: {matching_intent['intent']}")
+                            # Switch to intent flow
+                            flow_state.current_flow = matching_intent["flow_key"]
+                            flow_state.current_step = matching_intent["flow_data"]["name"]
+                            flow_state.flow_data = matching_intent["flow_data"]
+                            auto_save_flow_state()
+                            
+                            # Check if this intent has a next_flow and automatically transition to it
+                            next_flow = matching_intent["flow_data"].get("next_flow")
+                            if next_flow:
+                                logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
+                                flow_state.current_step = next_flow.get("name")
+                                flow_state.flow_data = next_flow
+                                auto_save_flow_state()
+                                
+                                print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
+                                                f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
+                                
+                                response_text = next_flow.get("text", "")
+                                add_agent_response_to_history(flow_state, response_text)
+                                
+                                return {
+                                    "type": "flow_started",
+                                    "flow_name": matching_intent["intent"],
+                                    "response": response_text,
+                                    "next_step": next_flow.get("next_flow")
+                                }
+                            else:
+                                # No next_flow, use intent response
+                                response_text = matching_intent["flow_data"].get("text", "")
+                                if not response_text or response_text == "N/A":
+                                    response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+                                add_agent_response_to_history(flow_state, response_text)
+                                
+                                return {
+                                    "type": "flow_started",
+                                    "flow_name": matching_intent["intent"],
+                                    "response": response_text,
+                                    "next_step": matching_intent["flow_data"].get("next_flow")
+                                }
+                
                 # No intent shift detected, continue with current flow
                 logger.info(f"FLOW_MANAGEMENT: No intent shift detected, continuing with {step_type} flow")
                 
@@ -1957,6 +2017,26 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                         "type": "flow_continued",
                         "response": response_text,
                         "next_step": next_step_data.get("next_flow"),
+                        "flow_state": flow_state
+                    }
+                
+                # Special handling for greeting flow completion
+                if step_type == "greeting" and not current_step_data.get("next_flow"):
+                    logger.info("FLOW_MANAGEMENT: Greeting flow completed, resetting to intent detection mode")
+                    flow_state.current_flow = None
+                    flow_state.current_step = None
+                    flow_state.flow_data = None
+                    flow_state.pending_step = None
+                    flow_state.pending_expected_kind = None
+                    flow_state.pending_asked_at = None
+                    auto_save_flow_state()
+                    
+                    response_text = "I'm here to help you with information about our business communication services. What would you like to know about?"
+                    add_agent_response_to_history(flow_state, response_text)
+                    
+                    return {
+                        "type": "message",
+                        "response": response_text,
                         "flow_state": flow_state
                     }
                 
@@ -2056,7 +2136,16 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                                     "flow_state": flow_state
                                 }
                             else:
-                                # No next step in greeting flow, provide a helpful response
+                                # Greeting flow completed - reset to intent detection mode
+                                logger.info("FLOW_MANAGEMENT: Greeting flow completed, resetting to intent detection mode")
+                                flow_state.current_flow = None
+                                flow_state.current_step = None
+                                flow_state.flow_data = None
+                                flow_state.pending_step = None
+                                flow_state.pending_expected_kind = None
+                                flow_state.pending_asked_at = None
+                                auto_save_flow_state()
+                                
                                 response_text = "I'm here to help you with information about our business communication services. What would you like to know about?"
                             add_agent_response_to_history(flow_state, response_text)
                             auto_save_flow_state()
