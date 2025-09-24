@@ -2903,10 +2903,14 @@ async def initialize_greeting_flow(request: dict):
         
         if bot_template and bot_template.get("data"):
             for flow_key, flow_data in bot_template["data"].items():
-                if flow_data.get("type") == "greeting" and flow_data.get("text") == greeting_text:
-                    greeting_flow_key = flow_key
-                    greeting_flow_data = flow_data
-                    break
+                if flow_data.get("type") == "greeting":
+                    # Check if the greeting text matches (allowing for partial matches)
+                    template_text = flow_data.get("text", "")
+                    if greeting_text in template_text or template_text in greeting_text:
+                        greeting_flow_key = flow_key
+                        greeting_flow_data = flow_data
+                        logger.info(f"🎯 GREETING FLOW INIT: Found greeting bot {flow_key} with text: {template_text}")
+                        break
         
         if not greeting_flow_key or not greeting_flow_data:
             return {
