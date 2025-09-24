@@ -572,7 +572,7 @@ class DynamicVoiceAgent {
         const messageLower = message.toLowerCase().trim();
         const farewellKeywords = [
             'bye', 'goodbye', 'see you', 'that\'s all', 'thats all', 'i\'m done', 
-            'im done', 'thank you bye', 'thanks bye', 'gotta go', 'have to go'
+            'im done', 'thank you bye', 'thanks bye', 'gotta go', 'have to go', 'okay, that\'s all', 'okay that\'s all', 'ok that\'s all', 'okay bye', 'ok bye', 'i think that\'s all', 'that\'s all goodbye', 'okay, thanks', 'okay, thanks bye', 'okay, thanks goodbye'
         ];
         
         return farewellKeywords.some(keyword => messageLower.includes(keyword));

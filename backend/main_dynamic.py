@@ -144,170 +144,7 @@ def _find_step_by_text(template: Dict[str, Any], target_text: str) -> Optional[D
     return None
 
 
-class TemplateManager:
-    """Manages template storage, hashing, and scheduled polling"""
-    
-    def __init__(self):
-        self.template_data = None
-        self.template_hash = None
-        self.last_updated = None
-        self.polling_active = False
-        self.polling_thread = None
-        self.polling_interval = TEMPLATE_POLLING_INTERVAL
-        self.polling_enabled = TEMPLATE_POLLING_ENABLED
-        
-        # Load environment variables directly to ensure they're available
-        self.a5_base_url = os.getenv("A5_BASE_URL")
-        self.a5_template_url = os.getenv("A5_TEMPLATE_URL", "/1.0/org-botchain/generate-template")
-        self.a5_api_key = os.getenv("A5_API_KEY")
-        self.a5_botchain_name = os.getenv("A5_BOTCHAIN_NAME", "dustin-gpt")
-        self.a5_org_name = os.getenv("A5_ORG_NAME", "alive5stage0")
-        
-        # Debug: Print loaded values
-        print(f"🔍 TEMPLATE_MANAGER: A5_BASE_URL = {repr(self.a5_base_url)}")
-        print(f"🔍 TEMPLATE_MANAGER: A5_TEMPLATE_URL = {repr(self.a5_template_url)}")
-        print(f"🔍 TEMPLATE_MANAGER: A5_API_KEY = {repr(self.a5_api_key)}")
-        
-    def generate_template_hash(self, template_data: Dict[str, Any]) -> str:
-        """Generate SHA-256 hash of template data"""
-        if not template_data:
-            return ""
-        
-        # Sort keys for consistent hashing
-        template_json = json.dumps(template_data, sort_keys=True, separators=(',', ':'))
-        return hashlib.sha256(template_json.encode('utf-8')).hexdigest()
-    
-    async def fetch_template_from_api(self) -> Optional[Dict[str, Any]]:
-        """Fetch template from Alive5 API"""
-        try:
-            # Check if required variables are loaded
-            if not self.a5_base_url or not self.a5_api_key:
-                print(f"❌ TEMPLATE_POLLING: Missing required environment variables")
-                print(f"   A5_BASE_URL: {repr(self.a5_base_url)}")
-                print(f"   A5_API_KEY: {repr(self.a5_api_key)}")
-                return None
-            
-            template_endpoint = f"{self.a5_base_url}{self.a5_template_url}"
-            print(f"🔄 TEMPLATE_POLLING: Fetching template from {template_endpoint}")
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    template_endpoint,
-                    headers={
-                        "X-A5-APIKEY": self.a5_api_key,
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "botchain_name": self.a5_botchain_name,
-                        "org_name": self.a5_org_name
-                    },
-                    timeout=30.0
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    print(f"✅ TEMPLATE_POLLING: Successfully fetched template")
-                    return result
-                else:
-                    print(f"❌ TEMPLATE_POLLING: API returned status {response.status_code}: {response.text}")
-                    return None
-                    
-        except Exception as e:
-            print(f"❌ TEMPLATE_POLLING: Failed to fetch template: {str(e)}")
-            logger.error(f"TEMPLATE_POLLING: Failed to fetch template: {str(e)}")
-            return None
-    
-    async def fetch_and_store_template(self) -> bool:
-        """Fetch template from Alive5 API and store with hash"""
-        try:
-            # Fetch from Alive5 API
-            template_data = await self.fetch_template_from_api()
-            
-            if not template_data:
-                return False
-            
-            # Generate hash
-            new_hash = self.generate_template_hash(template_data)
-            
-            # Store template and hash
-            self.template_data = template_data
-            self.template_hash = new_hash
-            self.last_updated = datetime.now()
-            
-            print(f"✅ TEMPLATE_POLLING: Template updated - Hash: {new_hash[:8]}...")
-            logger.info(f"TEMPLATE_POLLING: Template updated - Hash: {new_hash[:8]}...")
-            return True
-            
-        except Exception as e:
-            print(f"❌ TEMPLATE_POLLING: Failed to fetch and store template: {str(e)}")
-            logger.error(f"TEMPLATE_POLLING: Failed to fetch and store template: {str(e)}")
-            return False
-    
-    async def check_template_updates(self) -> bool:
-        """Check if template has changed by comparing hashes"""
-        try:
-            # Fetch current template from API
-            current_template = await self.fetch_template_from_api()
-            
-            if not current_template:
-                return False
-            
-            current_hash = self.generate_template_hash(current_template)
-            
-            # Compare with stored hash
-            if current_hash != self.template_hash:
-                print(f"🔄 TEMPLATE_POLLING: Template changed - Old: {self.template_hash[:8] if self.template_hash else 'None'}... New: {current_hash[:8]}...")
-                logger.info(f"TEMPLATE_POLLING: Template changed - Old: {self.template_hash[:8] if self.template_hash else 'None'}... New: {current_hash[:8]}...")
-                
-                # Update stored template
-                self.template_data = current_template
-                self.template_hash = current_hash
-                self.last_updated = datetime.now()
-                
-                return True  # Template updated
-            else:
-                print(f"✅ TEMPLATE_POLLING: Template unchanged - Hash: {current_hash[:8]}...")
-                logger.debug(f"TEMPLATE_POLLING: Template unchanged - Hash: {current_hash[:8]}...")
-                return False  # No changes
-                
-        except Exception as e:
-            print(f"❌ TEMPLATE_POLLING: Failed to check template updates: {str(e)}")
-            logger.error(f"TEMPLATE_POLLING: Failed to check template updates: {str(e)}")
-            return False
-    
-    # Polling mechanism removed - templates loaded on-demand
-    
-    # stop_polling method removed - no longer needed
-    
-    # _polling_worker method removed - no longer needed
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get current template status"""
-        return {
-            "template_loaded": self.template_data is not None,
-            "last_updated": self.last_updated.isoformat() if self.last_updated else None,
-            "template_hash": self.template_hash[:8] + "..." if self.template_hash else None,
-            "template_size": len(json.dumps(self.template_data)) if self.template_data else 0,
-            "template_available": self.template_data is not None,
-            "available_intents": self._get_available_intents() if self.template_data else []
-        }
-    
-    def _get_available_intents(self) -> List[str]:
-        """Get list of available intents from template"""
-        if not self.template_data or not self.template_data.get("data"):
-            return []
-        
-        intents = []
-        for flow_key, flow_data in self.template_data["data"].items():
-            if flow_data.get("type") == "intent_bot":
-                intent_name = flow_data.get("text", "")
-                if intent_name:
-                    intents.append(intent_name)
-        return intents
-
-
-# Global template manager instance
-template_manager = None
+# TemplateManager class removed - using direct API calls instead
 
 # Request models
 class ConnectionRequest(BaseModel):
@@ -494,11 +331,11 @@ async def is_ambiguous_transcription(user_text: str) -> bool:
     
     # Skip empty or very short inputs
     if not u or len(u) < 2:
-        return True
+            return True
     
     # For very obvious cases, use simple heuristics to avoid unnecessary LLM calls
     if len(u) < 3:
-        return True
+            return True
     
     try:
         # Use LLM to determine if the transcription is complete and meaningful
@@ -1424,96 +1261,101 @@ async def get_faq_bot_response(request: GetFAQResponseRequest):
 
 # Flow Management Functions
 async def initialize_bot_template():
-    """Initialize the bot template on startup using TemplateManager"""
-    global bot_template, template_manager
+    """Initialize the bot template on startup using default configuration"""
+    global bot_template
     
     try:
         print("\n" + "="*80)
-        print("🚀 INITIALIZING BOT TEMPLATE WITH POLLING SYSTEM")
+        print("🚀 INITIALIZING BOT TEMPLATE")
         print("="*80)
-        logger.info("FLOW_MANAGEMENT: Initializing bot template with polling system...")
+        logger.info("FLOW_MANAGEMENT: Initializing bot template...")
         
-        # Initialize template manager
-        template_manager = TemplateManager()
+        # Load default template using environment variables
+        default_botchain = os.getenv("A5_BOTCHAIN_NAME", "voice-1")
+        default_org = os.getenv("A5_ORG_NAME", "alive5stage0")
         
-        # Fetch initial template
-        success = await template_manager.fetch_and_store_template()
+        print(f"🔧 Loading default template: {default_botchain}/{default_org}")
         
-        if success:
-            # Set the global bot_template for backward compatibility
-            bot_template = template_manager.template_data
-            
-            logger.info("FLOW_MANAGEMENT: Bot template initialized successfully with polling")
-            print("✅ TEMPLATE LOADED SUCCESSFULLY WITH POLLING SYSTEM")
-            print(f"📊 Template contains {len(bot_template['data'])} flows:")
-            for flow_key, flow_data in bot_template["data"].items():
-                flow_type = flow_data.get("type", "unknown")
-                flow_text = flow_data.get("text", "")
-                print(f"   🔹 {flow_key}: {flow_type} - '{flow_text}'")
-            print(f"🔐 Template Hash: {template_manager.template_hash[:8]}...")
-            print(f"⏰ Last Updated: {template_manager.last_updated}")
-            print(f"🔄 Polling Enabled: {template_manager.polling_enabled}")
-            print(f"⏱️ Polling Interval: {template_manager.polling_interval} hour(s)")
+        # Use the same function as custom config
+        result = await initialize_bot_template_with_config(default_botchain, default_org)
+        
+        if result:
+            logger.info("FLOW_MANAGEMENT: Bot template initialized successfully")
+            print("✅ TEMPLATE LOADED SUCCESSFULLY")
             print("="*80)
-            
-            # Polling removed - templates loaded on-demand
-            
-            # Verify global variable is set
-            print(f"🔍 VERIFICATION: bot_template is {'✅ SET' if bot_template is not None else '❌ NONE'}")
-            logger.info(f"FLOW_MANAGEMENT: Global bot_template set: {bot_template is not None}")
-            
-            return bot_template
+            return result
         else:
             logger.error("FLOW_MANAGEMENT: Failed to initialize bot template")
-            print("❌ TEMPLATE LOAD FAILED")
+            print("❌ TEMPLATE INITIALIZATION FAILED")
             return None
             
     except Exception as e:
-        logger.error(f"FLOW_MANAGEMENT: Failed to initialize bot template: {str(e)}")
-        print(f"❌ TEMPLATE INITIALIZATION ERROR: {str(e)}")
-        import traceback
-        print(f"❌ TRACEBACK: {traceback.format_exc()}")
+        logger.error(f"FLOW_MANAGEMENT: Error initializing bot template: {e}")
+        print(f"❌ TEMPLATE INITIALIZATION ERROR: {e}")
         return None
 
     # Removed mock template: always fetch from Alive5 API per client requirement
 
 async def initialize_bot_template_with_config(botchain_name: str, org_name: str):
-    """Initialize bot template with custom configuration"""
-    global bot_template, template_manager
+    """Initialize bot template with custom configuration using direct API call"""
+    global bot_template
     
     logger.info(f"🚀 INITIALIZING BOT TEMPLATE WITH CUSTOM CONFIG: {botchain_name}/{org_name}")
     print(f"🚀 INITIALIZING BOT TEMPLATE WITH CUSTOM CONFIG: {botchain_name}/{org_name}")
     
     try:
-        # Create temporary template manager with custom config
-        temp_template_manager = TemplateManager()
-        temp_template_manager.a5_botchain_name = botchain_name
-        temp_template_manager.a5_org_name = org_name
+        # Get API credentials from environment
+        a5_base_url = os.getenv("A5_BASE_URL")
+        a5_template_url = os.getenv("A5_TEMPLATE_URL", "/1.0/org-botchain/generate-template")
+        a5_api_key = os.getenv("A5_API_KEY")
         
-        # Fetch template with custom config
-        success = await temp_template_manager.fetch_and_store_template()
-        
-        if success:
-            bot_template = temp_template_manager.template_data
-            template_manager = temp_template_manager  # Update global manager
-            
-            logger.info("✅ CUSTOM TEMPLATE LOADED SUCCESSFULLY")
-            print("✅ CUSTOM TEMPLATE LOADED SUCCESSFULLY")
-            
-            # Print template summary
-            if bot_template and bot_template.get("data"):
-                print(f"📊 Custom template contains {len(bot_template['data'])} flows:")
-                for flow_key, flow_data in bot_template["data"].items():
-                    flow_type = flow_data.get("type", "unknown")
-                    flow_text = flow_data.get("text", "N/A")
-                    print(f"   🔹 {flow_key}: {flow_type} - '{flow_text}'")
-            
-            return bot_template
-        else:
-            logger.error("❌ CUSTOM TEMPLATE LOAD FAILED")
-            print("❌ CUSTOM TEMPLATE LOAD FAILED")
+        if not a5_base_url or not a5_api_key:
+            logger.error("❌ Missing required environment variables: A5_BASE_URL or A5_API_KEY")
+            print("❌ Missing required environment variables: A5_BASE_URL or A5_API_KEY")
             return None
+        
+        # Make direct API call
+        template_endpoint = f"{a5_base_url}{a5_template_url}"
+        print(f"🔄 FETCHING TEMPLATE: {template_endpoint}")
+        print(f"🔧 REQUEST: botchain_name={botchain_name}, org_name={org_name}")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                template_endpoint,
+                headers={
+                    "X-A5-APIKEY": a5_api_key,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "botchain_name": botchain_name,
+                    "org_name": org_name
+                },
+                timeout=30.0
+            )
             
+            if response.status_code == 200:
+                template_data = response.json()
+                bot_template = template_data
+                
+                logger.info("✅ CUSTOM TEMPLATE LOADED SUCCESSFULLY")
+                print("✅ CUSTOM TEMPLATE LOADED SUCCESSFULLY")
+                print(f"🔧 LOADED BOTCHAIN: {botchain_name}")
+                print(f"🔧 LOADED ORG: {org_name}")
+                
+                # Print template summary
+                if bot_template and bot_template.get("data"):
+                    print(f"📊 Custom template for botchain '{botchain_name}' contains {len(bot_template['data'])} flows:")
+                    for flow_key, flow_data in bot_template["data"].items():
+                        flow_type = flow_data.get("type", "unknown")
+                        flow_text = flow_data.get("text", "N/A")
+                        print(f"   🔹 {flow_key}: {flow_type} - '{flow_text}'")
+                
+                return bot_template
+            else:
+                logger.error(f"❌ API ERROR: {response.status_code} - {response.text}")
+                print(f"❌ API ERROR: {response.status_code} - {response.text}")
+                return None
+                
     except Exception as e:
         logger.error(f"❌ CUSTOM TEMPLATE INITIALIZATION ERROR: {e}")
         print(f"❌ CUSTOM TEMPLATE INITIALIZATION ERROR: {e}")
@@ -1702,9 +1544,8 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         logger.warning("FLOW_MANAGEMENT: Bot template not loaded, attempting to initialize...")
         print("⚠️ BOT TEMPLATE NOT LOADED - ATTEMPTING INITIALIZATION")
     else:
-        current_botchain = template_manager.a5_botchain_name if template_manager else "unknown"
-        logger.info(f"FLOW_MANAGEMENT: Using botchain: {current_botchain}")
-        print(f"🔧 FLOW_MANAGEMENT: Using botchain: {current_botchain}")
+        logger.info(f"FLOW_MANAGEMENT: Bot template is loaded and ready")
+        print(f"🔧 FLOW_MANAGEMENT: Bot template is loaded and ready")
         try:
             await initialize_bot_template()
             if bot_template is None:
@@ -2353,168 +2194,168 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             
             # Handle question steps (existing logic)
             if step_type == "question":
-                # Use gated LLM approach for robust answer extraction
+            # Use gated LLM approach for robust answer extraction
                 interp = await gated_llm_extract_answer(current_step_data.get("text", ""), user_message or "")
-                logger.info(f"GATED_LLM_EXTRACT: {interp}")
+            logger.info(f"GATED_LLM_EXTRACT: {interp}")
 
-                # Extra yes/no fallback for special-needs/SSO style questions
-                qtxt = (current_step_data.get("text") or "").lower()
-                utxt = (user_message or "").lower()
-                if any(k in qtxt for k in ["special needs", "sso", "salesforce", "crm integration"]) and re.search(r"\b(yes|yeah|yep|yup|sure|of course|please|ok|okay|absolutely|i need|i would need)\b", utxt):
-                    interp = {"status": "extracted", "kind": "yesno", "value": True, "confidence": 0.95}
+            # Extra yes/no fallback for special-needs/SSO style questions
+            qtxt = (current_step_data.get("text") or "").lower()
+            utxt = (user_message or "").lower()
+            if any(k in qtxt for k in ["special needs", "sso", "salesforce", "crm integration"]) and re.search(r"\b(yes|yeah|yep|yup|sure|of course|please|ok|okay|absolutely|i need|i would need)\b", utxt):
+                interp = {"status": "extracted", "kind": "yesno", "value": True, "confidence": 0.95}
 
-                # Handle unclear responses in main question flow
-                if interp.get("status") == "unclear":
-                    if interp.get("kind") == "ambiguous":
-                        response_text = "I didn't quite catch that. Could you please repeat your answer more clearly?"
-                    else:
-                        response_text = "I didn't quite understand that. Could you please repeat your answer?"
-                    add_agent_response_to_history(flow_state, response_text)
-                    logger.info(f"ANSWER_INTERPRETER: Handling unclear response ({interp.get('kind', 'unclear')}) with clarification request")
-                    return {
-                        "type": "message",
-                        "response": response_text,
-                        "flow_state": flow_state
-                    }
+            # Handle unclear responses in main question flow
+            if interp.get("status") == "unclear":
+                if interp.get("kind") == "ambiguous":
+                    response_text = "I didn't quite catch that. Could you please repeat your answer more clearly?"
+                else:
+                    response_text = "I didn't quite understand that. Could you please repeat your answer?"
+                add_agent_response_to_history(flow_state, response_text)
+                logger.info(f"ANSWER_INTERPRETER: Handling unclear response ({interp.get('kind', 'unclear')}) with clarification request")
+                return {
+                    "type": "message",
+                    "response": response_text,
+                    "flow_state": flow_state
+                }
 
-                # Process the user response and move to next step
-                next_step = get_next_flow_step(flow_state, user_message)
-                if next_step:
-                    logger.info(f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
+            # Process the user response and move to next step
+            next_step = get_next_flow_step(flow_state, user_message)
+            if next_step:
+                logger.info(f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
+                old_step = flow_state.current_step
+                flow_state.current_step = next_step["step_name"]
+                flow_state.flow_data = next_step["step_data"]
+                step_type = next_step["step_data"].get("type", "unknown")
+                
+                logger.info(f"FLOW_MANAGEMENT: STEP TRANSITION - From: {old_step} → To: {next_step['step_name']} | Type: {step_type}")
+                print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION", 
+                                f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{next_step['step_data'].get('text', '')}'")
+                
+                # Handle different step types
+                response_text = next_step["step_data"].get("text", "")
+                # Set pending question lock if next is a question
+                if step_type == 'question':
+                    flow_state.pending_step = next_step['step_name']
+                    flow_state.pending_expected_kind = 'number' if ('phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
+                    flow_state.pending_asked_at = time.time()
+                    flow_state.pending_reask_count = 0
+                else:
+                    flow_state.pending_step = None
+                add_agent_response_to_history(flow_state, response_text)
+                
+                return {
+                    "type": step_type,
+                    "response": response_text,
+                    "flow_state": flow_state
+                }
+            else:
+                # If interpreter extracted something, attempt progression even if answers don't match strictly
+                if interp.get("status") == "extracted" and current_step_data.get("next_flow"):
+                    nxt = current_step_data["next_flow"]
                     old_step = flow_state.current_step
-                    flow_state.current_step = next_step["step_name"]
-                    flow_state.flow_data = next_step["step_data"]
-                    step_type = next_step["step_data"].get("type", "unknown")
-                    
-                    logger.info(f"FLOW_MANAGEMENT: STEP TRANSITION - From: {old_step} → To: {next_step['step_name']} | Type: {step_type}")
-                    print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION", 
-                                    f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{next_step['step_data'].get('text', '')}'")
-                    
-                    # Handle different step types
-                    response_text = next_step["step_data"].get("text", "")
-                    # Set pending question lock if next is a question
+                    flow_state.current_step = nxt.get("name")
+                    flow_state.flow_data = nxt
+                    step_type = nxt.get("type", "unknown")
+                    response_text = nxt.get("text", "")
+                    logger.info(f"FLOW_MANAGEMENT: Interpreter-based progression applied - extracted {interp.get('kind')}: {interp.get('value')}")
+                    print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
+                    # Update pending lock
                     if step_type == 'question':
-                        flow_state.pending_step = next_step['step_name']
+                        flow_state.pending_step = flow_state.current_step
                         flow_state.pending_expected_kind = 'number' if ('phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
                         flow_state.pending_asked_at = time.time()
                         flow_state.pending_reask_count = 0
                     else:
                         flow_state.pending_step = None
                     add_agent_response_to_history(flow_state, response_text)
-                    
-                    return {
-                        "type": step_type,
-                        "response": response_text,
-                        "flow_state": flow_state
+                    return {"type": step_type, "response": response_text, "flow_state": flow_state}
+
+                # Heuristics: try to interpret common free-form answers to advance flow instead of falling back
+                qtext = (current_step_data.get("text") or "").lower()
+                ur = (user_message or "").lower()
+
+                def _extract_digits_from_words(t: str) -> str:
+                    words_map = {
+                        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+                        "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"
                     }
-                else:
-                    # If interpreter extracted something, attempt progression even if answers don't match strictly
-                    if interp.get("status") == "extracted" and current_step_data.get("next_flow"):
+                    parts = re.findall(r"\d|zero|one|two|three|four|five|six|seven|eight|nine", t)
+                    return "".join(words_map.get(p, p) for p in parts)
+
+                def _extract_quantity(t: str) -> Optional[int]:
+                    m = re.search(r"\b(\d{1,3})\b", t)
+                    if m:
+                        return int(m.group(1))
+                    words_to_num = {
+                        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+                        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+                        "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+                        "nineteen": 19, "twenty": 20
+                    }
+                    for w, v in words_to_num.items():
+                        if f" {w} " in f" {t} ":
+                            return v
+                    return None
+
+                advanced = False
+                if "zip" in qtext or "zipcode" in qtext or "zip code" in qtext:
+                    zip_digits = _extract_digits_from_words(ur)
+                    if len(zip_digits) >= 5 and current_step_data.get("next_flow"):
+                        # Proceed to next step (FAQ for weather flow)
                         nxt = current_step_data["next_flow"]
                         old_step = flow_state.current_step
                         flow_state.current_step = nxt.get("name")
                         flow_state.flow_data = nxt
                         step_type = nxt.get("type", "unknown")
                         response_text = nxt.get("text", "")
-                        logger.info(f"FLOW_MANAGEMENT: Interpreter-based progression applied - extracted {interp.get('kind')}: {interp.get('value')}")
-                        print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
-                        # Update pending lock
-                        if step_type == 'question':
-                            flow_state.pending_step = flow_state.current_step
-                            flow_state.pending_expected_kind = 'number' if ('phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
-                            flow_state.pending_asked_at = time.time()
-                            flow_state.pending_reask_count = 0
-                        else:
-                            flow_state.pending_step = None
-                        add_agent_response_to_history(flow_state, response_text)
-                        return {"type": step_type, "response": response_text, "flow_state": flow_state}
-
-                    # Heuristics: try to interpret common free-form answers to advance flow instead of falling back
-                    qtext = (current_step_data.get("text") or "").lower()
-                    ur = (user_message or "").lower()
-
-                    def _extract_digits_from_words(t: str) -> str:
-                        words_map = {
-                            "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
-                            "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"
-                        }
-                        parts = re.findall(r"\d|zero|one|two|three|four|five|six|seven|eight|nine", t)
-                        return "".join(words_map.get(p, p) for p in parts)
-
-                    def _extract_quantity(t: str) -> Optional[int]:
-                        m = re.search(r"\b(\d{1,3})\b", t)
-                        if m:
-                            return int(m.group(1))
-                        words_to_num = {
-                            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-                            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-                            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
-                            "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
-                            "nineteen": 19, "twenty": 20
-                        }
-                        for w, v in words_to_num.items():
-                            if f" {w} " in f" {t} ":
-                                return v
-                        return None
-
-                    advanced = False
-                    if "zip" in qtext or "zipcode" in qtext or "zip code" in qtext:
-                        zip_digits = _extract_digits_from_words(ur)
-                        if len(zip_digits) >= 5 and current_step_data.get("next_flow"):
-                            # Proceed to next step (FAQ for weather flow)
-                            nxt = current_step_data["next_flow"]
-                            old_step = flow_state.current_step
-                            flow_state.current_step = nxt.get("name")
-                            flow_state.flow_data = nxt
-                            step_type = nxt.get("type", "unknown")
-                            response_text = nxt.get("text", "")
-                            logger.info(f"FLOW_MANAGEMENT: Heuristic progressed ZIP question to next step {flow_state.current_step}")
-                            print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
-                            add_agent_response_to_history(flow_state, response_text)
-                            advanced = True
-                            return {
-                                "type": step_type,
-                                "response": response_text,
-                                "flow_state": flow_state
-                            }
-
-                    qty = _extract_quantity(ur)
-                    if not advanced and qty is not None and current_step_data.get("next_flow"):
-                        # Proceed to next question in pricing regardless of specific answer bucket
-                        nxt = current_step_data["next_flow"]
-                        old_step = flow_state.current_step
-                        flow_state.current_step = nxt.get("name")
-                        flow_state.flow_data = nxt
-                        step_type = nxt.get("type", "unknown")
-                        response_text = nxt.get("text", "")
-                        logger.info(f"FLOW_MANAGEMENT: Heuristic progressed numeric answer ({qty}) to next step {flow_state.current_step}")
+                        logger.info(f"FLOW_MANAGEMENT: Heuristic progressed ZIP question to next step {flow_state.current_step}")
                         print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
                         add_agent_response_to_history(flow_state, response_text)
+                        advanced = True
                         return {
                             "type": step_type,
                             "response": response_text,
                             "flow_state": flow_state
                         }
 
-                    # If user utterance is too short/stopwordy, re-ask the same question instead of falling back
-                    tokens = re.findall(r"\w+", ur)
-                    if len(tokens) <= 2:
-                        response_text = current_step_data.get("text", "")
-                        add_agent_response_to_history(flow_state, response_text)
-                        logger.info("FLOW_MANAGEMENT: Re-asking current question due to low-information user response")
-                        return {
-                            "type": "question",
-                            "response": response_text,
-                            "flow_state": flow_state
-                        }
-
-                    logger.info("FLOW_MANAGEMENT: ❌ No next step found for question response (after heuristics)")
-                    # Re-ask the same question instead of immediate FAQ
-                    response_text = current_step_data.get("text", "")
-                    flow_state.pending_reask_count = (flow_state.pending_reask_count or 0) + 1
-                    flow_state.pending_asked_at = time.time()
+                qty = _extract_quantity(ur)
+                if not advanced and qty is not None and current_step_data.get("next_flow"):
+                    # Proceed to next question in pricing regardless of specific answer bucket
+                    nxt = current_step_data["next_flow"]
+                    old_step = flow_state.current_step
+                    flow_state.current_step = nxt.get("name")
+                    flow_state.flow_data = nxt
+                    step_type = nxt.get("type", "unknown")
+                    response_text = nxt.get("text", "")
+                    logger.info(f"FLOW_MANAGEMENT: Heuristic progressed numeric answer ({qty}) to next step {flow_state.current_step}")
+                    print_flow_status(room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
                     add_agent_response_to_history(flow_state, response_text)
-                    return {"type": "question", "response": response_text, "flow_state": flow_state}
+                    return {
+                        "type": step_type,
+                        "response": response_text,
+                        "flow_state": flow_state
+                    }
+
+                # If user utterance is too short/stopwordy, re-ask the same question instead of falling back
+                tokens = re.findall(r"\w+", ur)
+                if len(tokens) <= 2:
+                    response_text = current_step_data.get("text", "")
+                    add_agent_response_to_history(flow_state, response_text)
+                    logger.info("FLOW_MANAGEMENT: Re-asking current question due to low-information user response")
+                    return {
+                        "type": "question",
+                        "response": response_text,
+                        "flow_state": flow_state
+                    }
+
+                logger.info("FLOW_MANAGEMENT: ❌ No next step found for question response (after heuristics)")
+                # Re-ask the same question instead of immediate FAQ
+                response_text = current_step_data.get("text", "")
+                flow_state.pending_reask_count = (flow_state.pending_reask_count or 0) + 1
+                flow_state.pending_asked_at = time.time()
+                add_agent_response_to_history(flow_state, response_text)
+                return {"type": "question", "response": response_text, "flow_state": flow_state}
         else:
             logger.info(f"FLOW_MANAGEMENT: Current step is not a question (type: {current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift or answers branch")
 
@@ -3007,24 +2848,22 @@ async def process_flow_message_endpoint(request: ProcessFlowMessageRequest):
 # Template Management Endpoints
 @app.post("/api/refresh_template")
 async def refresh_template():
-    """Refresh the bot template from Alive5 API using TemplateManager"""
+    """Refresh the bot template from Alive5 API using direct API call"""
     try:
-        if not template_manager:
-            raise HTTPException(status_code=500, detail="Template manager not initialized")
+        # Load default template using environment variables
+        default_botchain = os.getenv("A5_BOTCHAIN_NAME", "voice-1")
+        default_org = os.getenv("A5_ORG_NAME", "alive5stage0")
         
-        success = await template_manager.fetch_and_store_template()
+        # Use the same function as initialization
+        result = await initialize_bot_template_with_config(default_botchain, default_org)
         
-        if success:
-            # Update global bot_template for backward compatibility
-            global bot_template
-            bot_template = template_manager.template_data
-            
+        if result:
             return {
                 "status": "success",
                 "message": "Template refreshed successfully",
-                "template_version": bot_template.get("code", "unknown"),
-                "template_hash": template_manager.template_hash[:8] + "...",
-                "last_updated": template_manager.last_updated.isoformat()
+                "template_version": result.get("code", "unknown"),
+                "template_hash": "direct_api_call",
+                "last_updated": datetime.now().isoformat()
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to refresh template")
@@ -3058,43 +2897,34 @@ async def get_template_info():
 
 @app.get("/api/template_status")
 async def get_template_status():
-    """Get current template status and polling info"""
-    if not template_manager:
-        return {
-            "status": "not_initialized",
-            "message": "Template manager not initialized"
-        }
-    
-    status = template_manager.get_status()
-    
-    # Add additional info
-    status.update({
+    """Get current template status"""
+    return {
+        "status": "loaded" if bot_template else "not_loaded",
         "template_available": bot_template is not None,
-        "available_intents": list(bot_template.get("data", {}).keys()) if bot_template else []
-    })
-    
-    return status
+        "template_loaded": bot_template is not None,
+        "available_intents": list(bot_template.get("data", {}).keys()) if bot_template else [],
+        "template_size": len(json.dumps(bot_template)) if bot_template else 0,
+        "last_updated": datetime.now().isoformat() if bot_template else None
+    }
 
 @app.post("/api/force_template_update")
 async def force_template_update():
     """Manually trigger template update (POST method)"""
-    if not template_manager:
-        raise HTTPException(status_code=500, detail="Template manager not initialized")
-    
     try:
-        success = await template_manager.fetch_and_store_template()
+        # Load default template using environment variables
+        default_botchain = os.getenv("A5_BOTCHAIN_NAME", "voice-1")
+        default_org = os.getenv("A5_ORG_NAME", "alive5stage0")
         
-        if success:
-            # Update global bot_template for backward compatibility
-            global bot_template
-            bot_template = template_manager.template_data
-            
+        # Use the same function as initialization
+        result = await initialize_bot_template_with_config(default_botchain, default_org)
+        
+        if result:
             return {
                 "success": True,
                 "message": "Template updated successfully",
                 "timestamp": datetime.now().isoformat(),
-                "template_hash": template_manager.template_hash[:8] + "...",
-                "last_updated": template_manager.last_updated.isoformat()
+                "template_hash": "direct_api_call",
+                "last_updated": datetime.now().isoformat()
             }
         else:
             return {
@@ -3110,23 +2940,21 @@ async def force_template_update():
 @app.get("/api/force_template_update")
 async def force_template_update_get():
     """Manually trigger template update (GET method for easy browser access)"""
-    if not template_manager:
-        raise HTTPException(status_code=500, detail="Template manager not initialized")
-    
     try:
-        success = await template_manager.fetch_and_store_template()
+        # Load default template using environment variables
+        default_botchain = os.getenv("A5_BOTCHAIN_NAME", "voice-1")
+        default_org = os.getenv("A5_ORG_NAME", "alive5stage0")
         
-        if success:
-            # Update global bot_template for backward compatibility
-            global bot_template
-            bot_template = template_manager.template_data
-            
+        # Use the same function as initialization
+        result = await initialize_bot_template_with_config(default_botchain, default_org)
+        
+        if result:
             return {
                 "success": True,
                 "message": "Template updated successfully",
                 "timestamp": datetime.now().isoformat(),
-                "template_hash": template_manager.template_hash[:8] + "...",
-                "last_updated": template_manager.last_updated.isoformat()
+                "template_hash": "direct_api_call",
+                "last_updated": datetime.now().isoformat()
             }
         else:
             return {
