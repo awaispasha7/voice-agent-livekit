@@ -715,6 +715,101 @@ def llm_extract_answer(question_text: str, user_text: str, parser_context: Dict[
     return {"status": "unclear", "kind": "text", "value": user_text, "confidence": 0.0}
 
 
+async def smart_message_processor(user_message: str, current_flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Smart LLM processor that analyzes every user message to determine:
+    - Intent detection
+    - Context understanding
+    - Appropriate response strategy
+    - Whether to continue current flow or switch
+    """
+    try:
+        # Get current flow context
+        current_flow = current_flow_context.get("current_flow") if current_flow_context else None
+        current_step = current_flow_context.get("current_step") if current_flow_context else None
+        current_step_type = current_flow_context.get("current_step_type") if current_flow_context else None
+        
+        # Create context-aware prompt
+        context_info = ""
+        if current_flow and current_step:
+            context_info = f"""
+CURRENT CONVERSATION CONTEXT:
+- Current Flow: {current_flow}
+- Current Step: {current_step}
+- Step Type: {current_step_type}
+- User is responding to a question or in a conversation flow
+"""
+        
+        # Get available intents dynamically from bot template
+        available_intents = []
+        if bot_template and bot_template.get("data"):
+            for flow_key, flow_data in bot_template["data"].items():
+                if flow_data.get("type") == "intent_bot":
+                    intent_name = flow_data.get("name", flow_key)
+                    available_intents.append(intent_name)
+        
+        intents_list = ", ".join(available_intents) if available_intents else "none available"
+        
+        prompt = f"""You are a smart conversation analyzer. Analyze the user's message and determine the best response strategy.
+
+{context_info}
+
+USER MESSAGE: "{user_message}"
+
+AVAILABLE INTENTS: {intents_list}
+
+ANALYSIS TASKS:
+1. INTENT DETECTION: Does this message indicate a clear intent from the available list?
+2. CONTEXT UNDERSTANDING: Is this a response to a question, filler/stuttering, or a new topic?
+3. RESPONSE STRATEGY: What should the agent do next?
+
+RESPONSE FORMAT (JSON):
+{{
+    "intent_detected": "intent_name|none",
+    "message_type": "intent_request|question_response|filler|unclear|new_topic",
+    "confidence": "high|medium|low",
+    "action": "continue_flow|switch_intent|ask_clarification|ignore|respond_naturally",
+    "reasoning": "brief explanation of the analysis"
+}}
+
+EXAMPLES:
+- "Yeah, I'm looking for someone to help" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Clear request for human help"}}
+- "Yeah" → {{"intent_detected": "none", "message_type": "question_response", "confidence": "medium", "action": "continue_flow", "reasoning": "Simple affirmation to current question"}}
+- "Uh, I, uh, I was asking" → {{"intent_detected": "none", "message_type": "filler", "confidence": "high", "action": "ignore", "reasoning": "Stuttering/filler, not meaningful content"}}
+- "Can I speak with someone?" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Direct request for human agent"}}
+
+Respond with ONLY the JSON object, no other text."""
+
+        logger.info(f"🧠 SMART PROCESSOR: Analyzing message: '{user_message}'")
+        
+        response = await call_llm(prompt, max_tokens=200)
+        logger.info(f"🧠 SMART PROCESSOR: LLM response: {response}")
+        
+        # Parse JSON response
+        try:
+            analysis = json.loads(response.strip())
+            logger.info(f"🧠 SMART PROCESSOR: Analysis result: {analysis}")
+            return analysis
+        except json.JSONDecodeError:
+            logger.error(f"🧠 SMART PROCESSOR: Failed to parse JSON: {response}")
+            return {
+                "intent_detected": "none",
+                "message_type": "unclear",
+                "confidence": "low",
+                "action": "ask_clarification",
+                "reasoning": "Failed to parse LLM response"
+            }
+            
+    except Exception as e:
+        logger.error(f"🧠 SMART PROCESSOR: Error: {e}")
+        return {
+            "intent_detected": "none",
+            "message_type": "unclear",
+            "confidence": "low",
+            "action": "ask_clarification",
+            "reasoning": f"Error in processing: {e}"
+        }
+
 async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, Any]]:
     """Detect flow intent using LLM - simple and direct approach"""
     try:
@@ -730,7 +825,7 @@ async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, A
         
         for flow_key, flow_data in bot_template["data"].items():
             if flow_data.get("type") == "intent_bot":
-                intent_name = flow_data.get("text", "")
+                intent_name = flow_data.get("name", flow_key)  # Use name instead of text
                 if intent_name:
                     available_intents.append(intent_name)
                     intent_mapping[intent_name] = {
@@ -761,11 +856,11 @@ ANALYSIS STEPS:
 
 SPECIAL CASES:
 - Greetings like "Hello", "Hi", "How are you?" → respond with "greeting"
-- Agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone", "real person", "human agent", "talk to someone", "can I speak with", "I want to speak with", "I need to speak with", "get me someone", "transfer me", "put me through" → match with "agent" (lowercase)
-- Pricing questions like "cost", "price", "plans", "how much" → match with "pricing" (lowercase)
-- Weather questions → match with "weather"
+- Agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone", "real person", "human agent", "talk to someone", "can I speak with", "I want to speak with", "I need to speak with", "get me someone", "transfer me", "put me through" → match with the appropriate intent from the available list
+- Pricing questions like "cost", "price", "plans", "how much" → match with the appropriate intent from the available list
+- Weather questions → match with the appropriate intent from the available list
 
-CRITICAL: If the user is asking to speak with a human, agent, or person in ANY way, they want the "agent" intent.
+CRITICAL: If the user is asking to speak with a human, agent, or person in ANY way, they want the "agent" intent (if available in the list).
 
 IMPORTANT: The user said: "{user_message}"
 Think about what they really want. Are they asking to speak to a person? Do they want pricing information? Are they asking about weather?
@@ -773,16 +868,16 @@ Think about what they really want. Are they asking to speak to a person? Do they
 Respond with ONLY the exact intent name from the list above (case-insensitive), "greeting", or "none" if no intent matches.
 
 Examples:
-- "Can I speak with someone over the phone?" → agent (they want to talk to a human)
-- "Can I speak with someone, please?" → agent (they want human help)
-- "I wanna talk to a real person" → agent (they want human help)
-- "get me connected with someone else" → agent (they want human help)
-- "I need to speak with an agent" → agent (they want human help)
-- "Can you transfer me to someone?" → agent (they want human help)
-- "What's the weather like?" → weather
-- "How much does it cost?" → pricing
+- "Can I speak with someone over the phone?" → agent (if available, they want to talk to a human)
+- "Can I speak with someone, please?" → agent (if available, they want human help)
+- "I wanna talk to a real person" → agent (if available, they want human help)
+- "get me connected with someone else" → agent (if available, they want human help)
+- "I need to speak with an agent" → agent (if available, they want human help)
+- "Can you transfer me to someone?" → agent (if available, they want human help)
+- "What's the weather like?" → weather (if available)
+- "How much does it cost?" → pricing (if available)
 - "Hello there" → greeting
-- "I need help with billing" → agent (they want human help)
+- "I need help with billing" → agent (if available, they want human help)
 """
         
         logger.info(f"INTENT_DETECTION: Analyzing message '{user_message}' for intents: {intent_list}")
@@ -1802,10 +1897,31 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             print(f"🚨 FAQ BOT CALLED: No intent found for '{user_message}'")
             return await get_faq_response(user_message, flow_state=flow_state)
     
+    # SMART MESSAGE PROCESSING: Use LLM to analyze every user message
+    current_flow_context = {
+        "current_flow": flow_state.current_flow,
+        "current_step": flow_state.current_step,
+        "current_step_type": flow_state.flow_data.get("type") if flow_state.flow_data else None
+    }
+    
+    # Process message with smart LLM analyzer
+    message_analysis = await smart_message_processor(user_message, current_flow_context)
+    logger.info(f"🧠 SMART ANALYSIS: {message_analysis}")
+    
+    # Handle based on analysis
+    if message_analysis.get("action") == "ignore":
+        logger.info(f"🧠 IGNORING MESSAGE: {message_analysis.get('reasoning')}")
+        return {
+            "type": "ignored",
+            "response": "",
+            "flow_state": flow_state
+        }
+    
     # If we're already in a flow, check if this is a response to a question or greeting
     if flow_state.current_flow and flow_state.current_step:
         logger.info(f"FLOW_MANAGEMENT: Already in flow {flow_state.current_flow}, step {flow_state.current_step}")
         logger.info(f"FLOW_MANAGEMENT: Flow data: {flow_state.flow_data}")
+        
         
         # Check if current step is a question, greeting, or message and user provided a response
         current_step_data = flow_state.flow_data
@@ -1883,8 +1999,8 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 # Special case: If we're in a greeting flow and user mentions something that should trigger intent detection
                 # but it's not detected as a specific intent, complete the greeting flow and allow intent detection
                 if step_type == "greeting" and not matching_intent:
-                    # Check if user message contains keywords that suggest they want to discuss a topic
-                    intent_keywords = ["marketing", "sales", "campaign", "strategy", "business", "service", "help", "information", "about"]
+                    # Check if user message contains keywords that suggest they want to discuss a topic or speak with someone
+                    intent_keywords = ["marketing", "sales", "campaign", "strategy", "business", "service", "help", "information", "about", "speak with", "talk to", "connect", "agent", "human", "someone", "person"]
                     if any(keyword in user_message.lower() for keyword in intent_keywords):
                         logger.info("FLOW_MANAGEMENT: User mentioned topic keywords during greeting flow, completing greeting and allowing intent detection")
                         # Complete the greeting flow
@@ -1939,6 +2055,35 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                                     "response": response_text,
                                     "next_step": matching_intent["flow_data"].get("next_flow")
                                 }
+                
+                # No intent shift detected, but let's be more aggressive about intent detection ONLY for greeting flows
+                # If we're in a greeting flow and the user says something that sounds like they want to discuss a topic,
+                # force intent detection even if the LLM didn't detect it initially
+                if step_type == "greeting" and not matching_intent:
+                    # Check for agent-related phrases more aggressively
+                    agent_phrases = ["speak with", "talk to", "connect", "agent", "human", "someone", "person", "over the phone", "else"]
+                    if any(phrase in user_message.lower() for phrase in agent_phrases):
+                        logger.info("FLOW_MANAGEMENT: Detected agent-related phrases in greeting flow, forcing agent intent detection")
+                        # Force agent intent
+                        matching_intent = {
+                            "type": "intent_bot",
+                            "intent": "agent",
+                            "flow_key": "Flow_4",
+                            "flow_data": bot_template["data"]["Flow_4"] if bot_template and bot_template.get("data", {}).get("Flow_4") else None
+                        }
+                        if matching_intent["flow_data"]:
+                            logger.info(f"FLOW_MANAGEMENT: Forced agent intent detection for: '{user_message}'")
+                            print_flow_status(room_name, flow_state, "🔄 FORCED AGENT INTENT", 
+                                            f"From: {flow_state.current_flow} → To: {matching_intent['flow_key']} | Intent: {matching_intent['intent']}")
+                            
+                            # Update flow state to agent intent
+                            flow_state.current_flow = matching_intent["flow_key"]
+                            flow_state.current_step = matching_intent["flow_data"]["name"]
+                            flow_state.flow_data = matching_intent["flow_data"]
+                            auto_save_flow_state()
+                            
+                            # Execute agent bot
+                            return await execute_agent_bot(flow_state, user_message)
                 
                 # No intent shift detected, continue with current flow
                 logger.info(f"FLOW_MANAGEMENT: No intent shift detected, continuing with {step_type} flow")
