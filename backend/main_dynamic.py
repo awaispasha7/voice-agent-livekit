@@ -1928,7 +1928,39 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 
                 # No intent shift detected, continue with current flow
                 logger.info(f"FLOW_MANAGEMENT: No intent shift detected, continuing with {step_type} flow")
-                # Process the user response and move to next step
+                
+                # For greeting steps, automatically progress to next step if available
+                if step_type == "greeting" and current_step_data.get("next_flow"):
+                    logger.info("FLOW_MANAGEMENT: Greeting step - automatically progressing to next step")
+                    next_step_data = current_step_data["next_flow"]
+                    old_step = flow_state.current_step
+                    flow_state.current_step = next_step_data.get("name")
+                    flow_state.flow_data = next_step_data
+                    step_type = next_step_data.get("type", "unknown")
+                    
+                    logger.info(f"FLOW_MANAGEMENT: GREETING STEP TRANSITION - From: {old_step} → To: {next_step_data.get('name')} | Type: {step_type}")
+                    print_flow_status(room_name, flow_state, f"➡️ GREETING STEP TRANSITION", 
+                                    f"From: {old_step} → To: {next_step_data.get('name')} | Type: {step_type} | Response: '{next_step_data.get('text', '')}'")
+                    
+                    # Handle different step types
+                    response_text = next_step_data.get("text", "")
+                    # Set pending question lock if next is a question
+                    if step_type == 'question':
+                        flow_state.pending_step = next_step_data.get('name')
+                        flow_state.pending_expected_kind = 'number' if ('phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
+                        flow_state.pending_asked_at = time.time()
+                    
+                    add_agent_response_to_history(flow_state, response_text)
+                    auto_save_flow_state()
+                    
+                    return {
+                        "type": "flow_continued",
+                        "response": response_text,
+                        "next_step": next_step_data.get("next_flow"),
+                        "flow_state": flow_state
+                    }
+                
+                # Process the user response and move to next step using get_next_flow_step
                 next_step = get_next_flow_step(flow_state, user_message)
                 if next_step:
                     logger.info(f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
@@ -2006,8 +2038,26 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                                     "next_step": matching_intent["flow_data"].get("next_flow")
                                 }
                         else:
-                            # No intent detected, provide a helpful response
-                            response_text = "I'm here to help you with information about our business communication services. What would you like to know about?"
+                            # No intent detected, check if we should progress to next step in greeting flow
+                            if current_step_data.get("next_flow"):
+                                logger.info("FLOW_MANAGEMENT: No intent detected, progressing to next step in greeting flow")
+                                next_step_data = current_step_data["next_flow"]
+                                flow_state.current_step = next_step_data.get("name")
+                                flow_state.flow_data = next_step_data
+                                auto_save_flow_state()
+                                
+                                response_text = next_step_data.get("text", "")
+                                add_agent_response_to_history(flow_state, response_text)
+                                
+                                return {
+                                    "type": "flow_continued",
+                                    "response": response_text,
+                                    "next_step": next_step_data.get("next_flow"),
+                                    "flow_state": flow_state
+                                }
+                            else:
+                                # No next step in greeting flow, provide a helpful response
+                                response_text = "I'm here to help you with information about our business communication services. What would you like to know about?"
                             add_agent_response_to_history(flow_state, response_text)
                             auto_save_flow_state()
                             
