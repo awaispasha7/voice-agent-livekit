@@ -1705,18 +1705,60 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         
         if matching_intent:
             print(f"✅ INTENT FOUND: {matching_intent}")
-            # Handle special greeting case
-            if matching_intent.get("type") == "greeting":
-                response_text = "Hi there! I'm here to help you with the information you need about our business communication services, including SMS texting, live chat, chatbots, and more. How can I assist you today?"
-                add_agent_response_to_history(flow_state, response_text)
-                auto_save_flow_state()  # Save after greeting response
-                logger.info("FLOW_MANAGEMENT: Greeting detected, providing friendly response")
-                return {
-                    "type": "message",
-                    "response": response_text,
-                    "flow_state": flow_state
-                }
             
+            # Handle greeting intent by finding the greeting flow in template
+            if matching_intent.get("type") == "greeting":
+                logger.info("FLOW_MANAGEMENT: Greeting intent detected, looking for greeting flow in template")
+                # Find the greeting flow in the template
+                greeting_flow_key = None
+                greeting_flow_data = None
+                
+                if bot_template and bot_template.get("data"):
+                    for flow_key, flow_data in bot_template["data"].items():
+                        if flow_data.get("type") == "greeting":
+                            greeting_flow_key = flow_key
+                            greeting_flow_data = flow_data
+                            logger.info(f"FLOW_MANAGEMENT: Found greeting flow: {flow_key}")
+                            break
+                
+                if greeting_flow_key and greeting_flow_data:
+                    # Set up the greeting flow
+                    flow_state.current_flow = greeting_flow_key
+                    flow_state.current_step = greeting_flow_data.get("name", greeting_flow_key)
+                    flow_state.flow_data = greeting_flow_data
+                    auto_save_flow_state()
+                    
+                    logger.info(f"FLOW_MANAGEMENT: ✅ GREETING FLOW STARTED - {greeting_flow_key}")
+                    print_flow_status(room_name, flow_state, "🎉 GREETING FLOW STARTED", 
+                                    f"Flow: {greeting_flow_key} | Response: '{greeting_flow_data.get('text', '')}'")
+                    
+                    # Use the greeting flow response
+                    response_text = greeting_flow_data.get("text", "")
+                    if not response_text or response_text == "N/A":
+                        response_text = "Hello! How can I help you today?"
+                    
+                    add_agent_response_to_history(flow_state, response_text)
+                    
+                    return {
+                        "type": "flow_started",
+                        "flow_name": "greeting",
+                        "response": response_text,
+                        "next_step": greeting_flow_data.get("next_flow")
+                    }
+                else:
+                    logger.warning("FLOW_MANAGEMENT: Greeting intent detected but no greeting flow found in template")
+                    # Fallback to hardcoded greeting to keep system failsafe
+                    response_text = "Hi there! I'm here to help you with the information you need about our business communication services, including SMS texting, live chat, chatbots, and more. How can I assist you today?"
+                    add_agent_response_to_history(flow_state, response_text)
+                    auto_save_flow_state()  # Save after greeting response
+                    logger.info("FLOW_MANAGEMENT: Greeting detected, providing hardcoded failsafe response")
+                    return {
+                        "type": "message",
+                        "response": response_text,
+                        "flow_state": flow_state
+                    }
+            
+            # Handle regular intent flows
             logger.info(f"FLOW_MANAGEMENT: ✅ INTENT DETECTED - {matching_intent['intent']} -> {matching_intent['flow_key']}")
             logger.info(f"FLOW_MANAGEMENT: Flow data: {matching_intent['flow_data']}")
             
