@@ -758,25 +758,32 @@ USER MESSAGE: "{user_message}"
 
 AVAILABLE INTENTS: {intents_list}
 
-ANALYSIS TASKS:
-1. INTENT DETECTION: Does this message indicate a clear intent from the available list?
-2. CONTEXT UNDERSTANDING: Is this a response to a question, filler/stuttering, or a new topic?
-3. RESPONSE STRATEGY: What should the agent do next?
+         ANALYSIS TASKS:
+         1. INTENT DETECTION: Does this message indicate a clear intent from the available list?
+         2. CONTEXT UNDERSTANDING: Is this a response to a question, filler/stuttering, simple greeting, or a new topic?
+         3. RESPONSE STRATEGY: What should the agent do next?
+         
+         IMPORTANT: Simple greetings like "Hi", "Hi there", "Hello" should be treated as natural conversation flow, not filtered out. Let the flow continue naturally.
 
 RESPONSE FORMAT (JSON):
 {{
     "intent_detected": "intent_name|none",
-    "message_type": "intent_request|question_response|filler|unclear|new_topic",
+    "message_type": "intent_request|question_response|filler|unclear|new_topic|greeting",
     "confidence": "high|medium|low",
     "action": "continue_flow|switch_intent|ask_clarification|ignore|respond_naturally",
     "reasoning": "brief explanation of the analysis"
 }}
 
-EXAMPLES:
-- "Yeah, I'm looking for someone to help" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Clear request for human help"}}
-- "Yeah" → {{"intent_detected": "none", "message_type": "question_response", "confidence": "medium", "action": "continue_flow", "reasoning": "Simple affirmation to current question"}}
-- "Uh, I, uh, I was asking" → {{"intent_detected": "none", "message_type": "filler", "confidence": "high", "action": "ignore", "reasoning": "Stuttering/filler, not meaningful content"}}
-- "Can I speak with someone?" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Direct request for human agent"}}
+         EXAMPLES:
+         - "Yeah, I'm looking for someone to help" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Clear request for human help"}}
+         - "Yeah" → {{"intent_detected": "none", "message_type": "question_response", "confidence": "medium", "action": "continue_flow", "reasoning": "Simple affirmation to current question"}}
+         - "Hi" → {{"intent_detected": "none", "message_type": "greeting", "confidence": "high", "action": "continue_flow", "reasoning": "Simple greeting, let flow continue naturally"}}
+         - "Hi there" → {{"intent_detected": "none", "message_type": "greeting", "confidence": "high", "action": "continue_flow", "reasoning": "Simple greeting, let flow continue naturally"}}
+         - "Uh, I, uh, I was asking" → {{"intent_detected": "none", "message_type": "filler", "confidence": "high", "action": "ignore", "reasoning": "Stuttering/filler, not meaningful content"}}
+         - "Can I speak with someone?" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Direct request for human agent"}}
+         - "Can I speak with someone over the phone?" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Clear request to speak with human agent"}}
+         - "Connect me to an agent" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Direct request for agent connection"}}
+         - "I'm looking for someone to speak" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Request to speak with someone"}}
 
 Respond with ONLY the JSON object, no other text."""
 
@@ -862,27 +869,29 @@ ANALYSIS STEPS:
 4. Consider the meaning and intent behind the words, not just exact matches
 
 SPECIAL CASES:
-- Greetings like "Hello", "Hi", "How are you?" → respond with "greeting"
-- Agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone", "real person", "human agent", "talk to someone", "can I speak with", "I want to speak with", "I need to speak with", "get me someone", "transfer me", "put me through" → match with the appropriate intent from the available list
-- Pricing questions like "cost", "price", "plans", "how much" → match with the appropriate intent from the available list
-- Weather questions → match with the appropriate intent from the available list
+- Simple greetings like "Hello", "Hi", "Hi there", "How are you?" → respond with "greeting" (let the flow continue naturally)
+- Agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone", "real person", "human agent", "talk to someone", "can I speak with", "I want to speak with", "I need to speak with", "get me someone", "transfer me", "put me through", "connect me to an agent", "can I speak to someone", "I'm looking for someone to speak", "can you connect me with someone" → match with "agent" intent (if available)
+- Sales requests like "sales information", "sales related", "sales", "pricing", "cost", "price" → match with "sales" intent (if available)
+- Marketing requests like "marketing information", "marketing", "campaigns", "advertising" → match with "marketing" intent (if available)
 
-CRITICAL: If the user is asking to speak with a human, agent, or person in ANY way, they want the "agent" intent (if available in the list).
+CRITICAL RULES:
+1. If the user is asking to speak with a human, agent, or person in ANY way, they want the "agent" intent (if available in the list).
+2. If the user mentions "sales" or "pricing" or "cost", they want the "sales" intent (if available).
+3. If the user mentions "marketing" or "campaigns", they want the "marketing" intent (if available).
 
 IMPORTANT: The user said: "{user_message}"
-Think about what they really want. Are they asking to speak to a person? Do they want pricing information? Are they asking about weather?
+Think about what they really want. Are they asking to speak to a person? Do they want sales information? Do they want marketing information?
 
 Respond with ONLY the exact intent name from the list above (case-insensitive), "greeting", or "none" if no intent matches.
 
 Examples:
 - "Can I speak with someone over the phone?" → agent (if available, they want to talk to a human)
 - "Can I speak with someone, please?" → agent (if available, they want human help)
-- "I wanna talk to a real person" → agent (if available, they want human help)
-- "get me connected with someone else" → agent (if available, they want human help)
-- "I need to speak with an agent" → agent (if available, they want human help)
-- "Can you transfer me to someone?" → agent (if available, they want human help)
-- "What's the weather like?" → weather (if available)
-- "How much does it cost?" → pricing (if available)
+- "Connect me to an agent" → agent (if available, they want human help)
+- "I'm looking for someone to speak" → agent (if available, they want human help)
+- "Can you connect me with someone?" → agent (if available, they want human help)
+- "Sales information, please" → sales (if available)
+- "Can I get the marketing information?" → marketing (if available)
 - "Hello there" → greeting
 - "I need help with billing" → agent (if available, they want human help)
 """
@@ -2068,7 +2077,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 # force intent detection even if the LLM didn't detect it initially
                 if step_type == "greeting" and not matching_intent:
                     # Check for agent-related phrases more aggressively
-                    agent_phrases = ["speak with", "talk to", "connect", "agent", "human", "someone", "person", "over the phone", "else"]
+                    agent_phrases = ["speak with", "talk to", "connect", "agent", "human", "someone", "person", "over the phone", "else", "can i speak", "i want to speak", "i need to speak", "get me someone", "transfer me", "put me through", "connect me to", "looking for someone to speak", "can you connect me with someone"]
                     if any(phrase in user_message.lower() for phrase in agent_phrases):
                         logger.info("FLOW_MANAGEMENT: Detected agent-related phrases in greeting flow, forcing agent intent detection")
                         # Force agent intent

@@ -561,8 +561,10 @@ class FlowBasedAssistant(Agent):
             greetings = ["hi", "hello", "hey", "good morning", "good evening"]
             byes = ["bye", "goodbye", "see you", "talk to you later", "that\'s all", "thanks, bye"]
             affirmations = ["okay", "ok", "sounds good", "that sounds great", "great", "thanks", "thank you"]
+            
+            # Don't add polite replies for simple greetings - let the backend handle them naturally
             if any(lower_text.startswith(g) for g in greetings):
-                polite_reply = "Hello!"
+                polite_reply = None  # Let the backend handle greetings naturally
             elif any(b in lower_text for b in byes):
                 polite_reply = "Thanks for calling Alive5. Have a great day!"
             elif any(a in lower_text for a in affirmations):
@@ -611,11 +613,19 @@ class FlowBasedAssistant(Agent):
             except Exception as _e:
                 logger.warning(f"Failed to publish intent update: {_e}")
 
-            # Clarify when not understood
+            # Clarify when not understood - but don't intercept simple greetings
             if rtype in ("error", "fallback") and self._last_question_text:
-                if self._clarify_count < 2:
-                    response_text = f"Sorry, I didn't catch that. {self._last_question_text}"
-                    self._clarify_count += 1
+                # Check if this is a simple greeting that should be allowed through
+                user_text_lower = user_text.lower().strip()
+                simple_greetings = ["hi", "hello", "hi there", "hey", "good morning", "good afternoon", "good evening"]
+                
+                if not any(greeting in user_text_lower for greeting in simple_greetings):
+                    if self._clarify_count < 2:
+                        response_text = f"Sorry, I didn't catch that. {self._last_question_text}"
+                        self._clarify_count += 1
+                else:
+                    # For simple greetings, let the backend response through without modification
+                    logger.info(f"🎤 Allowing simple greeting through: '{user_text}'")
             else:
                 self._clarify_count = 0
 
@@ -625,8 +635,14 @@ class FlowBasedAssistant(Agent):
                 response_text = response_text.replace("I'm not Scott", "I'm Scott").replace("i'm not scott", "I'm Scott")
                 rlow = response_text.lower().strip()
             if rtype != "conversation_end" and polite_reply and not response_text.strip().endswith("?"):
+                # Don't add polite replies for simple greetings when backend returns error/fallback
                 if not (rlow.startswith("hello") or "how can i help" in rlow):
-                    response_text = f"{polite_reply} {response_text}".strip()
+                    # Check if this is a simple greeting that should be handled naturally
+                    user_text_lower = user_text.lower().strip()
+                    simple_greetings = ["hi", "hello", "hi there", "hey", "good morning", "good afternoon", "good evening"]
+                    
+                    if not any(greeting in user_text_lower for greeting in simple_greetings):
+                        response_text = f"{polite_reply} {response_text}".strip()
 
             # Track last question
             if rtype == "question" or response_text.strip().endswith("?"):
