@@ -761,9 +761,11 @@ ANALYSIS STEPS:
 
 SPECIAL CASES:
 - Greetings like "Hello", "Hi", "How are you?" → respond with "greeting"
-- Agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone", "real person", "human agent", "talk to someone" → match with "agent" (lowercase)
+- Agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone", "real person", "human agent", "talk to someone", "can I speak with", "I want to speak with", "I need to speak with", "get me someone", "transfer me", "put me through" → match with "agent" (lowercase)
 - Pricing questions like "cost", "price", "plans", "how much" → match with "pricing" (lowercase)
 - Weather questions → match with "weather"
+
+CRITICAL: If the user is asking to speak with a human, agent, or person in ANY way, they want the "agent" intent.
 
 IMPORTANT: The user said: "{user_message}"
 Think about what they really want. Are they asking to speak to a person? Do they want pricing information? Are they asking about weather?
@@ -772,8 +774,11 @@ Respond with ONLY the exact intent name from the list above (case-insensitive), 
 
 Examples:
 - "Can I speak with someone over the phone?" → agent (they want to talk to a human)
+- "Can I speak with someone, please?" → agent (they want human help)
 - "I wanna talk to a real person" → agent (they want human help)
 - "get me connected with someone else" → agent (they want human help)
+- "I need to speak with an agent" → agent (they want human help)
+- "Can you transfer me to someone?" → agent (they want human help)
 - "What's the weather like?" → weather
 - "How much does it cost?" → pricing
 - "Hello there" → greeting
@@ -1822,11 +1827,14 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             # Handle greeting and message steps differently from question steps
             if step_type in ["greeting", "message"]:
                 logger.info(f"FLOW_MANAGEMENT: Processing {step_type} step response")
+                print(f"🎯 GREETING FLOW: Processing user message: '{user_message}'")
                 # For greeting/message steps, check if user wants to continue to next step or change intent
                 
                 # Check for intent shift - if user mentions something that matches an intent, switch flows
                 # But don't detect greeting intents when we're already in a greeting flow
+                print(f"🎯 GREETING FLOW: Calling intent detection for: '{user_message}'")
                 matching_intent = await detect_flow_intent_with_llm(user_message)
+                print(f"🎯 GREETING FLOW: Intent detection result: {matching_intent}")
                 if matching_intent and matching_intent.get("type") != "greeting":
                     logger.info(f"FLOW_MANAGEMENT: Intent shift detected from {step_type} to {matching_intent['intent']}")
                     print_flow_status(room_name, flow_state, "🔄 INTENT SHIFT DETECTED", 
