@@ -268,6 +268,11 @@ class FlowBasedLLM(llm.LLM):
                             response_text = response_text or "I'm here to help!"
                             logger.info(f"🔧 Error response: '{response_text}'")
                             return {"text": response_text, "type": "error"}
+                        
+                        if ftype == "agent_handoff":
+                            response_text = response_text or "I'm connecting you with a human agent. Please hold on."
+                            logger.info(f"🔧 Agent handoff response: '{response_text}'")
+                            return {"text": response_text, "type": "agent_handoff"}
                     
                     # Fallback to generic response
                     logger.warning("🔧 No valid flow result found, using fallback")

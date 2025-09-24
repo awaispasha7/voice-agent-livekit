@@ -1678,12 +1678,16 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     global bot_template
     
     # Check if we need to load template with custom configuration
-    if botchain_name and org_name:
-        logger.info(f"FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name}")
+    if botchain_name:
+        logger.info(f"FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name or 'default'}")
+        print(f"🔧 FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name or 'default'}")
         try:
-            await initialize_bot_template_with_config(botchain_name, org_name)
+            await initialize_bot_template_with_config(botchain_name, org_name or "alive5stage0")
+            logger.info(f"FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
+            print(f"✅ FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
         except Exception as e:
             logger.error(f"FLOW_MANAGEMENT: Error loading template with custom config: {e}")
+            print(f"❌ FLOW_MANAGEMENT: Error loading template with custom config: {e}")
             return {
                 "status": "error",
                 "message": "Failed to load bot configuration",
@@ -1697,6 +1701,10 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     if bot_template is None:
         logger.warning("FLOW_MANAGEMENT: Bot template not loaded, attempting to initialize...")
         print("⚠️ BOT TEMPLATE NOT LOADED - ATTEMPTING INITIALIZATION")
+    else:
+        current_botchain = template_manager.a5_botchain_name if template_manager else "unknown"
+        logger.info(f"FLOW_MANAGEMENT: Using botchain: {current_botchain}")
+        print(f"🔧 FLOW_MANAGEMENT: Using botchain: {current_botchain}")
         try:
             await initialize_bot_template()
             if bot_template is None:
