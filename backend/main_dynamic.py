@@ -761,21 +761,23 @@ ANALYSIS STEPS:
 
 SPECIAL CASES:
 - Greetings like "Hello", "Hi", "How are you?" → respond with "greeting"
-- Agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone" → match with "Agent"
-- Pricing questions like "cost", "price", "plans", "how much" → match with "Pricing"
+- Agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone", "real person", "human agent", "talk to someone" → match with "agent" (lowercase)
+- Pricing questions like "cost", "price", "plans", "how much" → match with "pricing" (lowercase)
 - Weather questions → match with "weather"
 
 IMPORTANT: The user said: "{user_message}"
 Think about what they really want. Are they asking to speak to a person? Do they want pricing information? Are they asking about weather?
 
-Respond with ONLY the exact intent name from the list above, "greeting", or "none" if no intent matches.
+Respond with ONLY the exact intent name from the list above (case-insensitive), "greeting", or "none" if no intent matches.
 
 Examples:
-- "Can I speak with someone over the phone?" → Agent (they want to talk to a human)
+- "Can I speak with someone over the phone?" → agent (they want to talk to a human)
+- "I wanna talk to a real person" → agent (they want human help)
+- "get me connected with someone else" → agent (they want human help)
 - "What's the weather like?" → weather
-- "How much does it cost?" → Pricing
+- "How much does it cost?" → pricing
 - "Hello there" → greeting
-- "I need help with billing" → Agent (they want human help)
+- "I need help with billing" → agent (they want human help)
 """
         
         logger.info(f"INTENT_DETECTION: Analyzing message '{user_message}' for intents: {intent_list}")
