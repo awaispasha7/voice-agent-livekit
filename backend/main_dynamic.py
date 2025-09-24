@@ -1706,68 +1706,11 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         if matching_intent:
             print(f"✅ INTENT FOUND: {matching_intent}")
             
-            # Handle greeting intent by finding the greeting flow in template
+            # Skip greeting intent detection - greeting is handled by worker
             if matching_intent.get("type") == "greeting":
-                logger.info("FLOW_MANAGEMENT: Greeting intent detected, looking for greeting flow in template")
-                # Find the greeting flow in the template
-                greeting_flow_key = None
-                greeting_flow_data = None
-                
-                if bot_template and bot_template.get("data"):
-                    for flow_key, flow_data in bot_template["data"].items():
-                        if flow_data.get("type") == "greeting":
-                            greeting_flow_key = flow_key
-                            greeting_flow_data = flow_data
-                            logger.info(f"FLOW_MANAGEMENT: Found greeting flow: {flow_key}")
-                            break
-                
-                if greeting_flow_key and greeting_flow_data:
-                    # Set up the greeting flow
-                    flow_state.current_flow = greeting_flow_key
-                    flow_state.current_step = greeting_flow_data.get("name", greeting_flow_key)
-                    flow_state.flow_data = greeting_flow_data
-                    auto_save_flow_state()
-                    
-                    logger.info(f"FLOW_MANAGEMENT: ✅ GREETING FLOW STARTED - {greeting_flow_key}")
-                    print_flow_status(room_name, flow_state, "🎉 GREETING FLOW STARTED", 
-                                    f"Flow: {greeting_flow_key} | Response: '{greeting_flow_data.get('text', '')}'")
-                    
-                    # Use the greeting flow response - extract only the greeting text
-                    response_text = greeting_flow_data.get("text", "")
-                    if not response_text or response_text == "N/A":
-                        response_text = "Hello! How can I help you today?"
-                    
-                    # If the response contains both greeting and next step text, extract only the greeting part
-                    if "How can I help you today?" in response_text:
-                        # Extract only the greeting part before the next step text
-                        greeting_parts = response_text.split("How can I help you today?")
-                        if len(greeting_parts) > 0:
-                            response_text = greeting_parts[0].strip()
-                            if response_text.endswith("!"):
-                                response_text = response_text  # Keep the exclamation mark
-                            else:
-                                response_text = response_text + "!"  # Add exclamation mark if missing
-                    
-                    add_agent_response_to_history(flow_state, response_text)
-                    
-                    return {
-                        "type": "flow_started",
-                        "flow_name": "greeting",
-                        "response": response_text,
-                        "next_step": None  # Don't return next step immediately, let user respond first
-                    }
-                else:
-                    logger.warning("FLOW_MANAGEMENT: Greeting intent detected but no greeting flow found in template")
-                    # Fallback to hardcoded greeting to keep system failsafe
-                    response_text = "Hi there! I'm here to help you with the information you need about our business communication services, including SMS texting, live chat, chatbots, and more. How can I assist you today?"
-                    add_agent_response_to_history(flow_state, response_text)
-                    auto_save_flow_state()  # Save after greeting response
-                    logger.info("FLOW_MANAGEMENT: Greeting detected, providing hardcoded failsafe response")
-                    return {
-                        "type": "message",
-                        "response": response_text,
-                        "flow_state": flow_state
-                    }
+                logger.info("FLOW_MANAGEMENT: Greeting intent detected, but greeting is handled by worker - skipping")
+                # Don't send another greeting response, just continue with normal flow
+                pass
             
             # Handle regular intent flows
             logger.info(f"FLOW_MANAGEMENT: ✅ INTENT DETECTED - {matching_intent['intent']} -> {matching_intent['flow_key']}")
@@ -1880,6 +1823,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 # For greeting/message steps, check if user wants to continue to next step or change intent
                 
                 # Check for intent shift - if user mentions something that matches an intent, switch flows
+                # But don't detect greeting intents when we're already in a greeting flow
                 matching_intent = await detect_flow_intent_with_llm(user_message)
                 if matching_intent and matching_intent.get("type") != "greeting":
                     logger.info(f"FLOW_MANAGEMENT: Intent shift detected from {step_type} to {matching_intent['intent']}")
@@ -2324,19 +2268,19 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     flow_state.pending_asked_at = time.time()
                     add_agent_response_to_history(flow_state, response_text)
                     return {"type": "question", "response": response_text, "flow_state": flow_state}
-            else:
-                logger.info(f"FLOW_MANAGEMENT: Current step is not a question (type: {current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift or answers branch")
+        else:
+            logger.info(f"FLOW_MANAGEMENT: Current step is not a question (type: {current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift or answers branch")
 
-                # If current step is a message with a next_flow of type 'faq', auto-transition so that
-                # subsequent user utterances evaluate the FAQ node's answers.
-                if current_step_data and current_step_data.get("type") == "message":
-                    nf = current_step_data.get("next_flow")
-                    # If next_flow is faq, auto-transition
-                    if isinstance(nf, dict) and nf.get("type") == "faq":
-                        old = flow_state.current_step
-                        flow_state.current_step = nf.get("name")
-                        flow_state.flow_data = nf
-                        logger.info(f"FLOW_MANAGEMENT: Auto-transitioned message → faq for answers handling: {old} → {flow_state.current_step}")
+            # If current step is a message with a next_flow of type 'faq', auto-transition so that
+            # subsequent user utterances evaluate the FAQ node's answers.
+            if current_step_data and current_step_data.get("type") == "message":
+                nf = current_step_data.get("next_flow")
+                # If next_flow is faq, auto-transition
+                if isinstance(nf, dict) and nf.get("type") == "faq":
+                    old = flow_state.current_step
+                    flow_state.current_step = nf.get("name")
+                    flow_state.flow_data = nf
+                    logger.info(f"FLOW_MANAGEMENT: Auto-transitioned message → faq for answers handling: {old} → {flow_state.current_step}")
                     current_step_data = flow_state.flow_data
                 # If there's no explicit next_flow, but the template contains a faq node with the expected text, jump to it
                 elif not nf and bot_template:
@@ -2414,8 +2358,8 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     "response": condition_result["response"],
                     "flow_state": flow_state,
                     "condition_result": condition_result.get("condition_result")
-                }
-            
+                        }
+
             # Handle template 'answers' on FAQ/message steps (noAction / moreAction)
             if current_step_data and current_step_data.get("answers") and current_step_data.get("type") in ("faq", "message"):
                 answers = current_step_data.get("answers", {}) or {}
@@ -3056,7 +3000,7 @@ async def test_intent_detection(request: Dict[str, Any]):
     logger.info(f"TEST_INTENT: Testing intent detection for message: '{user_message}'")
     logger.info(f"TEST_INTENT: Conversation history: {conversation_history}")
     
-    result = await detect_flow_intent_with_llm_from_conversation(conversation_history)
+    result = await detect_flow_intent_with_llm(user_message)
     
     return {
         "user_message": user_message,

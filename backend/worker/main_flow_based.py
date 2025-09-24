@@ -460,16 +460,10 @@ class FlowBasedAssistant(Agent):
                     # Initialize greeting bot flow in backend
                     await self._initialize_greeting_flow_in_backend(greeting_response)
                 else:
-                    # Fall back to hardcoded greeting
-                    hardcoded_greeting = "Hello! I'm Scott from Alive5. How can I help you today?"
-                    async with self._speech_lock:
-                        await self.session.say(preprocess_text_for_tts(hardcoded_greeting))
+                    # No greeting found in template, but don't send hardcoded greeting
+                    # The backend will handle the greeting flow initialization
+                    logger.info(f"👋 No greeting found in template for {self.session_id}")
                     self._greeted = True
-                    try:
-                        await self.send_agent_transcript(hardcoded_greeting)
-                    except Exception:
-                        pass
-                    logger.info(f"👋 Hardcoded greeting sent for {self.session_id}")
         except Exception as e:
             logger.error(f"❌ Failed to send initial greeting: {e}", exc_info=True)
     
@@ -505,8 +499,8 @@ class FlowBasedAssistant(Agent):
             backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
             init_endpoint = f"{backend_url}/api/initialize_greeting_flow"
             
-            # Get room name from session
-            room_name = self.session_id if hasattr(self, 'session_id') else "unknown"
+            # Get room name from stored attribute
+            room_name = getattr(self, 'room_name', 'unknown')
             
             payload = {
                 "room_name": room_name,
@@ -776,6 +770,7 @@ async def entrypoint(ctx: JobContext):
     
     # Create assistant with custom LLM
     assistant = FlowBasedAssistant(session_id, custom_llm)
+    assistant.room_name = room_name  # Store room name for greeting flow initialization
     logger.info(f"🔧 FlowBasedAssistant created for session: {session_id}")
     active_sessions[room_name] = session_id
     logger.info(f"🚀 STARTING SESSION {session_id} in room {room_name}")
