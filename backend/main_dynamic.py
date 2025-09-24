@@ -745,7 +745,7 @@ CURRENT CONVERSATION CONTEXT:
         if bot_template and bot_template.get("data"):
             for flow_key, flow_data in bot_template["data"].items():
                 if flow_data.get("type") == "intent_bot":
-                    intent_name = flow_data.get("name", flow_key)
+                    intent_name = flow_data.get("text", flow_key)  # Use text field for intent name
                     available_intents.append(intent_name)
         
         intents_list = ", ".join(available_intents) if available_intents else "none available"
@@ -832,7 +832,7 @@ async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, A
         
         for flow_key, flow_data in bot_template["data"].items():
             if flow_data.get("type") == "intent_bot":
-                intent_name = flow_data.get("name", flow_key)  # Use name instead of text
+                intent_name = flow_data.get("text", flow_key)  # Use text field for intent name
                 if intent_name:
                     available_intents.append(intent_name)
                     intent_mapping[intent_name] = {
