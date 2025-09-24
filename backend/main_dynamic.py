@@ -2090,7 +2090,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                             auto_save_flow_state()
                             
                             # Execute agent bot
-                            return await execute_agent_bot(flow_state, user_message)
+                            return await execute_agent_bot(flow_state, user_message, auto_save_flow_state)
                 
                 # No intent shift detected, continue with current flow
                 logger.info(f"FLOW_MANAGEMENT: No intent shift detected, continuing with {step_type} flow")
@@ -2687,6 +2687,59 @@ async def get_faq_response(user_message: str, bot_id: str = None, flow_state: Fl
         return {
             "type": "error",
             "response": error_response
+        }
+
+async def execute_agent_bot(flow_state: FlowState, user_message: str, auto_save_flow_state=None) -> Dict[str, Any]:
+    """Execute agent bot functionality - transfer to human agent"""
+    try:
+        logger.info(f"AGENT_BOT: Executing agent transfer for message: '{user_message}'")
+        
+        # Get the agent flow data
+        agent_flow_data = flow_state.flow_data
+        if not agent_flow_data:
+            logger.error("AGENT_BOT: No agent flow data available")
+            return {
+                "type": "error",
+                "response": "Sorry, I'm having trouble connecting you to an agent right now.",
+                "flow_state": flow_state
+            }
+        
+        # Get the agent response text
+        agent_response = agent_flow_data.get("text", "I'm connecting you to a human agent who can help you better.")
+        
+        # Add agent response to history
+        add_agent_response_to_history(flow_state, agent_response)
+        
+        # Check if there's a next flow to transition to
+        next_flow = agent_flow_data.get("next_flow")
+        if next_flow:
+            logger.info(f"AGENT_BOT: Transitioning to next flow: {next_flow.get('name', 'unknown')}")
+            flow_state.current_step = next_flow.get("name")
+            flow_state.flow_data = next_flow
+            if auto_save_flow_state:
+                auto_save_flow_state()
+            
+            return {
+                "type": "flow_started",
+                "flow_name": "agent",
+                "response": agent_response,
+                "next_step": next_flow.get("next_flow")
+            }
+        else:
+            # No next flow, just return the agent response
+            logger.info("AGENT_BOT: No next flow, returning agent response")
+            return {
+                "type": "message",
+                "response": agent_response,
+                "flow_state": flow_state
+            }
+            
+    except Exception as e:
+        logger.error(f"AGENT_BOT: Error executing agent bot: {e}")
+        return {
+            "type": "error",
+            "response": "Sorry, I'm having trouble connecting you to an agent right now.",
+            "flow_state": flow_state
         }
 
 async def execute_action_bot(action_data: Dict[str, Any], flow_state: FlowState) -> Dict[str, Any]:
