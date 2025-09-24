@@ -488,66 +488,108 @@ def cleanup_old_flow_states():
 # Clean up old files on startup
 cleanup_old_flow_states()
 
-def is_ambiguous_transcription(user_text: str) -> bool:
-    """Detect if the user text appears to be a garbled/ambiguous transcription."""
-    u = (user_text or "").lower().strip()
+async def is_ambiguous_transcription(user_text: str) -> bool:
+    """Use LLM to detect if the user text appears to be a garbled/ambiguous transcription."""
+    u = (user_text or "").strip()
     
-    # Check for common garbled patterns
-    garbled_patterns = [
-        r"\bthrough\s+\w+\s+lines?\b",  # "through phone lines"
-        r"\bwe\s+use\s*$",  # "we use" at end
-        r"\babout\s+to\s*$",  # "about to" (likely "about two")
-        r"\bto\s+fifty\s*\??",  # "to fifty?" (likely "two fifty")
-        r"\buh\s*$",  # "uh" at end
-        r"\bum\s*$",  # "um" at end
-        r"\buh\s+can\s+i\b",  # "uh can i"
-        r"\bthat\s+is\s+a\s+question\s+i\s+i\s+think\b",  # repeated words
-        r"\bsome\s+some\b",  # repeated words
-        r"\babout\s+two\s+two\b",  # repeated words
-    ]
+    # Skip empty or very short inputs
+    if not u or len(u) < 2:
+        return True
     
-    # Check for incomplete sentences (ends with articles/prepositions)
-    incomplete_endings = [
-        r"\bthe\s*$", r"\ba\s*$", r"\ban\s*$", r"\bto\s*$", r"\bfor\s*$", 
-        r"\bwith\s*$", r"\bin\s*$", r"\bon\s*$", r"\bat\s*$", r"\bby\s*$",
-        r"\bwe\s*$", r"\buse\s*$", r"\bthrough\s*$"
-    ]
+    # For very obvious cases, use simple heuristics to avoid unnecessary LLM calls
+    if len(u) < 3:
+        return True
     
-    # Check for very short responses that don't make sense
-    if len(u.split()) <= 2 and not re.search(r"\b(yes|no|ok|okay|thanks|bye|hello|hi)\b", u):
-        # If it's very short and doesn't contain common words, it might be garbled
-        if not re.search(r"\b\d+\b", u):  # Unless it contains numbers
-            return True
-    
-    # Check for garbled patterns
-    for pattern in garbled_patterns:
-        if re.search(pattern, u):
-            return True
-    
-    # Check for incomplete endings
-    for pattern in incomplete_endings:
-        if re.search(pattern, u):
-            return True
-    
-    # Check for excessive repetition of words
-    words = u.split()
-    if len(words) > 2:
-        word_counts = {}
-        for word in words:
-            word_counts[word] = word_counts.get(word, 0) + 1
-        # If any word appears more than once in a short phrase, it might be garbled
-        if max(word_counts.values()) > 1 and len(words) <= 5:
-            return True
-    
-    return False
+    try:
+        # Use LLM to determine if the transcription is complete and meaningful
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_KEY"))
+        
+        prompt = f"""You are a speech transcription quality analyzer. Your job is to determine if a transcribed text is complete, meaningful, and not garbled.
 
-def interpret_answer(question_text: str, user_text: str) -> Dict[str, Any]:
+TRANSCRIBED TEXT: "{u}"
+
+ANALYSIS TASKS:
+1. Is this a complete, meaningful phrase or sentence?
+2. Is this likely to be a garbled or incomplete transcription?
+3. Would a human understand what the speaker intended to say?
+
+EXAMPLES:
+- "thanks" → COMPLETE (simple gratitude)
+- "speak with someone" → COMPLETE (clear request)
+- "sales information" → COMPLETE (business inquiry)
+- "over the phone" → COMPLETE (communication preference)
+- "can I help" → COMPLETE (offer of assistance)
+- "the" → INCOMPLETE (incomplete sentence)
+- "we use" → INCOMPLETE (incomplete thought)
+- "uh can i" → GARBLED (stuttering/incomplete)
+- "some some" → GARBLED (repeated words)
+- "through phone lines" → GARBLED (nonsensical)
+
+RESPONSE FORMAT (JSON):
+{{
+    "is_complete": true/false,
+    "is_meaningful": true/false,
+    "is_garbled": true/false,
+    "confidence": "high|medium|low",
+    "reasoning": "brief explanation"
+}}
+
+IMPORTANT: 
+- Simple words like "thanks", "yes", "no", "hello" are COMPLETE
+- Business phrases like "sales information", "speak with someone" are COMPLETE
+- Incomplete sentences ending with articles/prepositions are INCOMPLETE
+- Repeated words or stuttering are GARBLED
+- Consider context - even short phrases can be complete if they make sense
+
+Respond with ONLY the JSON object."""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=200
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        # Parse the JSON response
+        try:
+            result = json.loads(response_text)
+            is_complete = result.get("is_complete", False)
+            is_meaningful = result.get("is_meaningful", False)
+            is_garbled = result.get("is_garbled", False)
+            confidence = result.get("confidence", "low")
+            reasoning = result.get("reasoning", "")
+            
+            logger.info(f"🧠 TRANSCRIPTION ANALYSIS: '{u}' -> Complete: {is_complete}, Meaningful: {is_meaningful}, Garbled: {is_garbled}, Confidence: {confidence}")
+            logger.info(f"🧠 REASONING: {reasoning}")
+            
+            # Return True if it's garbled or incomplete/not meaningful
+            if is_garbled:
+                return True
+            if not is_complete or not is_meaningful:
+                return True
+            
+            return False
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"🧠 TRANSCRIPTION ANALYSIS: Failed to parse LLM response: {e}")
+            logger.error(f"🧠 RAW RESPONSE: {response_text}")
+            # Fallback to simple heuristics if LLM response is malformed
+            return len(u.split()) <= 2 and not re.search(r"\b(yes|no|ok|okay|thanks|bye|hello|hi)\b", u.lower())
+            
+    except Exception as e:
+        logger.error(f"🧠 TRANSCRIPTION ANALYSIS: Error calling LLM: {e}")
+        # Fallback to simple heuristics if LLM call fails
+        return len(u.split()) <= 2 and not re.search(r"\b(yes|no|ok|okay|thanks|bye|hello|hi)\b", u.lower())
+
+async def interpret_answer(question_text: str, user_text: str) -> Dict[str, Any]:
     """Extract structured answers from natural speech for common question types."""
     q = (question_text or "").lower()
     u = (user_text or "").lower().strip()
 
-    # First check for ambiguous/garbled transcriptions
-    if is_ambiguous_transcription(u):
+    # First check for ambiguous/garbled transcriptions using LLM
+    if await is_ambiguous_transcription(u):
         return {"status": "unclear", "kind": "ambiguous", "value": u, "confidence": 0.0}
 
     # Yes/No
@@ -634,7 +676,7 @@ def interpret_answer(question_text: str, user_text: str) -> Dict[str, Any]:
 
     return {"status": "unclear", "kind": "text", "value": u, "confidence": 0.0}
 
-def gated_llm_extract_answer(question_text: str, user_text: str) -> Dict[str, Any]:
+async def gated_llm_extract_answer(question_text: str, user_text: str) -> Dict[str, Any]:
     """Always use LLM for answer extraction with deterministic parser context.
     
     This is the new robust approach that:
@@ -650,7 +692,7 @@ def gated_llm_extract_answer(question_text: str, user_text: str) -> Dict[str, An
         Dict with status, kind, value, confidence
     """
     # Step 1: Run deterministic parser for initial analysis
-    parser_result = interpret_answer(question_text, user_text)
+    parser_result = await interpret_answer(question_text, user_text)
     
     # Step 2: Always call LLM with parser context
     llm_result = llm_extract_answer(question_text, user_text, parser_result)
@@ -1914,6 +1956,12 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             return await get_faq_response(user_message, flow_state=flow_state)
     
     # SMART MESSAGE PROCESSING: Use LLM to analyze every user message
+    print(f"🔍 FLOW STATE DEBUG: Room: {room_name}")
+    print(f"🔍 FLOW STATE DEBUG: Current flow: {flow_state.current_flow}")
+    print(f"🔍 FLOW STATE DEBUG: Current step: {flow_state.current_step}")
+    print(f"🔍 FLOW STATE DEBUG: Flow data: {flow_state.flow_data}")
+    print(f"🔍 FLOW STATE DEBUG: Flow data type: {flow_state.flow_data.get('type') if flow_state.flow_data else 'None'}")
+    
     current_flow_context = {
         "current_flow": flow_state.current_flow,
         "current_step": flow_state.current_step,
@@ -2298,7 +2346,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             # Handle question steps (existing logic)
             if step_type == "question":
                 # Use gated LLM approach for robust answer extraction
-                interp = gated_llm_extract_answer(current_step_data.get("text", ""), user_message or "")
+                interp = await gated_llm_extract_answer(current_step_data.get("text", ""), user_message or "")
                 logger.info(f"GATED_LLM_EXTRACT: {interp}")
 
                 # Extra yes/no fallback for special-needs/SSO style questions
