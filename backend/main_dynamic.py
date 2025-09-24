@@ -1947,13 +1947,18 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     if flow_state.current_flow and flow_state.current_step:
         logger.info(f"FLOW_MANAGEMENT: Already in flow {flow_state.current_flow}, step {flow_state.current_step}")
         logger.info(f"FLOW_MANAGEMENT: Flow data: {flow_state.flow_data}")
+        print(f"🔍 FLOW DEBUG: Current flow: {flow_state.current_flow}, step: {flow_state.current_step}")
+        print(f"🔍 FLOW DEBUG: Flow data type: {flow_state.flow_data.get('type') if flow_state.flow_data else 'None'}")
         
         
         # Check if current step is a question, greeting, or message and user provided a response
         current_step_data = flow_state.flow_data
+        print(f"🔍 STEP DEBUG: Current step data: {current_step_data}")
+        print(f"🔍 STEP DEBUG: Step type: {current_step_data.get('type') if current_step_data else 'None'}")
         if current_step_data and current_step_data.get("type") in ["question", "greeting", "message"]:
             step_type = current_step_data.get("type")
             logger.info(f"FLOW_MANAGEMENT: Current step is a {step_type}, processing user response: '{user_message}'")
+            print(f"🔍 STEP DEBUG: Processing {step_type} step")
             
             # Global farewell within any step context
             um_low_q = (user_message or "").lower().strip()
