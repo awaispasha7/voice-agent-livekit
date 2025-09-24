@@ -1921,8 +1921,18 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     }
     
     # Process message with smart LLM analyzer
-    message_analysis = await smart_message_processor(user_message, current_flow_context)
-    logger.info(f"🧠 SMART ANALYSIS: {message_analysis}")
+    try:
+        message_analysis = await smart_message_processor(user_message, current_flow_context)
+        logger.info(f"🧠 SMART ANALYSIS: {message_analysis}")
+    except Exception as e:
+        logger.error(f"🧠 SMART PROCESSOR: Error in smart message processor: {e}")
+        message_analysis = {
+            "intent_detected": "none",
+            "message_type": "unclear",
+            "confidence": "low",
+            "action": "continue_flow",
+            "reasoning": f"Error in smart processor: {e}"
+        }
     
     # Handle based on analysis
     if message_analysis.get("action") == "ignore":
@@ -1965,8 +1975,13 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 # Check for intent shift - if user mentions something that matches an intent, switch flows
                 # But don't detect greeting intents when we're already in a greeting flow
                 print(f"🎯 GREETING FLOW: Calling intent detection for: '{user_message}'")
-                matching_intent = await detect_flow_intent_with_llm(user_message)
-                print(f"🎯 GREETING FLOW: Intent detection result: {matching_intent}")
+                try:
+                    matching_intent = await detect_flow_intent_with_llm(user_message)
+                    print(f"🎯 GREETING FLOW: Intent detection result: {matching_intent}")
+                except Exception as e:
+                    logger.error(f"🎯 GREETING FLOW: Error in intent detection: {e}")
+                    print(f"🎯 GREETING FLOW: Error in intent detection: {e}")
+                    matching_intent = None
                 if matching_intent and matching_intent.get("type") != "greeting":
                     logger.info(f"FLOW_MANAGEMENT: Intent shift detected from {step_type} to {matching_intent['intent']}")
                     print_flow_status(room_name, flow_state, "🔄 INTENT SHIFT DETECTED", 
