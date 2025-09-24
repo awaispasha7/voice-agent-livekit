@@ -1732,10 +1732,21 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     print_flow_status(room_name, flow_state, "🎉 GREETING FLOW STARTED", 
                                     f"Flow: {greeting_flow_key} | Response: '{greeting_flow_data.get('text', '')}'")
                     
-                    # Use the greeting flow response
+                    # Use the greeting flow response - extract only the greeting text
                     response_text = greeting_flow_data.get("text", "")
                     if not response_text or response_text == "N/A":
                         response_text = "Hello! How can I help you today?"
+                    
+                    # If the response contains both greeting and next step text, extract only the greeting part
+                    if "How can I help you today?" in response_text:
+                        # Extract only the greeting part before the next step text
+                        greeting_parts = response_text.split("How can I help you today?")
+                        if len(greeting_parts) > 0:
+                            response_text = greeting_parts[0].strip()
+                            if response_text.endswith("!"):
+                                response_text = response_text  # Keep the exclamation mark
+                            else:
+                                response_text = response_text + "!"  # Add exclamation mark if missing
                     
                     add_agent_response_to_history(flow_state, response_text)
                     
@@ -1743,7 +1754,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                         "type": "flow_started",
                         "flow_name": "greeting",
                         "response": response_text,
-                        "next_step": greeting_flow_data.get("next_flow")
+                        "next_step": None  # Don't return next step immediately, let user respond first
                     }
                 else:
                     logger.warning("FLOW_MANAGEMENT: Greeting intent detected but no greeting flow found in template")
