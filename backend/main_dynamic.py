@@ -782,16 +782,23 @@ Respond with ONLY the JSON object, no other text."""
 
         logger.info(f"🧠 SMART PROCESSOR: Analyzing message: '{user_message}'")
         
-        response = await call_llm(prompt, max_tokens=200)
-        logger.info(f"🧠 SMART PROCESSOR: LLM response: {response}")
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.1
+        )
+        response_text = response.choices[0].message.content.strip()
+        logger.info(f"🧠 SMART PROCESSOR: LLM response: {response_text}")
         
         # Parse JSON response
         try:
-            analysis = json.loads(response.strip())
+            analysis = json.loads(response_text.strip())
             logger.info(f"🧠 SMART PROCESSOR: Analysis result: {analysis}")
             return analysis
         except json.JSONDecodeError:
-            logger.error(f"🧠 SMART PROCESSOR: Failed to parse JSON: {response}")
+            logger.error(f"🧠 SMART PROCESSOR: Failed to parse JSON: {response_text}")
             return {
                 "intent_detected": "none",
                 "message_type": "unclear",
