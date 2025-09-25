@@ -252,7 +252,6 @@ class DynamicVoiceAgent {
             document.getElementById('joinBtn').disabled = true;
             
             // Step 1: Validate and load template
-            this.showStatus('Loading bot configuration...', 'connecting');
             const templateResponse = await this.fetchWithFallback('/api/validate_and_load_template', {
                 method: 'POST',
                 headers: {
@@ -1499,6 +1498,16 @@ class DynamicVoiceAgent {
     }
     
     showStatus(message, type) {
+        // Prevent duplicate status messages within 100ms
+        const statusKey = `${message}_${type}`;
+        const now = Date.now();
+        
+        if (this._lastStatus && this._lastStatus.key === statusKey && (now - this._lastStatus.time) < 100) {
+            return; // Skip duplicate status within 100ms
+        }
+        
+        this._lastStatus = { key: statusKey, time: now };
+        
         // Show toast notification for user feedback
         this.showToast(message, type);
         
