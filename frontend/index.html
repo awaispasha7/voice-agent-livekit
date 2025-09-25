@@ -398,7 +398,7 @@
             width: 100%;
             max-width: 400px;
             text-align: center;
-            margin-bottom: 2rem;
+            margin-bottom: 0.5rem;
             position: relative;
             z-index: 2;
         }
@@ -406,7 +406,7 @@
         @media (max-width: 768px) {
             .form-container {
                 max-width: 100%;
-                margin-bottom: 1rem;
+                margin-bottom: 0.25rem;
             }
         }
 
@@ -574,7 +574,7 @@
             cursor: pointer;
             transition: all 0.3s ease;
             width: 100%;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0;
             box-sizing: border-box;
         }
 
@@ -623,19 +623,98 @@
             top: 20px;
             right: 20px;
             z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
         }
 
         .toast {
+            background: white;
+            border-radius: 8px;
+            padding: 16px 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            border-left: 4px solid #667eea;
+            min-width: 300px;
+            max-width: 400px;
             display: flex;
             align-items: center;
-            background-color: #444;
-            color: white;
-            padding: 12px 16px;
-            border-radius: 4px;
-            margin-bottom: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-            transition: all 0.3s ease;
+            gap: 12px;
+            transform: translateX(100%);
+            transition: transform 0.3s ease;
         }
+
+        .toast.show {
+            transform: translateX(0);
+        }
+
+        .toast.error {
+            border-left-color: #ef4444;
+        }
+
+        .toast.success {
+            border-left-color: #10b981;
+        }
+
+        .toast.warning {
+            border-left-color: #f59e0b;
+        }
+
+        .toast.info {
+            border-left-color: #3b82f6;
+        }
+
+        .toast-icon {
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+
+        .toast-content {
+            flex: 1;
+        }
+
+        .toast-title {
+            font-weight: 600;
+            margin-bottom: 4px;
+            color: #1f2937;
+        }
+
+        .toast-message {
+            color: #6b7280;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        .toast-close {
+            background: none;
+            border: none;
+            font-size: 18px;
+            color: #9ca3af;
+            cursor: pointer;
+            padding: 0;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .toast-close:hover {
+            color: #6b7280;
+        }
+
+        @media (max-width: 768px) {
+            #toast-container {
+                top: 10px;
+                right: 10px;
+                left: 10px;
+            }
+
+            .toast {
+                min-width: auto;
+                max-width: none;
+            }
+        }
+
 
         .toast.intent-change {
             background-color: #4a6da7;
@@ -994,7 +1073,7 @@
                 <div class="header-info">
                     <h1 id="botName">Voice Assistant</h1>
                     <p id="botStatus">Ready to help</p>
-                </div>
+        </div>
                 <div class="status-indicator">
                     <div class="status-dot" id="statusDot"></div>
                     <span id="statusText">Offline</span>
@@ -1016,15 +1095,15 @@
                 <div class="form-container">
                     <h2>Connect to Voice Assistant</h2>
                     <p>Select your bot and voice to start a conversation</p>
-                    
-                    <form id="joinForm">
 
-                        <div class="form-group">
+        <form id="joinForm">
+
+            <div class="form-group">
                             <label for="botchainName">Bot Name:</label>
                             <input type="text" id="botchainName" name="botchainName" required
                                    placeholder="e.g., voice-1, dustin-gpt, sales-bot">
                             <small>Enter the name of the bot you want to connect to</small>
-                        </div>
+            </div>
 
                         <div class="form-group">
                             <label for="orgName">Organization Name:</label>
@@ -1048,20 +1127,20 @@
                                 <option value="b6c7d8e9-0f1a-2b3c-4d5e-6f7a8b9c0d1e">Authoritative Female</option>
                             </select>
                             <small>Choose the voice for your AI assistant</small>
-                        </div>
+            </div>
 
-                        <button type="submit" id="joinBtn" class="btn">
+            <button type="submit" id="joinBtn" class="btn">
                             🎤 Join Voice Chat
-                        </button>
-                    </form>
+            </button>
+        </form>
                 </div>
             </div>
 
             <!-- Chat Messages (shown after connection) -->
             <div id="chatMessages" class="chat-messages" style="display: none;">
                 <!-- Messages will be dynamically added here -->
-            </div>
-
+        </div>
+        
             <!-- Chat Input Area (shown after connection) -->
             <div id="chatInputArea" class="chat-input-area" style="display: none;">
                 <div class="voice-controls">
@@ -1083,13 +1162,13 @@
                         <div class="voice-bar"></div>
                         <div class="voice-bar"></div>
                         <div class="voice-bar"></div>
-                    </div>
-                </div>
+            </div>
+            </div>
                 
                 <div class="connection-status" id="connectionStatus">
                     Ready to listen
-                </div>
-                
+        </div>
+
                 <button id="disconnectBtn" class="voice-btn disconnect" title="Disconnect">
                     📞
                 </button>
@@ -1097,6 +1176,9 @@
         </div>
 
     </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
 
     <!-- Environment Configuration -->
     <script>

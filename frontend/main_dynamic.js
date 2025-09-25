@@ -1499,7 +1499,10 @@ class DynamicVoiceAgent {
     }
     
     showStatus(message, type) {
-        // Since we removed the status element, we'll use console logging and update connection status
+        // Show toast notification for user feedback
+        this.showToast(message, type);
+        
+        // Also log to console for debugging
         console.log(`Status (${type}): ${message}`);
         
         // Update the connection status in the chat interface if available
@@ -1514,6 +1517,54 @@ class DynamicVoiceAgent {
         if (statusText) {
             statusText.textContent = type === 'error' ? 'Error' : type === 'connecting' ? 'Connecting' : 'Offline';
         }
+    }
+
+    showToast(message, type = 'info', title = null) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        
+        const icons = {
+            error: '❌',
+            success: '✅',
+            warning: '⚠️',
+            info: 'ℹ️',
+            connecting: '🔄'
+        };
+
+        const titles = {
+            error: 'Error',
+            success: 'Success',
+            warning: 'Warning',
+            info: 'Info',
+            connecting: 'Connecting'
+        };
+
+        toast.innerHTML = `
+            <div class="toast-icon">${icons[type] || icons.info}</div>
+            <div class="toast-content">
+                <div class="toast-title">${title || titles[type] || 'Notification'}</div>
+                <div class="toast-message">${message}</div>
+            </div>
+            <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+        `;
+
+        container.appendChild(toast);
+
+        // Trigger animation
+        setTimeout(() => toast.classList.add('show'), 10);
+
+        // Auto remove after different times based on type
+        const autoRemoveTime = type === 'error' ? 8000 : 
+                               type === 'info' || type === 'success' ? 2000 : 5000;
+        setTimeout(() => {
+            if (toast.parentElement) {
+                toast.classList.remove('show');
+                setTimeout(() => toast.remove(), 300);
+            }
+        }, autoRemoveTime);
     }
 
     // New chatbot interface methods
