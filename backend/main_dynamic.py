@@ -338,11 +338,11 @@ async def is_ambiguous_transcription(user_text: str) -> bool:
     
     # Skip empty or very short inputs
     if not u or len(u) < 2:
-            return True
+        return True
     
     # For very obvious cases, use simple heuristics to avoid unnecessary LLM calls
     if len(u) < 3:
-            return True
+        return True
     
     try:
         # Use LLM to determine if the transcription is complete and meaningful
@@ -1296,7 +1296,7 @@ async def initialize_bot_template():
 
 async def initialize_bot_template_with_config(botchain_name: str, org_name: str):
     """Initialize bot template with custom configuration using direct API call"""
-    global bot_template
+    global bot_template, flow_states
     
     logger.info(f"🚀 INITIALIZING BOT TEMPLATE WITH CUSTOM CONFIG: {botchain_name}/{org_name}")
     
@@ -1331,9 +1331,27 @@ async def initialize_bot_template_with_config(botchain_name: str, org_name: str)
                 template_data = response.json()
                 bot_template = template_data
                 
+                # 🧹 CLEAR ALL FLOW STATES when loading new template
+                logger.info("🧹 CLEARING ALL FLOW STATES - New template loaded")
+                flow_states.clear()
+                
+                # Also clear any persisted flow state files
+                try:
+                    import glob
+                    flow_state_files = glob.glob("flow_states/*.json")
+                    for file_path in flow_state_files:
+                        try:
+                            os.remove(file_path)
+                            logger.info(f"🧹 CLEARED FLOW STATE FILE: {file_path}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Could not remove flow state file {file_path}: {e}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not clear flow state files: {e}")
+                
                 logger.info("✅ CUSTOM TEMPLATE LOADED SUCCESSFULLY")
                 logger.info(f"🔧 LOADED BOTCHAIN: {botchain_name}")
                 logger.info(f"🔧 LOADED ORG: {org_name}")
+                logger.info(f"🧹 CLEARED {len(flow_states)} FLOW STATES")
                 
                 return bot_template
             else:
@@ -1345,6 +1363,28 @@ async def initialize_bot_template_with_config(botchain_name: str, org_name: str)
         return None
 
 # Removed find_matching_intent - now using LLM-based detection
+
+def clear_all_flow_states():
+    """Clear all flow states and persisted files"""
+    global flow_states
+    
+    logger.info("🧹 MANUALLY CLEARING ALL FLOW STATES")
+    flow_states.clear()
+    
+    # Also clear any persisted flow state files
+    try:
+        import glob
+        flow_state_files = glob.glob("flow_states/*.json")
+        for file_path in flow_state_files:
+            try:
+                os.remove(file_path)
+                logger.info(f"🧹 CLEARED FLOW STATE FILE: {file_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not remove flow state file {file_path}: {e}")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not clear flow state files: {e}")
+    
+    logger.info(f"🧹 CLEARED ALL FLOW STATES - {len(flow_states)} states remaining")
 
 def get_next_flow_step(current_flow_state: FlowState, user_response: str = None) -> Optional[Dict[str, Any]]:
     """Get the next step in the current flow - fully dynamic"""
@@ -1525,9 +1565,6 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     if bot_template is None:
         logger.warning("FLOW_MANAGEMENT: Bot template not loaded, attempting to initialize...")
         print("⚠️ BOT TEMPLATE NOT LOADED - ATTEMPTING INITIALIZATION")
-    else:
-        logger.info(f"FLOW_MANAGEMENT: Bot template is loaded and ready")
-        print(f"🔧 FLOW_MANAGEMENT: Bot template is loaded and ready")
         try:
             await initialize_bot_template()
             if bot_template is None:
@@ -1550,6 +1587,9 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     "response": "I'm experiencing technical difficulties. Please try again in a moment."
                 }
             }
+    else:
+        logger.info(f"FLOW_MANAGEMENT: Bot template is loaded and ready")
+        print(f"🔧 FLOW_MANAGEMENT: Bot template is loaded and ready")
     
     logger.info(f"FLOW_MANAGEMENT: Processing message for room {room_name}: '{user_message}'")
     
@@ -3094,6 +3134,23 @@ def get_flow_states():
         "active_flows": len(states),
         "flow_states": states
     }
+
+@app.post("/api/clear_flow_states")
+def clear_flow_states():
+    """Clear all flow states - useful for testing and template switching"""
+    try:
+        clear_all_flow_states()
+        return {
+            "status": "success",
+            "message": "All flow states cleared successfully",
+            "active_flows": len(flow_states)
+        }
+    except Exception as e:
+        logger.error(f"Error clearing flow states: {e}")
+        return {
+            "status": "error",
+            "message": f"Failed to clear flow states: {str(e)}"
+        }
 
 @app.get("/api/flow_debug/{room_name}")
 def get_flow_debug(room_name: str):
