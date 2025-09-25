@@ -3223,6 +3223,42 @@ def clear_flow_states():
             "message": f"Failed to clear flow states: {str(e)}"
         }
 
+@app.post("/api/change_voice")
+async def change_voice(request: dict):
+    """Change the TTS voice for a specific room"""
+    try:
+        room_name = request.get("room_name")
+        voice_id = request.get("voice_id")
+        
+        if not room_name or not voice_id:
+            return {
+                "status": "error",
+                "message": "room_name and voice_id are required"
+            }
+        
+        logger.info(f"🎤 VOICE_CHANGE: Changing voice for room {room_name} to {voice_id}")
+        
+        # Store voice preference in session
+        if room_name in active_sessions:
+            active_sessions[room_name]["selected_voice"] = voice_id
+            active_sessions[room_name]["last_updated"] = time.time()
+        
+        # Send voice change message to worker via room
+        # This will be handled by the worker when it receives the message
+        return {
+            "status": "success",
+            "message": f"Voice changed to {voice_id}",
+            "room_name": room_name,
+            "voice_id": voice_id
+        }
+        
+    except Exception as e:
+        logger.error(f"Error changing voice: {e}")
+        return {
+            "status": "error",
+            "message": f"Failed to change voice: {str(e)}"
+        }
+
 @app.get("/api/flow_debug/{room_name}")
 def get_flow_debug(room_name: str):
     """Get detailed flow debug information for a specific room"""

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Alive5 Dynamic Voice Agent</title>
+    <title>Alive5 Voice Assistant</title>
     <script src="https://unpkg.com/livekit-client@latest/dist/livekit-client.umd.js"></script>
     <style>
         * {
@@ -23,46 +23,325 @@
         }
 
         .container {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
+            background: white;
             border-radius: 20px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-            padding: 2rem;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
             width: 90%;
-            max-width: 600px;
+            max-width: 800px;
+            height: 90vh;
+            max-height: 800px;
             margin: 2rem;
             display: flex;
             flex-direction: column;
+            overflow: hidden;
         }
 
-        .header {
-            text-align: center;
-            margin-bottom: 2rem;
-        }
-
-        .header h1 {
-            color: #2c3e50;
-            font-size: 2.5rem;
-            margin-bottom: 0.5rem;
+        .chat-header {
             background: linear-gradient(135deg, #667eea, #764ba2);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-
-        .header p {
-            color: #7f8c8d;
-            font-size: 1.1rem;
-        }
-
-        .version-badge {
-            display: inline-block;
-            background: #3498db;
             color: white;
-            padding: 0.2rem 0.8rem;
-            border-radius: 20px;
+            padding: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            border-radius: 20px 20px 0 0;
+        }
+
+        .avatar {
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            backdrop-filter: blur(10px);
+        }
+
+        .header-info h1 {
+            font-size: 1.5rem;
+            margin-bottom: 0.25rem;
+            font-weight: 600;
+        }
+
+        .header-info p {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+
+        .status-indicator {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
             font-size: 0.8rem;
-            margin-top: 0.5rem;
+            opacity: 0.9;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #4ade80;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.connecting {
+            background: #fbbf24;
+        }
+
+        .status-dot.error {
+            background: #ef4444;
+        }
+
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            background: #f8fafc;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .message {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            max-width: 80%;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .message.user {
+            align-self: flex-end;
+            flex-direction: row-reverse;
+        }
+
+        .message-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            flex-shrink: 0;
+        }
+
+        .message.user .message-avatar {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+
+        .message.agent .message-avatar {
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+        }
+
+        .message-bubble {
+            padding: 0.75rem 1rem;
+            border-radius: 18px;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            word-wrap: break-word;
+            position: relative;
+        }
+
+        .message.user .message-bubble {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.agent .message-bubble {
+            background: white;
+            color: #374151;
+            border: 1px solid #e5e7eb;
+            border-bottom-left-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .message-time {
+            font-size: 0.7rem;
+            opacity: 0.6;
+            margin-top: 0.25rem;
+        }
+
+        .typing-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1rem;
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 18px;
+            border-bottom-left-radius: 4px;
+            max-width: 80px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .typing-dots {
+            display: flex;
+            gap: 3px;
+        }
+
+        .typing-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #9ca3af;
+            animation: typing 1.4s infinite ease-in-out;
+        }
+
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes typing {
+            0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .chat-input-area {
+            padding: 1rem;
+            background: white;
+            border-top: 1px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .voice-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .voice-btn {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+
+        .voice-btn.disconnect {
+            background: #ef4444;
+            color: white;
+        }
+
+        .voice-btn.disconnect:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);
+        }
+
+        .voice-change-select {
+            padding: 0.5rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background: white;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .voice-change-select:hover {
+            border-color: #667eea;
+        }
+
+        .voice-change-select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+        }
+
+        .voice-visualizer {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            margin-left: 0.5rem;
+        }
+
+        .voice-bar {
+            width: 3px;
+            background: #667eea;
+            border-radius: 2px;
+            animation: voiceWave 1s infinite ease-in-out;
+        }
+
+        .voice-bar:nth-child(1) { height: 8px; animation-delay: 0s; }
+        .voice-bar:nth-child(2) { height: 12px; animation-delay: 0.1s; }
+        .voice-bar:nth-child(3) { height: 16px; animation-delay: 0.2s; }
+        .voice-bar:nth-child(4) { height: 12px; animation-delay: 0.3s; }
+        .voice-bar:nth-child(5) { height: 8px; animation-delay: 0.4s; }
+
+        @keyframes voiceWave {
+            0%, 100% { transform: scaleY(0.3); opacity: 0.7; }
+            50% { transform: scaleY(1); opacity: 1; }
+        }
+
+        .connection-status {
+            flex: 1;
+            text-align: center;
+            font-size: 0.8rem;
+            color: #6b7280;
+        }
+
+        .connection-status.connected {
+            color: #10b981;
+        }
+
+        .connection-status.connecting {
+            color: #f59e0b;
+        }
+
+        .connection-status.error {
+            color: #ef4444;
+        }
+
+        .connection-form {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
+
+        .form-container {
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        }
+
+        .form-container h2 {
+            color: #2c3e50;
+            font-size: 1.8rem;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+
+        .form-container p {
+            color: #6b7280;
+            margin-bottom: 2rem;
+            font-size: 1rem;
         }
 
         .intent-selection {
@@ -156,6 +435,31 @@
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .form-group select {
+            width: 100%;
+            padding: 0.8rem;
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background: white;
+            cursor: pointer;
+        }
+
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .voice-select {
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3e%3c/svg%3e");
+            background-position: right 0.5rem center;
+            background-repeat: no-repeat;
+            background-size: 1.5em 1.5em;
+            padding-right: 2.5rem;
         }
 
         .btn {
@@ -572,66 +876,113 @@
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>Alive5 Voice Agent</h1>
-            <p>AI-Powered Dynamic Support</p>
-            <div class="version-badge">v2.0 - Dynamic Intent Detection</div>
-        </div>
-
-
-        <div id="status" class="status"></div>
-
-        <!-- Intent Selection (dynamically added) -->
-
-        <form id="joinForm">
-            <div class="form-group">
-                <label for="participantName">Your Name:</label>
-                <input type="text" id="participantName" name="participantName" required 
-                       placeholder="Enter your name to get started">
+        <!-- Chat Header -->
+        <div class="chat-header">
+            <div class="avatar">🤖</div>
+            <div class="header-info">
+                <h1 id="botName">Voice Assistant</h1>
+                <p id="botStatus">Ready to help</p>
             </div>
-
-            <div class="form-group">
-                <label for="botchainName">Bot Name (Required):</label>
-                <input type="text" id="botchainName" name="botchainName" required
-                       placeholder="e.g., voice-1, dustin-gpt, sales-bot">
-                <small style="color: #6c757d; font-size: 0.8rem;">Enter the name of the bot you want to connect to</small>
-            </div>
-
-            <div class="form-group">
-                <label for="orgName">Organization Name (Optional):</label>
-                <input type="text" id="orgName" name="orgName" 
-                       placeholder="e.g., alive5stage0, your-org-name">
-                <small style="color: #6c757d; font-size: 0.8rem;">Leave empty to use default configuration</small>
-            </div>
-
-            <div class="form-group" style="display: none;">
-                <label for="roomName">Room Name (Auto-generated):</label>
-                <input type="text" id="roomName" name="roomName" placeholder="Auto-generated unique room">
-            </div>
-
-            <button type="submit" id="joinBtn" class="btn">
-                Join Voice Chat
-            </button>
-        </form>
-
-        <div id="controls" class="controls">
-            <button id="muteBtn" class="btn">🔇 Mute</button>
-            <button id="disconnectBtn" class="btn danger">📞 Disconnect</button>
-        </div>
-        
-        <!-- Live Transcript Display -->
-        <div id="transcript-container" class="transcript-container">
-            <div class="transcript-header">
-                <span>🎤 Live Transcript</span>
-                <span id="transcript-status">Listening...</span>
-            </div>
-            <div id="transcript-body" class="transcript-body">
-                <div id="interim-transcript" class="transcript-text interim"></div>
-                <div id="final-transcript" class="transcript-text final"></div>
+            <div class="status-indicator">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Offline</span>
             </div>
         </div>
 
-        <!-- Conversation Log will be dynamically added here -->
+        <!-- Chat Container -->
+        <div class="chat-container">
+            <!-- Connection Form (shown initially) -->
+            <div id="connectionForm" class="connection-form">
+                <div class="form-container">
+                    <h2>Connect to Voice Assistant</h2>
+                    <p>Enter your details to start a conversation</p>
+                    
+                    <form id="joinForm">
+                        <div class="form-group">
+                            <label for="participantName">Your Name:</label>
+                            <input type="text" id="participantName" name="participantName" required 
+                                   placeholder="Enter your name">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="botchainName">Bot Name:</label>
+                            <input type="text" id="botchainName" name="botchainName" required
+                                   placeholder="e.g., voice-1, dustin-gpt, sales-bot">
+                            <small>Enter the name of the bot you want to connect to</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="orgName">Organization Name:</label>
+                            <input type="text" id="orgName" name="orgName" 
+                                   placeholder="e.g., alive5stage0, your-org-name">
+                            <small>Leave empty to use default configuration</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="voiceSelect">Agent Voice:</label>
+                            <select id="voiceSelect" name="voiceSelect" class="voice-select">
+                                <option value="f786b574-daa5-4673-aa0c-cbe3e8534c02">Sonic (Default)</option>
+                                <option value="794f9389-aac1-45b6-b726-9d9369183238">Professional Female</option>
+                                <option value="a0e99841-438c-4a64-b679-ae501e7d6091">Friendly Male</option>
+                                <option value="bae0b3c3-8b1a-4b5c-9d2e-1f3a4b5c6d7e">Warm Female</option>
+                                <option value="c1d2e3f4-5a6b-7c8d-9e0f-1a2b3c4d5e6f">Confident Male</option>
+                                <option value="d2e3f4a5-6b7c-8d9e-0f1a-2b3c4d5e6f7a">Calm Female</option>
+                                <option value="e3f4a5b6-7c8d-9e0f-1a2b-3c4d5e6f7a8b">Energetic Male</option>
+                                <option value="f4a5b6c7-8d9e-0f1a-2b3c-4d5e6f7a8b9c">Sophisticated Female</option>
+                                <option value="a5b6c7d8-9e0f-1a2b-3c4d-5e6f7a8b9c0d">Casual Male</option>
+                                <option value="b6c7d8e9-0f1a-2b3c-4d5e-6f7a8b9c0d1e">Authoritative Female</option>
+                            </select>
+                            <small>Choose the voice for your AI assistant</small>
+                        </div>
+
+                        <button type="submit" id="joinBtn" class="btn">
+                            🎤 Join Voice Chat
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Chat Messages (shown after connection) -->
+            <div id="chatMessages" class="chat-messages" style="display: none;">
+                <!-- Messages will be dynamically added here -->
+            </div>
+
+            <!-- Chat Input Area (shown after connection) -->
+            <div id="chatInputArea" class="chat-input-area" style="display: none;">
+                <div class="voice-controls">
+                    <select id="voiceChangeSelect" class="voice-change-select" title="Change Voice">
+                        <option value="f786b574-daa5-4673-aa0c-cbe3e8534c02">Sonic (Default)</option>
+                        <option value="794f9389-aac1-45b6-b726-9d9369183238">Professional Female</option>
+                        <option value="a0e99841-438c-4a64-b679-ae501e7d6091">Friendly Male</option>
+                        <option value="bae0b3c3-8b1a-4b5c-9d2e-1f3a4b5c6d7e">Warm Female</option>
+                        <option value="c1d2e3f4-5a6b-7c8d-9e0f-1a2b3c4d5e6f">Confident Male</option>
+                        <option value="d2e3f4a5-6b7c-8d9e-0f1a-2b3c4d5e6f7a">Calm Female</option>
+                        <option value="e3f4a5b6-7c8d-9e0f-1a2b-3c4d5e6f7a8b">Energetic Male</option>
+                        <option value="f4a5b6c7-8d9e-0f1a-2b3c-4d5e6f7a8b9c">Sophisticated Female</option>
+                        <option value="a5b6c7d8-9e0f-1a2b-3c4d-5e6f7a8b9c0d">Casual Male</option>
+                        <option value="b6c7d8e9-0f1a-2b3c-4d5e-6f7a8b9c0d1e">Authoritative Female</option>
+                    </select>
+                    <div id="voiceVisualizer" class="voice-visualizer" style="display: none;">
+                        <div class="voice-bar"></div>
+                        <div class="voice-bar"></div>
+                        <div class="voice-bar"></div>
+                        <div class="voice-bar"></div>
+                        <div class="voice-bar"></div>
+                    </div>
+                </div>
+                
+                <div class="connection-status" id="connectionStatus">
+                    Ready to listen
+                </div>
+                
+                <button id="disconnectBtn" class="voice-btn disconnect" title="Disconnect">
+                    📞
+                </button>
+            </div>
+        </div>
+
+        <!-- Status Messages -->
+        <div id="status" class="status" style="display: none;"></div>
     </div>
 
     <!-- Environment Configuration -->

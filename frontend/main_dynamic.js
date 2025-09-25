@@ -2,7 +2,6 @@ class DynamicVoiceAgent {
     constructor() {
         this.room = null;
         this.isConnected = false;
-        this.isMuted = false;
         this.localAudioTrack = null;
         this.currentRoomName = null;
         this.participantName = null;
@@ -12,6 +11,7 @@ class DynamicVoiceAgent {
         this.currentIntent = null;
         this.detectedUserData = {};
         this.conversationLog = [];
+        this.selectedVoice = 'a0e99841-438c-4a64-b679-ae501e7d6091'; // Default voice (Sonic)
         
         // Track processed messages to prevent duplicates
         this.processedMessages = new Set();
@@ -194,12 +194,18 @@ class DynamicVoiceAgent {
             this.joinRoom();
         });
         
-        document.getElementById('muteBtn').addEventListener('click', () => {
-            this.toggleMute();
-        });
         
         document.getElementById('disconnectBtn').addEventListener('click', () => {
             this.disconnect();
+        });
+
+        // Voice selection handlers
+        document.getElementById('voiceSelect').addEventListener('change', (e) => {
+            this.selectedVoice = e.target.value;
+        });
+
+        document.getElementById('voiceChangeSelect').addEventListener('change', (e) => {
+            this.changeVoice(e.target.value);
         });
         
         document.addEventListener('keydown', (e) => {
@@ -227,6 +233,7 @@ class DynamicVoiceAgent {
         // Get botchain and org info from form
         const botchainName = document.getElementById('botchainName')?.value?.trim() || null;
         const orgName = document.getElementById('orgName')?.value?.trim() || null;
+        const selectedVoice = document.getElementById('voiceSelect')?.value || this.selectedVoice;
         
         if (!botchainName) {
             this.showStatus('Please enter a bot name (botchain)', 'error');
@@ -279,7 +286,9 @@ class DynamicVoiceAgent {
             }
             
             // Template loaded successfully
-            this.showStatus(`Bot "${botchainName}" loaded successfully! Connecting to voice chat...`, 'connecting');
+            this.updateChatHeader(botchainName, 'Connecting...');
+            this.updateStatusIndicator('connecting');
+            this.updateConnectionStatus('connecting', `Loading ${botchainName}...`);
             
             // Get connection details
             const response = await this.fetchWithFallback(this.config.ENDPOINTS.CONNECTION_DETAILS, {
@@ -292,7 +301,8 @@ class DynamicVoiceAgent {
                     user_data: {
                         session_start: new Date().toISOString(),
                         botchain_name: botchainName,
-                        org_name: orgName
+                        org_name: orgName,
+                        selected_voice: selectedVoice
                     }
                 })
             });
@@ -330,14 +340,15 @@ class DynamicVoiceAgent {
             this.isConnected = true;
             this.connectionAttempts = 0;
             
-            this.showStatus(`
-                Connected to ${botchainName} bot!<br>
-                Room: ${this.currentRoomName}<br>
-                Agent is joining... (This may take 10-15 seconds)<br>
-                Dynamic intent detection is active
-            `, 'connected');
+            // Switch to chat interface
+            this.showChatInterface();
+            this.updateChatHeader(botchainName, 'Connected');
+            this.updateStatusIndicator('connected');
+            this.updateConnectionStatus('connected', 'Ready to listen');
             
-            this.showControls();
+            // Add welcome message
+            this.addMessage(`Connected to ${botchainName}! I'm ready to help you.`, 'agent');
+            
             this.initializeConversationLog();
             
             // Set up worker response timeout
@@ -347,6 +358,8 @@ class DynamicVoiceAgent {
             
         } catch (error) {
             console.error('Connection failed:', error);
+            this.updateStatusIndicator('error');
+            this.updateConnectionStatus('error', `Connection failed: ${error.message}`);
             this.showStatus(`Connection failed: ${error.message}`, 'error');
             document.getElementById('joinBtn').disabled = false;
             
@@ -1095,6 +1108,11 @@ class DynamicVoiceAgent {
         
         this.conversationLog.push(entry);
         
+        // Add to chat interface if connected
+        if (this.isConnected && (entry.type === 'user' || entry.type === 'agent')) {
+            this.addMessage(entry.message, entry.type, entry.timestamp);
+        }
+        
         let logContainer = document.querySelector('.conversation-log');
         if (!logContainer) {
             this.initializeConversationLog();
@@ -1337,27 +1355,6 @@ class DynamicVoiceAgent {
         }
     }
     
-    toggleMute() {
-        if (!this.localAudioTrack || !this.isConnected) return;
-        
-        this.isMuted = !this.isMuted;
-        this.localAudioTrack.mute(this.isMuted);
-        
-        const btn = document.getElementById('muteBtn');
-        btn.textContent = this.isMuted ? '🔊 Unmute' : '🔇 Mute';
-        btn.classList.toggle('muted', this.isMuted);
-        
-        this.showStatus(
-            this.isMuted ? 'Microphone muted' : 'Microphone unmuted', 
-            this.isMuted ? 'warning' : 'connected'
-        );
-        
-        this.addLogEntry({
-            speaker: 'System',
-            message: this.isMuted ? 'Microphone muted' : 'Microphone unmuted',
-            type: 'system'
-        });
-    }
     
     async sendTextMessage(text) {
         if (!this.room || !this.isConnected) return;
@@ -1403,8 +1400,12 @@ class DynamicVoiceAgent {
     
     handleDisconnection() {
         this.isConnected = false;
-        this.hideControls();
         this.currentRoomName = null;
+        
+        // Return to connection form
+        this.showConnectionForm();
+        this.updateStatusIndicator('offline');
+        this.updateChatHeader('Voice Assistant', 'Ready to help');
         
         // Cleanup audio elements
         document.querySelectorAll('audio').forEach(el => {
@@ -1501,6 +1502,179 @@ class DynamicVoiceAgent {
         el.innerHTML = message;
         el.className = `status ${type}`;
         el.style.display = 'block';
+    }
+
+    // New chatbot interface methods
+    updateChatHeader(botName, status) {
+        document.getElementById('botName').textContent = botName || 'Voice Assistant';
+        document.getElementById('botStatus').textContent = status || 'Ready to help';
+    }
+
+    updateStatusIndicator(status) {
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        
+        statusDot.className = 'status-dot';
+        switch(status) {
+            case 'connected':
+                statusDot.classList.add('connected');
+                statusText.textContent = 'Online';
+                break;
+            case 'connecting':
+                statusDot.classList.add('connecting');
+                statusText.textContent = 'Connecting...';
+                break;
+            case 'error':
+                statusDot.classList.add('error');
+                statusText.textContent = 'Error';
+                break;
+            default:
+                statusText.textContent = 'Offline';
+        }
+    }
+
+    showChatInterface() {
+        document.getElementById('connectionForm').style.display = 'none';
+        document.getElementById('chatMessages').style.display = 'flex';
+        document.getElementById('chatInputArea').style.display = 'flex';
+        
+        // Sync voice selectors
+        const voiceChangeSelect = document.getElementById('voiceChangeSelect');
+        if (voiceChangeSelect) {
+            voiceChangeSelect.value = this.selectedVoice;
+        }
+    }
+
+    showConnectionForm() {
+        document.getElementById('connectionForm').style.display = 'flex';
+        document.getElementById('chatMessages').style.display = 'none';
+        document.getElementById('chatInputArea').style.display = 'none';
+    }
+
+    addMessage(content, sender, timestamp = null) {
+        const chatMessages = document.getElementById('chatMessages');
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${sender}`;
+        
+        const avatar = document.createElement('div');
+        avatar.className = 'message-avatar';
+        avatar.textContent = sender === 'user' ? 'U' : '🤖';
+        
+        const bubble = document.createElement('div');
+        bubble.className = 'message-bubble';
+        bubble.textContent = content;
+        
+        if (timestamp) {
+            const timeDiv = document.createElement('div');
+            timeDiv.className = 'message-time';
+            timeDiv.textContent = new Date(timestamp).toLocaleTimeString();
+            bubble.appendChild(timeDiv);
+        }
+        
+        messageDiv.appendChild(avatar);
+        messageDiv.appendChild(bubble);
+        
+        chatMessages.appendChild(messageDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    showTypingIndicator() {
+        const chatMessages = document.getElementById('chatMessages');
+        const typingDiv = document.createElement('div');
+        typingDiv.className = 'message agent';
+        typingDiv.id = 'typingIndicator';
+        
+        const avatar = document.createElement('div');
+        avatar.className = 'message-avatar';
+        avatar.textContent = '🤖';
+        
+        const indicator = document.createElement('div');
+        indicator.className = 'typing-indicator';
+        
+        const dots = document.createElement('div');
+        dots.className = 'typing-dots';
+        dots.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
+        
+        indicator.appendChild(dots);
+        typingDiv.appendChild(avatar);
+        typingDiv.appendChild(indicator);
+        
+        chatMessages.appendChild(typingDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    hideTypingIndicator() {
+        const typingIndicator = document.getElementById('typingIndicator');
+        if (typingIndicator) {
+            typingIndicator.remove();
+        }
+    }
+
+    updateConnectionStatus(status, message) {
+        const statusEl = document.getElementById('connectionStatus');
+        statusEl.textContent = message || status;
+        statusEl.className = `connection-status ${status}`;
+    }
+
+    showVoiceVisualizer(show = true) {
+        const visualizer = document.getElementById('voiceVisualizer');
+        visualizer.style.display = show ? 'flex' : 'none';
+    }
+
+    async changeVoice(voiceId) {
+        if (!this.isConnected || !this.currentRoomName) {
+            console.warn('Cannot change voice: not connected');
+            return;
+        }
+
+        try {
+            this.updateConnectionStatus('connecting', 'Changing voice...');
+            
+            const response = await this.fetchWithFallback('/api/change_voice', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    room_name: this.currentRoomName,
+                    voice_id: voiceId
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to change voice');
+            }
+
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.selectedVoice = voiceId;
+                this.addMessage(`Voice changed to ${this.getVoiceName(voiceId)}`, 'system');
+                this.updateConnectionStatus('connected', 'Voice changed successfully');
+            } else {
+                throw new Error(result.message || 'Failed to change voice');
+            }
+        } catch (error) {
+            console.error('Error changing voice:', error);
+            this.addMessage(`Failed to change voice: ${error.message}`, 'system');
+            this.updateConnectionStatus('error', 'Voice change failed');
+        }
+    }
+
+    getVoiceName(voiceId) {
+        const voiceNames = {
+            'f786b574-daa5-4673-aa0c-cbe3e8534c02': 'Sonic (Default)',
+            '794f9389-aac1-45b6-b726-9d9369183238': 'Professional Female',
+            'a0e99841-438c-4a64-b679-ae501e7d6091': 'Friendly Male',
+            'bae0b3c3-8b1a-4b5c-9d2e-1f3a4b5c6d7e': 'Warm Female',
+            'c1d2e3f4-5a6b-7c8d-9e0f-1a2b3c4d5e6f': 'Confident Male',
+            'd2e3f4a5-6b7c-8d9e-0f1a-2b3c4d5e6f7a': 'Calm Female',
+            'e3f4a5b6-7c8d-9e0f-1a2b-3c4d5e6f7a8b': 'Energetic Male',
+            'f4a5b6c7-8d9e-0f1a-2b3c-4d5e6f7a8b9c': 'Sophisticated Female',
+            'a5b6c7d8-9e0f-1a2b-3c4d-5e6f7a8b9c0d': 'Casual Male',
+            'b6c7d8e9-0f1a-2b3c-4d5e-6f7a8b9c0d1e': 'Authoritative Female'
+        };
+        return voiceNames[voiceId] || 'Unknown Voice';
     }
     
     showControls() {

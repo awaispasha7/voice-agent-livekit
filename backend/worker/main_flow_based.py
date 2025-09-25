@@ -428,6 +428,7 @@ class FlowBasedAssistant(Agent):
         self._greeted = False
         self._speech_lock = asyncio.Lock()
         self._ending = False
+        self.selected_voice = "a0e99841-438c-4a64-b679-ae501e7d6091"  # Default voice (Sonic)
         # Aggregate multiple short user turns before backend call
         self._aggregate_buffer: str = ""
         self._aggregate_task: Optional[asyncio.Task] = None
@@ -491,11 +492,16 @@ class FlowBasedAssistant(Agent):
                         user_data = session_data.get("user_data", {})
                         botchain_name = user_data.get("botchain_name")
                         org_name = user_data.get("org_name")
+                        selected_voice = user_data.get("selected_voice", "a0e99841-438c-4a64-b679-ae501e7d6091")
                         
                         if botchain_name:
                             logger.info(f"🎯 GREETING BOT: Found custom botchain in session: {botchain_name}/{org_name}")
                         else:
                             logger.info("🎯 GREETING BOT: No custom botchain found, using default template")
+                        
+                        # Store the selected voice
+                        self.selected_voice = selected_voice
+                        logger.info(f"🎤 VOICE: Using voice {selected_voice}")
             except Exception as e:
                 logger.warning(f"🎯 GREETING BOT: Could not get session info: {e}")
             
@@ -886,7 +892,7 @@ async def entrypoint(ctx: JobContext):
             llm=custom_llm,  # Use our custom LLM
             tts=cartesia.TTS(
                 model="sonic-english",
-                voice="a0e99841-438c-4a64-b679-ae501e7d6091", 
+                voice=assistant.selected_voice, 
                 api_key=os.getenv("CARTESIA_API_KEY")
             ),
             vad=ctx.proc.userdata["vad"],
