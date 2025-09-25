@@ -338,11 +338,11 @@ async def is_ambiguous_transcription(user_text: str) -> bool:
     
     # Skip empty or very short inputs
     if not u or len(u) < 2:
-        return True
+            return True
     
     # For very obvious cases, use simple heuristics to avoid unnecessary LLM calls
     if len(u) < 3:
-        return True
+            return True
     
     try:
         # Use LLM to determine if the transcription is complete and meaningful
@@ -412,9 +412,9 @@ Respond with ONLY the JSON object."""
             if is_garbled:
                 return True
             if not is_complete or not is_meaningful:
-                return True
-            
-            return False
+            return True
+    
+    return False
 
         except json.JSONDecodeError as e:
             logger.error(f"🧠 TRANSCRIPTION ANALYSIS: Failed to parse LLM response: {e}")
@@ -1355,11 +1355,11 @@ async def initialize_bot_template_with_config(botchain_name: str, org_name: str)
                 logger.info(f"🔧 LOADED BOTCHAIN: {botchain_name}")
                 logger.info(f"🔧 LOADED ORG: {org_name}")
                 logger.info(f"🧹 CLEARED {len(flow_states)} FLOW STATES")
-                
-                return bot_template
-            else:
+            
+            return bot_template
+        else:
                 logger.error(f"❌ API ERROR: {response.status_code} - {response.text}")
-                return None
+            return None
             
     except Exception as e:
         logger.error(f"❌ CUSTOM TEMPLATE INITIALIZATION ERROR: {e}")
@@ -2948,7 +2948,7 @@ async def get_template_info():
 @app.get("/api/template_status")
 async def get_template_status():
     """Get current template status"""
-    return {
+        return {
         "status": "loaded" if bot_template else "not_loaded",
         "template_available": bot_template is not None,
         "template_loaded": bot_template is not None,
@@ -3027,7 +3027,7 @@ async def validate_and_load_template(request: dict):
         org_name = request.get("org_name", "alive5stage0")
         
         if not botchain_name:
-            return {
+    return {
                 "status": "error",
                 "message": "botchain_name is required",
                 "error_type": "missing_parameter"
@@ -3190,8 +3190,8 @@ async def initialize_greeting_flow(request: dict):
         logger.info(f"🎯 GREETING FLOW INIT: Initialized greeting flow {greeting_flow_key} for room {room_name}")
         print(f"🎯 GREETING FLOW INIT: Room {room_name} -> Flow: {greeting_flow_key}, Step: {flow_state.current_step}")
         
-        return {
-            "success": True,
+    return {
+        "success": True,
             "flow_key": greeting_flow_key,
             "flow_data": greeting_flow_data
         }
@@ -3201,7 +3201,7 @@ async def initialize_greeting_flow(request: dict):
         return {
             "success": False,
             "error": str(e)
-        }
+    }
 
 @app.get("/api/flow_states")
 def get_flow_states():
@@ -3243,7 +3243,10 @@ async def change_voice(request: dict):
         room_name = request.get("room_name")
         voice_id = request.get("voice_id")
         
+        logger.info(f"🎤 VOICE_CHANGE API: Received request - room: {room_name}, voice: {voice_id}")
+        
         if not room_name or not voice_id:
+            logger.error(f"🎤 VOICE_CHANGE API: Missing parameters - room: {room_name}, voice: {voice_id}")
             return {
                 "status": "error",
                 "message": "room_name and voice_id are required"
@@ -3297,7 +3300,7 @@ async def change_voice(request: dict):
         return {
             "status": "error",
             "message": f"Failed to change voice: {str(e)}"
-        }
+    }
 
 @app.get("/api/flow_debug/{room_name}")
 def get_flow_debug(room_name: str):

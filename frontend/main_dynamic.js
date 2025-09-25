@@ -1690,6 +1690,7 @@ class DynamicVoiceAgent {
         }
 
         try {
+            console.log(`🎤 VOICE_CHANGE: Attempting to change voice to ${voiceId} for room ${this.currentRoomName}`);
             this.updateConnectionStatus('connecting', 'Changing voice...');
             
             const response = await this.fetchWithFallback('/api/change_voice', {

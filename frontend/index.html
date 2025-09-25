@@ -778,27 +778,55 @@
             #toast-container {
                 top: 10px;
                 right: 10px;
-                left: 10px;
-                max-width: none;
+                left: auto;
+                max-width: calc(100vw - 20px);
             }
 
             .toast {
-                min-width: auto;
-                max-width: none;
-                padding: 10px 14px;
-                font-size: 13px;
+                min-width: 150px;
+                max-width: calc(100vw - 20px);
+                padding: 8px 12px;
+                font-size: 12px;
             }
 
             .toast-icon {
-                font-size: 14px;
+                font-size: 12px;
             }
 
             .toast-title {
-                font-size: 13px;
+                font-size: 12px;
             }
 
             .toast-message {
-                font-size: 12px;
+                font-size: 11px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            #toast-container {
+                top: 5px;
+                right: 5px;
+                left: auto;
+                max-width: calc(100vw - 10px);
+            }
+
+            .toast {
+                min-width: 120px;
+                max-width: calc(100vw - 10px);
+                padding: 6px 10px;
+                font-size: 11px;
+            }
+
+            .toast-icon {
+                font-size: 11px;
+            }
+
+            .toast-title {
+                font-size: 11px;
+            }
+
+            .toast-message {
+                font-size: 10px;
             }
         }
 
