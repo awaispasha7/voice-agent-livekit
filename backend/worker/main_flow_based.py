@@ -473,7 +473,7 @@ class FlowBasedAssistant(Agent):
         self._greeted = False
         self._speech_lock = asyncio.Lock()
         self._ending = False
-        self.selected_voice = "a0e99841-438c-4a64-b679-ae501e7d6091"  # Default voice (Sonic)
+        self.selected_voice = "a167e0f3-df7e-4d52-a9c3-f949145efdab"  # Default voice (Customer Support Man)
         # Aggregate multiple short user turns before backend call
         self._aggregate_buffer: str = ""
         self._aggregate_task: Optional[asyncio.Task] = None
@@ -537,7 +537,7 @@ class FlowBasedAssistant(Agent):
                         user_data = session_data.get("user_data", {})
                         botchain_name = user_data.get("botchain_name")
                         org_name = user_data.get("org_name")
-                        selected_voice = user_data.get("selected_voice", "a0e99841-438c-4a64-b679-ae501e7d6091")
+                        selected_voice = user_data.get("selected_voice", "a167e0f3-df7e-4d52-a9c3-f949145efdab")
                         
                         if botchain_name:
                             logger.info(f"🎯 GREETING BOT: Found custom botchain in session: {botchain_name}/{org_name}")
@@ -936,7 +936,7 @@ async def entrypoint(ctx: JobContext):
             ),
             llm=custom_llm,  # Use our custom LLM
             tts=cartesia.TTS(
-                model="sonic-english",
+                model="sonic-2024-10-19",
                 voice=assistant.selected_voice, 
                 api_key=os.getenv("CARTESIA_API_KEY")
             ),
