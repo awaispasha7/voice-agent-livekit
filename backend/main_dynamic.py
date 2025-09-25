@@ -38,17 +38,24 @@ env_loaded = False
 for env_path in env_paths:
     if env_path.exists():
         load_dotenv(dotenv_path=str(env_path))
-        print(f"✅ Loaded .env from: {env_path}")
+        # print(f"✅ Loaded .env from: {env_path}")  # Commented out to reduce log clutter
         env_loaded = True
         break
 
 if not env_loaded:
-    print("⚠️ No .env file found in any expected location")
-    print(f"   Searched paths: {[str(p) for p in env_paths]}")
+    # print("⚠️ No .env file found in any expected location")  # Commented out to reduce log clutter
+    # print(f"   Searched paths: {[str(p) for p in env_paths]}")
     # Fallback to default behavior
     load_dotenv()
 
 app = FastAPI(title="Alive5 Voice Agent Server", version="2.0")
+
+# Configure clean logging (no systemd prefixes)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(message)s',  # Clean format without timestamps/prefixes
+    force=True  # Override any existing configuration
+)
 logger = logging.getLogger("token-server")
 
 # Add CORS middleware
@@ -408,7 +415,7 @@ Respond with ONLY the JSON object."""
                 return True
             
             return False
-            
+
         except json.JSONDecodeError as e:
             logger.error(f"🧠 TRANSCRIPTION ANALYSIS: Failed to parse LLM response: {e}")
             logger.error(f"🧠 RAW RESPONSE: {response_text}")
@@ -1265,33 +1272,24 @@ async def initialize_bot_template():
     global bot_template
     
     try:
-        print("\n" + "="*80)
-        print("🚀 INITIALIZING BOT TEMPLATE")
-        print("="*80)
         logger.info("FLOW_MANAGEMENT: Initializing bot template...")
         
         # Load default template using environment variables
         default_botchain = os.getenv("A5_BOTCHAIN_NAME", "voice-1")
         default_org = os.getenv("A5_ORG_NAME", "alive5stage0")
         
-        print(f"🔧 Loading default template: {default_botchain}/{default_org}")
-        
         # Use the same function as custom config
         result = await initialize_bot_template_with_config(default_botchain, default_org)
         
         if result:
             logger.info("FLOW_MANAGEMENT: Bot template initialized successfully")
-            print("✅ TEMPLATE LOADED SUCCESSFULLY")
-            print("="*80)
             return result
         else:
             logger.error("FLOW_MANAGEMENT: Failed to initialize bot template")
-            print("❌ TEMPLATE INITIALIZATION FAILED")
             return None
             
     except Exception as e:
         logger.error(f"FLOW_MANAGEMENT: Error initializing bot template: {e}")
-        print(f"❌ TEMPLATE INITIALIZATION ERROR: {e}")
         return None
 
     # Removed mock template: always fetch from Alive5 API per client requirement
@@ -1301,7 +1299,6 @@ async def initialize_bot_template_with_config(botchain_name: str, org_name: str)
     global bot_template
     
     logger.info(f"🚀 INITIALIZING BOT TEMPLATE WITH CUSTOM CONFIG: {botchain_name}/{org_name}")
-    print(f"🚀 INITIALIZING BOT TEMPLATE WITH CUSTOM CONFIG: {botchain_name}/{org_name}")
     
     try:
         # Get API credentials from environment
@@ -1311,13 +1308,10 @@ async def initialize_bot_template_with_config(botchain_name: str, org_name: str)
         
         if not a5_base_url or not a5_api_key:
             logger.error("❌ Missing required environment variables: A5_BASE_URL or A5_API_KEY")
-            print("❌ Missing required environment variables: A5_BASE_URL or A5_API_KEY")
             return None
         
         # Make direct API call
         template_endpoint = f"{a5_base_url}{a5_template_url}"
-        print(f"🔄 FETCHING TEMPLATE: {template_endpoint}")
-        print(f"🔧 REQUEST: botchain_name={botchain_name}, org_name={org_name}")
         
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -1338,27 +1332,16 @@ async def initialize_bot_template_with_config(botchain_name: str, org_name: str)
                 bot_template = template_data
                 
                 logger.info("✅ CUSTOM TEMPLATE LOADED SUCCESSFULLY")
-                print("✅ CUSTOM TEMPLATE LOADED SUCCESSFULLY")
-                print(f"🔧 LOADED BOTCHAIN: {botchain_name}")
-                print(f"🔧 LOADED ORG: {org_name}")
-                
-                # Print template summary
-                if bot_template and bot_template.get("data"):
-                    print(f"📊 Custom template for botchain '{botchain_name}' contains {len(bot_template['data'])} flows:")
-                    for flow_key, flow_data in bot_template["data"].items():
-                        flow_type = flow_data.get("type", "unknown")
-                        flow_text = flow_data.get("text", "N/A")
-                        print(f"   🔹 {flow_key}: {flow_type} - '{flow_text}'")
+                logger.info(f"🔧 LOADED BOTCHAIN: {botchain_name}")
+                logger.info(f"🔧 LOADED ORG: {org_name}")
                 
                 return bot_template
             else:
                 logger.error(f"❌ API ERROR: {response.status_code} - {response.text}")
-                print(f"❌ API ERROR: {response.status_code} - {response.text}")
                 return None
-                
+            
     except Exception as e:
         logger.error(f"❌ CUSTOM TEMPLATE INITIALIZATION ERROR: {e}")
-        print(f"❌ CUSTOM TEMPLATE INITIALIZATION ERROR: {e}")
         return None
 
 # Removed find_matching_intent - now using LLM-based detection
@@ -1504,7 +1487,7 @@ def add_agent_response_to_history(flow_state: FlowState, response_text: str):
 
 def print_flow_status(room_name: str, flow_state: FlowState, action: str, details: str = ""):
     """Print visual flow status to console"""
-    print("\n" + "="*80)
+    print("="*80)
     print(f"🎯 FLOW TRACKING - Room: {room_name}")
     print(f"📋 Action: {action}")
     print(f"📍 Current Flow: {flow_state.current_flow or 'None'}")
@@ -1513,7 +1496,7 @@ def print_flow_status(room_name: str, flow_state: FlowState, action: str, detail
         print(f"💬 User Responses: {flow_state.user_responses}")
     if details:
         print(f"📝 Details: {details}")
-    print("="*80 + "\n")
+    print("="*80)
 
 async def process_flow_message(room_name: str, user_message: str, frontend_conversation_history: List[Dict[str, str]] = None, botchain_name: str = None, org_name: str = None) -> Dict[str, Any]:
     """Process user message through the flow system"""
@@ -1521,8 +1504,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     
     # Check if we need to load template with custom configuration
     if botchain_name:
-        logger.info(f"FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name or 'default'}")
-        print(f"🔧 FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name or 'default'}")
+        logger.info(f"🔧 FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name or 'default'}")
         try:
             await initialize_bot_template_with_config(botchain_name, org_name or "alive5stage0")
             logger.info(f"FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")

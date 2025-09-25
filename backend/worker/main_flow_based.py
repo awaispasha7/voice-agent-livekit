@@ -76,21 +76,21 @@ env_loaded = False
 for env_path in env_paths:
     if env_path.exists():
         load_dotenv(dotenv_path=str(env_path))
-        print(f"✅ Loaded .env from: {env_path}")
+        # print(f"✅ Loaded .env from: {env_path}")  # Commented out to reduce log clutter
         env_loaded = True
         break
 
 if not env_loaded:
-    print("⚠️ No .env file found in any expected location")
-    print(f"   Searched paths: {[str(p) for p in env_paths]}")
+    # print("⚠️ No .env file found in any expected location")  # Commented out to reduce log clutter
+    # print(f"   Searched paths: {[str(p) for p in env_paths]}")
     # Fallback to default behavior
     load_dotenv()
 
-# Configure logging
+# Configure logging with clean format (no systemd prefixes)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format='%(message)s',  # Clean format without timestamps/prefixes
+    force=True  # Override any existing configuration
 )
 logger = logging.getLogger("flow-based-voice-agent")
 logger.setLevel(logging.INFO)
@@ -100,10 +100,10 @@ logging.getLogger("livekit.agents.utils.aio.duplex_unix").setLevel(logging.WARNI
 logging.getLogger("livekit.agents.cli.watcher").setLevel(logging.WARNING)
 logging.getLogger("livekit.agents.ipc.channel").setLevel(logging.WARNING)
 
-# Debug: Show current working directory and file locations
-print(f"🔍 DEBUG: Current working directory: {os.getcwd()}")
-print(f"🔍 DEBUG: Worker file location: {__file__}")
-print(f"🔍 DEBUG: Environment variables loaded: {env_loaded}")
+# Debug: Show current working directory and file locations (commented out to reduce log clutter)
+# print(f"🔍 DEBUG: Current working directory: {os.getcwd()}")
+# print(f"🔍 DEBUG: Worker file location: {__file__}")
+# print(f"🔍 DEBUG: Environment variables loaded: {env_loaded}")
 
 # Verify environment variables
 required_vars = ["OPENAI_API_KEY", "DEEPGRAM_API_KEY", "CARTESIA_API_KEY", "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"]

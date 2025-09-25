@@ -1,7 +1,22 @@
-# View backend service logs
+# View backend service logs with clean output (no systemd prefixes)
 Write-Host "Alive5 Backend Logs" -ForegroundColor Green
 Write-Host "==================" -ForegroundColor Green
 Write-Host "Press Ctrl+C to exit" -ForegroundColor Yellow
 Write-Host ""
 
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=10 ubuntu@18.210.238.67 "sudo journalctl -u alive5-backend -f --no-pager"
+# Set UTF-8 encoding for proper emoji display
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=10 ubuntu@18.210.238.67 "sudo journalctl -u alive5-backend -f --no-pager" | ForEach-Object {
+    # Remove systemd prefixes like "Sep 25 12:32:06 ip-172-26-1-10 python[93882]: "
+    if ($_ -match '^[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+[^\s]+\s+python\[\d+\]:\s*(.*)$') {
+        # Clean up encoded emojis
+        $cleanMessage = $matches[1] -replace '≡ƒÜÇ', '✅'
+        Write-Host $cleanMessage
+    } else {
+        # Clean up encoded emojis
+        $cleanLine = $_ -replace '≡ƒÜÇ', '✅'
+        Write-Host $cleanLine
+    }
+}
