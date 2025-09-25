@@ -241,10 +241,8 @@ class DynamicVoiceAgent {
             return;
         }
         
-        if (this.connectionAttempts >= this.maxConnectionAttempts) {
-            this.showStatus('Maximum connection attempts reached. Please refresh the page.', 'error');
-            return;
-        }
+        // Reset connection attempts for new manual attempts
+        this.connectionAttempts = 0;
         
         try {
             this.connectionAttempts++;
