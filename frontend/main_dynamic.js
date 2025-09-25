@@ -224,6 +224,15 @@ class DynamicVoiceAgent {
             return;
         }
         
+        // Get botchain and org info from form
+        const botchainName = document.getElementById('botchainName')?.value?.trim() || null;
+        const orgName = document.getElementById('orgName')?.value?.trim() || null;
+        
+        if (!botchainName) {
+            this.showStatus('Please enter a bot name (botchain)', 'error');
+            return;
+        }
+        
         if (this.connectionAttempts >= this.maxConnectionAttempts) {
             this.showStatus('Maximum connection attempts reached. Please refresh the page.', 'error');
             return;
@@ -231,12 +240,46 @@ class DynamicVoiceAgent {
         
         try {
             this.connectionAttempts++;
-            this.showStatus('Connecting to Alive5 Support with dynamic intent detection...', 'connecting');
+            this.showStatus('Loading bot configuration...', 'connecting');
             document.getElementById('joinBtn').disabled = true;
             
-            // Get botchain and org info from form
-            const botchainName = document.getElementById('botchainName')?.value?.trim() || null;
-            const orgName = document.getElementById('orgName')?.value?.trim() || null;
+            // Step 1: Validate and load template
+            this.showStatus('Loading bot configuration...', 'connecting');
+            const templateResponse = await this.fetchWithFallback('/api/validate_and_load_template', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    botchain_name: botchainName,
+                    org_name: orgName || 'alive5stage0'
+                })
+            });
+            
+            if (!templateResponse.ok) {
+                throw new Error('Failed to validate bot configuration');
+            }
+            
+            const templateResult = await templateResponse.json();
+            
+            if (templateResult.status !== 'success') {
+                // Handle different error types
+                let errorMessage = templateResult.message;
+                if (templateResult.error_type === 'not_found') {
+                    errorMessage = `Bot "${botchainName}" not found. Please check the bot name and try again.`;
+                } else if (templateResult.error_type === 'timeout') {
+                    errorMessage = `Timeout loading bot "${botchainName}". Please check your connection and try again.`;
+                } else if (templateResult.error_type === 'missing_parameter') {
+                    errorMessage = 'Please enter a bot name to continue.';
+                }
+                
+                this.showStatus(errorMessage, 'error');
+                document.getElementById('joinBtn').disabled = false;
+                return;
+            }
+            
+            // Template loaded successfully
+            this.showStatus(`Bot "${botchainName}" loaded successfully! Connecting to voice chat...`, 'connecting');
             
             // Get connection details
             const response = await this.fetchWithFallback(this.config.ENDPOINTS.CONNECTION_DETAILS, {
@@ -288,9 +331,9 @@ class DynamicVoiceAgent {
             this.connectionAttempts = 0;
             
             this.showStatus(`
-                Connected to Alive5 Support!<br>
+                Connected to ${botchainName} bot!<br>
                 Room: ${this.currentRoomName}<br>
-                Scott is joining... (This may take 10-15 seconds)<br>
+                Agent is joining... (This may take 10-15 seconds)<br>
                 Dynamic intent detection is active
             `, 'connected');
             

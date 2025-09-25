@@ -1539,57 +1539,63 @@ def print_flow_status(room_name: str, flow_state: FlowState, action: str, detail
     print("="*80)
 
 async def process_flow_message(room_name: str, user_message: str, frontend_conversation_history: List[Dict[str, str]] = None, botchain_name: str = None, org_name: str = None) -> Dict[str, Any]:
-    """Process user message through the flow system"""
+    """Process user message through the flow system - requires template to be loaded"""
     global bot_template
     
-    # Check if we need to load template with custom configuration
-    if botchain_name:
-        logger.info(f"🔧 FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name or 'default'}")
-        try:
-            await initialize_bot_template_with_config(botchain_name, org_name or "alive5stage0")
-            logger.info(f"FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
-            print(f"✅ FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
-        except Exception as e:
-            logger.error(f"FLOW_MANAGEMENT: Error loading template with custom config: {e}")
-            print(f"❌ FLOW_MANAGEMENT: Error loading template with custom config: {e}")
+    # TEMPLATE LOADING IS NOW REQUIRED - No fallback to default template
+    if not botchain_name:
+        logger.error("FLOW_MANAGEMENT: No botchain_name provided - template loading required")
+        return {
+            "status": "error",
+            "message": "Bot configuration not provided. Please specify botchain_name.",
+            "flow_result": {
+                "type": "error",
+                "response": "Please provide bot configuration to start the conversation."
+            }
+        }
+    
+    # Load template with custom configuration
+    logger.info(f"🔧 FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name or 'default'}")
+    try:
+        template_result = await initialize_bot_template_with_config(botchain_name, org_name or "alive5stage0")
+        if not template_result:
+            logger.error(f"FLOW_MANAGEMENT: Failed to load template for botchain: {botchain_name}")
             return {
                 "status": "error",
-                "message": "Failed to load bot configuration",
+                "message": f"Failed to load bot configuration for '{botchain_name}'. Please check your botchain name and try again.",
                 "flow_result": {
                     "type": "error",
-                    "response": "I'm experiencing technical difficulties. Please try again in a moment."
+                    "response": f"I couldn't find the bot configuration '{botchain_name}'. Please verify the bot name and try again."
                 }
             }
+        logger.info(f"FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
+        print(f"✅ FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
+    except Exception as e:
+        logger.error(f"FLOW_MANAGEMENT: Error loading template with custom config: {e}")
+        print(f"❌ FLOW_MANAGEMENT: Error loading template with custom config: {e}")
+        return {
+            "status": "error",
+            "message": f"Error loading bot configuration: {str(e)}",
+            "flow_result": {
+                "type": "error",
+                "response": "I'm experiencing technical difficulties loading the bot configuration. Please try again in a moment."
+            }
+        }
     
-    # Ensure bot template is loaded before processing
+    # Verify template is loaded
     if bot_template is None:
-        logger.warning("FLOW_MANAGEMENT: Bot template not loaded, attempting to initialize...")
-        print("⚠️ BOT TEMPLATE NOT LOADED - ATTEMPTING INITIALIZATION")
-        try:
-            await initialize_bot_template()
-            if bot_template is None:
-                logger.error("FLOW_MANAGEMENT: Failed to initialize bot template during request processing")
-                return {
-                    "status": "error",
-                    "message": "Bot template not available. Please try again.",
-                    "flow_result": {
-                        "type": "error",
-                        "response": "I'm experiencing technical difficulties. Please try again in a moment."
-                    }
-                }
-        except Exception as e:
-            logger.error(f"FLOW_MANAGEMENT: Error initializing bot template during request: {e}")
-            return {
-                "status": "error", 
-                "message": "Bot initialization failed",
-                "flow_result": {
-                    "type": "error",
-                    "response": "I'm experiencing technical difficulties. Please try again in a moment."
-                }
+        logger.error("FLOW_MANAGEMENT: Template loading completed but bot_template is still None")
+        return {
+            "status": "error",
+            "message": "Template loading failed - no template available",
+            "flow_result": {
+                "type": "error",
+                "response": "I'm experiencing technical difficulties. Please try again in a moment."
             }
-    else:
-        logger.info(f"FLOW_MANAGEMENT: Bot template is loaded and ready")
-        print(f"🔧 FLOW_MANAGEMENT: Bot template is loaded and ready")
+        }
+    
+    logger.info(f"FLOW_MANAGEMENT: Bot template is loaded and ready for botchain: {botchain_name}")
+    print(f"🔧 FLOW_MANAGEMENT: Bot template is loaded and ready for botchain: {botchain_name}")
     
     logger.info(f"FLOW_MANAGEMENT: Processing message for room {room_name}: '{user_message}'")
     
@@ -3000,18 +3006,83 @@ async def force_template_update_get():
 
 # Polling endpoints removed - templates loaded on-demand
 
+@app.post("/api/validate_and_load_template")
+async def validate_and_load_template(request: dict):
+    """Validate and load template with proper error handling and timeout"""
+    try:
+        botchain_name = request.get("botchain_name")
+        org_name = request.get("org_name", "alive5stage0")
+        
+        if not botchain_name:
+            return {
+                "status": "error",
+                "message": "botchain_name is required",
+                "error_type": "missing_parameter"
+            }
+        
+        logger.info(f"🔍 TEMPLATE_VALIDATION: Validating botchain '{botchain_name}' for org '{org_name}'")
+        
+        # Load template with timeout
+        import asyncio
+        try:
+            template_result = await asyncio.wait_for(
+                initialize_bot_template_with_config(botchain_name, org_name),
+                timeout=10.0  # 10 second timeout
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"🔍 TEMPLATE_VALIDATION: Timeout loading template for '{botchain_name}'")
+            return {
+                "status": "error",
+                "message": f"Timeout loading bot configuration '{botchain_name}'. Please check your connection and try again.",
+                "error_type": "timeout"
+            }
+        
+        if not template_result:
+            logger.error(f"🔍 TEMPLATE_VALIDATION: Failed to load template for '{botchain_name}'")
+            return {
+                "status": "error",
+                "message": f"Bot configuration '{botchain_name}' not found. Please verify the bot name and try again.",
+                "error_type": "not_found"
+            }
+        
+        # Get template info
+        template_data = template_result.get("data", {})
+        flow_count = len(template_data)
+        greeting_available = any(flow.get("type") == "greeting" for flow in template_data.values())
+        
+        logger.info(f"🔍 TEMPLATE_VALIDATION: Successfully loaded template for '{botchain_name}' - {flow_count} flows, greeting: {greeting_available}")
+        
+        return {
+            "status": "success",
+            "message": f"Bot configuration '{botchain_name}' loaded successfully",
+            "botchain_name": botchain_name,
+            "org_name": org_name,
+            "flow_count": flow_count,
+            "greeting_available": greeting_available,
+            "template_loaded": True
+        }
+        
+    except Exception as e:
+        logger.error(f"🔍 TEMPLATE_VALIDATION: Error validating template: {e}")
+        return {
+            "status": "error",
+            "message": f"Error loading bot configuration: {str(e)}",
+            "error_type": "server_error"
+        }
+
 @app.get("/api/get_greeting")
 async def get_greeting():
-    """Get greeting from template if available"""
+    """Get greeting from template if available - requires template to be loaded"""
     try:
         global bot_template
         
         # Check if template is loaded
         if not bot_template or not bot_template.get("data"):
+            logger.warning("🎯 GREETING API: No template loaded - greeting not available")
             return {
                 "greeting_available": False,
                 "greeting_text": None,
-                "message": "No template loaded"
+                "message": "No template loaded - please load a bot template first"
             }
         
         # Look for greeting bot in template
@@ -3189,11 +3260,11 @@ async def test_intent_detection(request: Dict[str, Any]):
         "available_intents": list(bot_template.get("data", {}).keys()) if bot_template else []
     }
 
-# Initialize bot template on startup
+# No automatic template loading on startup - templates loaded on demand
 @app.on_event("startup")
 async def startup_event():
-    """Initialize bot template on startup"""
-    await initialize_bot_template()
+    """Startup event - no automatic template loading"""
+    logger.info("🚀 Backend started - Templates will be loaded on demand")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

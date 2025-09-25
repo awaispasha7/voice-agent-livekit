@@ -591,10 +591,10 @@
             </div>
 
             <div class="form-group">
-                <label for="botchainName">Bot Chain Name (Optional):</label>
-                <input type="text" id="botchainName" name="botchainName" 
-                       placeholder="e.g., voice-1, sales-bot, support-bot">
-                <small style="color: #6c757d; font-size: 0.8rem;">Leave empty to use default configuration</small>
+                <label for="botchainName">Bot Name (Required):</label>
+                <input type="text" id="botchainName" name="botchainName" required
+                       placeholder="e.g., voice-1, dustin-gpt, sales-bot">
+                <small style="color: #6c757d; font-size: 0.8rem;">Enter the name of the bot you want to connect to</small>
             </div>
 
             <div class="form-group">
@@ -610,7 +610,7 @@
             </div>
 
             <button type="submit" id="joinBtn" class="btn">
-                Join Room
+                Join Voice Chat
             </button>
         </form>
 
