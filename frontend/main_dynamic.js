@@ -1334,7 +1334,7 @@ class DynamicVoiceAgent {
         }
         
         // Clean up transcript container
-        const transcriptContainer = document.getElementById('transcriptContainer');
+        const transcriptContainer = document.getElementById('transcript-container');
         if (transcriptContainer) {
             transcriptContainer.remove();
         }
@@ -1542,6 +1542,12 @@ class DynamicVoiceAgent {
         document.getElementById('chatMessages').style.display = 'flex';
         document.getElementById('chatInputArea').style.display = 'flex';
         
+        // Show transcript container when in chat interface
+        const transcriptContainer = document.getElementById('transcript-container');
+        if (transcriptContainer) {
+            transcriptContainer.style.display = 'block';
+        }
+        
         // Sync voice selectors
         const voiceChangeSelect = document.getElementById('voiceChangeSelect');
         if (voiceChangeSelect) {
@@ -1553,6 +1559,12 @@ class DynamicVoiceAgent {
         document.getElementById('connectionForm').style.display = 'flex';
         document.getElementById('chatMessages').style.display = 'none';
         document.getElementById('chatInputArea').style.display = 'none';
+        
+        // Hide transcript container when returning to connection form
+        const transcriptContainer = document.getElementById('transcript-container');
+        if (transcriptContainer) {
+            transcriptContainer.style.display = 'none';
+        }
     }
 
     addMessage(content, sender, timestamp = null) {
