@@ -531,24 +531,36 @@
         }
 
         .form-group label {
-            display: block;
-            margin-bottom: 0.5rem;
+            display: inline-block;
+            margin-right: 0.75rem;
+            margin-bottom: 0;
             font-weight: 600;
             color: #2c3e50;
+            min-width: 80px;
+            vertical-align: middle;
         }
 
         .form-group input {
-            width: 100%;
+            width: calc(100% - 100px);
             padding: 0.8rem;
             border: 2px solid #e9ecef;
             border-radius: 10px;
             font-size: 1rem;
             transition: all 0.3s ease;
             box-sizing: border-box;
+            display: inline-block;
+            vertical-align: middle;
         }
 
         @media (max-width: 768px) {
+            .form-group label {
+                min-width: 70px;
+                margin-right: 0.5rem;
+                font-size: 0.9rem;
+            }
+            
             .form-group input {
+                width: calc(100% - 80px);
                 padding: 0.75rem;
                 font-size: 16px; /* Prevents zoom on iOS */
             }
@@ -561,7 +573,7 @@
         }
 
         .form-group select {
-            width: 100%;
+            width: calc(100% - 100px);
             padding: 0.8rem;
             border: 2px solid #e9ecef;
             border-radius: 10px;
@@ -570,10 +582,13 @@
             background: white;
             cursor: pointer;
             box-sizing: border-box;
+            display: inline-block;
+            vertical-align: middle;
         }
 
         @media (max-width: 768px) {
             .form-group select {
+                width: calc(100% - 80px);
                 padding: 0.75rem;
                 font-size: 16px; /* Prevents zoom on iOS */
             }
@@ -981,7 +996,7 @@
                     <p id="botStatus">Ready to help</p>
                     <div class="intent-indicator">
                         <span class="intent-label">Intent:</span>
-                        <span id="intentDisplay" class="intent-detecting">Detecting...</span>
+                        <span id="intentDisplay" class="intent-offline">Offline</span>
                     </div>
         </div>
                 <div class="status-indicator">

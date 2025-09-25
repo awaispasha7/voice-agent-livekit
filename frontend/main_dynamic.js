@@ -46,6 +46,9 @@ class DynamicVoiceAgent {
         
         this.bindEvents();
         this.updateDisplay();
+        
+        // Initialize intent display to show "Offline" by default
+        this.updateIntentDisplay();
     }
     
     generateSessionId() {
