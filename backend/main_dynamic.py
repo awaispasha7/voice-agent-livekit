@@ -3255,9 +3255,36 @@ async def change_voice(request: dict):
         if room_name in active_sessions:
             active_sessions[room_name]["selected_voice"] = voice_id
             active_sessions[room_name]["last_updated"] = time.time()
+            logger.info(f"🎤 VOICE_CHANGE: Updated session voice preference to {voice_id}")
+        else:
+            logger.warning(f"🎤 VOICE_CHANGE: Room {room_name} not found in active sessions")
         
-        # Send voice change message to worker via room
-        # This will be handled by the worker when it receives the message
+        # Send voice change signal to worker via LiveKit room
+        try:
+            # Create LiveKit API client
+            livekit_api = api.LiveKitAPI(
+                url=os.getenv("LIVEKIT_URL"),
+                api_key=os.getenv("LIVEKIT_API_KEY"),
+                api_secret=os.getenv("LIVEKIT_API_SECRET")
+            )
+            
+            # Send a data message to the room to notify the worker
+            await livekit_api.room.send_data(
+                room=room_name,
+                data=json.dumps({
+                    "type": "voice_change",
+                    "voice_id": voice_id,
+                    "timestamp": time.time()
+                }).encode('utf-8'),
+                kind=api.DataPacket_Kind.RELIABLE
+            )
+            
+            logger.info(f"🎤 VOICE_CHANGE: Sent voice change signal to room {room_name}")
+            
+        except Exception as e:
+            logger.error(f"🎤 VOICE_CHANGE: Failed to send signal to room: {e}")
+            # Continue anyway - the session update is still useful
+        
         return {
             "status": "success",
             "message": f"Voice changed to {voice_id}",
@@ -3270,7 +3297,7 @@ async def change_voice(request: dict):
         return {
             "status": "error",
             "message": f"Failed to change voice: {str(e)}"
-    }
+        }
 
 @app.get("/api/flow_debug/{room_name}")
 def get_flow_debug(room_name: str):

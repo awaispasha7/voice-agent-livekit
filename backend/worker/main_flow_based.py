@@ -31,6 +31,7 @@ from livekit.agents import (
     RoomOutputOptions,
     AutoSubscribe
 )
+from livekit.rtc import Participant, DataPacketKind
 from livekit.agents.voice.agent import ModelSettings
 from livekit.plugins import (
     deepgram,
@@ -651,6 +652,49 @@ class FlowBasedAssistant(Agent):
             return
         except Exception as e:
             logger.error(f"Aggregate flush error: {e}")
+
+    async def on_data_received(self, data: bytes, participant: Participant, kind: DataPacketKind, topic: str | None) -> None:
+        """Handle data messages from the room"""
+        try:
+            if not data:
+                return
+                
+            message = json.loads(data.decode('utf-8'))
+            message_type = message.get("type")
+            
+            if message_type == "voice_change":
+                voice_id = message.get("voice_id")
+                if voice_id:
+                    logger.info(f"🎤 VOICE_CHANGE: Received voice change signal for voice {voice_id}")
+                    await self._update_voice(voice_id)
+                    
+        except Exception as e:
+            logger.error(f"Error handling data message: {e}")
+
+    async def _update_voice(self, voice_id: str) -> None:
+        """Update the TTS voice for the agent session"""
+        try:
+            if not hasattr(self, 'agent_session') or not self.agent_session:
+                logger.warning("🎤 VOICE_CHANGE: No agent session available to update voice")
+                return
+                
+            # Update the selected voice
+            self.selected_voice = voice_id
+            logger.info(f"🎤 VOICE_CHANGE: Updated selected_voice to {voice_id}")
+            
+            # Create new TTS with the new voice
+            new_tts = cartesia.TTS(
+                model="sonic-2024-10-19",
+                voice=voice_id,
+                api_key=os.getenv("CARTESIA_API_KEY")
+            )
+            
+            # Update the agent session's TTS
+            self.agent_session.tts = new_tts
+            logger.info(f"🎤 VOICE_CHANGE: Successfully updated TTS voice to {voice_id}")
+            
+        except Exception as e:
+            logger.error(f"🎤 VOICE_CHANGE: Failed to update voice: {e}")
 
     async def _process_aggregated_text(self, user_text: str) -> None:
         """Send aggregated text to backend and speak response"""
