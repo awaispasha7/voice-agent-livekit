@@ -388,7 +388,7 @@ class DynamicVoiceAgent {
             }
             
             this.createTranscriptContainer();
-            console.log('🎉 Room connected and chat interface shown');
+            // console.log('🎉 Room connected and chat interface shown');
         });
         
         // Handle participant joining
@@ -1084,7 +1084,7 @@ class DynamicVoiceAgent {
         `;
         document.head.appendChild(style);
         
-        console.log('Enhanced transcript container created');
+        // console.log('Enhanced transcript container created');
     }
     
     initializeConversationLog() {
@@ -1820,7 +1820,7 @@ class DynamicVoiceAgent {
         
         // Clear error status if it's showing worker connection issue
         // Since we removed the status element, we'll just log this
-        console.log('Clearing worker connection issue status');
+        // console.log('Clearing worker connection issue status');
     }
     
     addRetryButton() {
