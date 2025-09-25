@@ -189,24 +189,35 @@ class DynamicVoiceAgent {
     }
     
     bindEvents() {
-        document.getElementById('joinForm').addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.joinRoom();
-        });
+        const joinForm = document.getElementById('joinForm');
+        if (joinForm) {
+            joinForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.joinRoom();
+            });
+        }
         
-        
-        document.getElementById('disconnectBtn').addEventListener('click', () => {
-            this.disconnect();
-        });
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        if (disconnectBtn) {
+            disconnectBtn.addEventListener('click', () => {
+                this.disconnect();
+            });
+        }
 
         // Voice selection handlers
-        document.getElementById('voiceSelect').addEventListener('change', (e) => {
-            this.selectedVoice = e.target.value;
-        });
+        const voiceSelect = document.getElementById('voiceSelect');
+        if (voiceSelect) {
+            voiceSelect.addEventListener('change', (e) => {
+                this.selectedVoice = e.target.value;
+            });
+        }
 
-        document.getElementById('voiceChangeSelect').addEventListener('change', (e) => {
-            this.changeVoice(e.target.value);
-        });
+        const voiceChangeSelect = document.getElementById('voiceChangeSelect');
+        if (voiceChangeSelect) {
+            voiceChangeSelect.addEventListener('change', (e) => {
+                this.changeVoice(e.target.value);
+            });
+        }
         
         document.addEventListener('keydown', (e) => {
             if (e.key === 'r' && e.ctrlKey && !this.isConnected) {
@@ -223,12 +234,8 @@ class DynamicVoiceAgent {
     }
     
     async joinRoom() {
-        this.participantName = document.getElementById('participantName').value.trim();
-        
-        if (!this.participantName) {
-            this.showStatus('Please enter your name', 'error');
-            return;
-        }
+        // Generate unique anonymous participant name
+        this.participantName = `User_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
         
         // Get botchain and org info from form
         const botchainName = document.getElementById('botchainName')?.value?.trim() || null;
@@ -1553,6 +1560,10 @@ class DynamicVoiceAgent {
 
     addMessage(content, sender, timestamp = null) {
         const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) {
+            console.warn('Chat messages container not found');
+            return;
+        }
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${sender}`;
         
@@ -1612,13 +1623,17 @@ class DynamicVoiceAgent {
 
     updateConnectionStatus(status, message) {
         const statusEl = document.getElementById('connectionStatus');
-        statusEl.textContent = message || status;
-        statusEl.className = `connection-status ${status}`;
+        if (statusEl) {
+            statusEl.textContent = message || status;
+            statusEl.className = `connection-status ${status}`;
+        }
     }
 
     showVoiceVisualizer(show = true) {
         const visualizer = document.getElementById('voiceVisualizer');
-        visualizer.style.display = show ? 'flex' : 'none';
+        if (visualizer) {
+            visualizer.style.display = show ? 'flex' : 'none';
+        }
     }
 
     async changeVoice(voiceId) {
