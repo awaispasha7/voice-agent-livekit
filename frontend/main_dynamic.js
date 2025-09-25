@@ -1499,10 +1499,21 @@ class DynamicVoiceAgent {
     }
     
     showStatus(message, type) {
-        const el = document.getElementById('status');
-        el.innerHTML = message;
-        el.className = `status ${type}`;
-        el.style.display = 'block';
+        // Since we removed the status element, we'll use console logging and update connection status
+        console.log(`Status (${type}): ${message}`);
+        
+        // Update the connection status in the chat interface if available
+        const connectionStatus = document.getElementById('connectionStatus');
+        if (connectionStatus) {
+            connectionStatus.textContent = message;
+            connectionStatus.className = `connection-status ${type}`;
+        }
+        
+        // Also update the status text in the header if available
+        const statusText = document.getElementById('statusText');
+        if (statusText) {
+            statusText.textContent = type === 'error' ? 'Error' : type === 'connecting' ? 'Connecting' : 'Offline';
+        }
     }
 
     // New chatbot interface methods
@@ -1735,10 +1746,8 @@ class DynamicVoiceAgent {
         }
         
         // Clear error status if it's showing worker connection issue
-        const statusEl = document.getElementById('status');
-        if (statusEl && statusEl.innerHTML.includes('Worker Connection Issue')) {
-            statusEl.style.display = 'none';
-        }
+        // Since we removed the status element, we'll just log this
+        console.log('Clearing worker connection issue status');
     }
     
     addRetryButton() {
@@ -1768,8 +1777,11 @@ class DynamicVoiceAgent {
             }
         };
         
-        const statusEl = document.getElementById('status');
-        statusEl.appendChild(retryBtn);
+        // Since we removed the status element, we'll append the retry button to the form container
+        const formContainer = document.querySelector('.form-container');
+        if (formContainer) {
+            formContainer.appendChild(retryBtn);
+        }
     }
     
     handleWorkerStatus(statusData) {
