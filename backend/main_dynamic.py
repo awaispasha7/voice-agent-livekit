@@ -1329,6 +1329,9 @@ async def initialize_bot_template_with_config(botchain_name: str, org_name: str)
             
             if response.status_code == 200:
                 template_data = response.json()
+                # Add botchain and org info to template for tracking
+                template_data['botchain_name'] = botchain_name
+                template_data['org_name'] = org_name
                 bot_template = template_data
                 
                 # 🧹 CLEAR ALL FLOW STATES when loading new template
@@ -1554,26 +1557,36 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             }
         }
     
-    # Load template with custom configuration
-    logger.info(f"🔧 FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name or 'default'}")
-    try:
-        template_result = await initialize_bot_template_with_config(botchain_name, org_name or "alive5stage0")
-        if not template_result:
-            logger.error(f"FLOW_MANAGEMENT: Failed to load template for botchain: {botchain_name}")
-            return {
-                "status": "error",
-                "message": f"Failed to load bot configuration for '{botchain_name}'. Please check your botchain name and try again.",
-                "flow_result": {
-                    "type": "error",
-                    "response": f"I couldn't find the bot configuration '{botchain_name}'. Please verify the bot name and try again."
+    # Check if template is already loaded for this botchain
+    global bot_template
+    current_botchain = getattr(bot_template, 'botchain_name', None) if bot_template else None
+    current_org = getattr(bot_template, 'org_name', None) if bot_template else None
+    
+    if (bot_template and 
+        current_botchain == botchain_name and 
+        current_org == (org_name or "alive5stage0")):
+        logger.info(f"🔧 FLOW_MANAGEMENT: Template already loaded for {botchain_name}/{org_name or 'default'} - skipping reload")
+    else:
+        # Load template with custom configuration
+        logger.info(f"🔧 FLOW_MANAGEMENT: Loading template with custom config - Botchain: {botchain_name}, Org: {org_name or 'default'}")
+        try:
+            template_result = await initialize_bot_template_with_config(botchain_name, org_name or "alive5stage0")
+            if not template_result:
+                logger.error(f"FLOW_MANAGEMENT: Failed to load template for botchain: {botchain_name}")
+                return {
+                    "status": "error",
+                    "message": f"Failed to load bot configuration for '{botchain_name}'. Please check your botchain name and try again.",
+                    "flow_result": {
+                        "type": "error",
+                        "response": f"I couldn't find the bot configuration '{botchain_name}'. Please verify the bot name and try again."
+                    }
                 }
-            }
-        logger.info(f"FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
-        print(f"✅ FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
-    except Exception as e:
-        logger.error(f"FLOW_MANAGEMENT: Error loading template with custom config: {e}")
-        print(f"❌ FLOW_MANAGEMENT: Error loading template with custom config: {e}")
-        return {
+            logger.info(f"FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
+            print(f"✅ FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
+        except Exception as e:
+            logger.error(f"FLOW_MANAGEMENT: Error loading template with custom config: {e}")
+            print(f"❌ FLOW_MANAGEMENT: Error loading template with custom config: {e}")
+            return {
             "status": "error",
             "message": f"Error loading bot configuration: {str(e)}",
             "flow_result": {
