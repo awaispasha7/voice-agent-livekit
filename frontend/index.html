@@ -40,10 +40,32 @@
             background: linear-gradient(135deg, #667eea, #764ba2);
             color: white;
             padding: 1.5rem;
+            border-radius: 20px 20px 0 0;
+        }
+
+        .header-main {
             display: flex;
             align-items: center;
             gap: 1rem;
-            border-radius: 20px 20px 0 0;
+        }
+
+        .session-details {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .session-details .session-info {
+            font-size: 0.85rem;
+            opacity: 0.9;
+            line-height: 1.4;
+        }
+
+        .session-details code {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
         }
 
         .avatar {
@@ -885,14 +907,23 @@
     <div class="container">
         <!-- Chat Header -->
         <div class="chat-header">
-            <div class="avatar">🤖</div>
-            <div class="header-info">
-                <h1 id="botName">Voice Assistant</h1>
-                <p id="botStatus">Ready to help</p>
+            <div class="header-main">
+                <div class="avatar">🤖</div>
+                <div class="header-info">
+                    <h1 id="botName">Voice Assistant</h1>
+                    <p id="botStatus">Ready to help</p>
+                </div>
+                <div class="status-indicator">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span id="statusText">Offline</span>
+                </div>
             </div>
-            <div class="status-indicator">
-                <div class="status-dot" id="statusDot"></div>
-                <span id="statusText">Offline</span>
+            <div class="session-details" id="sessionDetails" style="display: none;">
+                <div class="session-info">
+                    <strong>Session ID:</strong> <code id="sessionIdDisplay"></code> • 
+                    <strong>Status:</strong> Ready to connect to Alive5 Support • 
+                    <strong>Features:</strong> Dynamic Intent Detection, Real-time Analytics
+                </div>
             </div>
         </div>
 
@@ -983,8 +1014,6 @@
             </div>
         </div>
 
-        <!-- Status Messages -->
-        <div id="status" class="status" style="display: none;"></div>
     </div>
 
     <!-- Environment Configuration -->

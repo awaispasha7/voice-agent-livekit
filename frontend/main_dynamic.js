@@ -168,17 +168,11 @@ class DynamicVoiceAgent {
             if (label) label.style.display = 'none';
         }
         
-        const statusEl = document.getElementById('status');
-        if (statusEl) {
-            statusEl.innerHTML = `
-                <div class="session-info">
-                    <strong>Session ID:</strong> <code>${this.sessionId}</code><br>
-                    <strong>Status:</strong> Ready to connect to Alive5 Support<br>
-                    <strong>Features:</strong> Dynamic Intent Detection, Real-time Analytics
-                </div>
-            `;
-            statusEl.className = 'status info';
-            statusEl.style.display = 'block';
+        const sessionDetails = document.getElementById('sessionDetails');
+        const sessionIdDisplay = document.getElementById('sessionIdDisplay');
+        if (sessionDetails && sessionIdDisplay) {
+            sessionIdDisplay.textContent = this.sessionId;
+            sessionDetails.style.display = 'block';
         }
         
         const joinBtn = document.getElementById('joinBtn');
