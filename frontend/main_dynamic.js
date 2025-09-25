@@ -375,15 +375,27 @@ class DynamicVoiceAgent {
     setupRoomEvents() {
         // Handle connection state
         this.room.on(LivekitClient.RoomEvent.Connected, () => {
+            console.log('✅ Room connected successfully!');
             this.isConnected = true;
             this.showStatus('Connected to Alive5 Dynamic Voice Support', 'connected');
-            document.getElementById('controls').classList.add('show');
-            document.getElementById('joinBtn').disabled = true;
+            
+            // Show chat interface instead of controls
+            this.showChatInterface();
+            
+            const joinBtn = document.getElementById('joinBtn');
+            if (joinBtn) {
+                joinBtn.disabled = true;
+            }
             
             this.createTranscriptContainer();
-            console.log('Room connected Successfully');
+            console.log('🎉 Room connected and chat interface shown');
         });
         
+        // Handle participant joining
+        this.room.on(LivekitClient.RoomEvent.ParticipantConnected, (participant) => {
+            console.log('👤 Participant joined:', participant.identity, 'isAgent:', participant.isAgent);
+        });
+
         // Handle participant metadata changes (worker status signals)
         this.room.on(LivekitClient.RoomEvent.ParticipantMetadataChanged, (metadata, participant) => {
             if (participant.isAgent) {
@@ -402,7 +414,8 @@ class DynamicVoiceAgent {
             }
         });
         
-        this.room.on(LivekitClient.RoomEvent.Disconnected, () => {
+        this.room.on(LivekitClient.RoomEvent.Disconnected, (reason) => {
+            console.log('🔌 Room disconnected. Reason:', reason);
             this.isConnected = false;
             this.handleDisconnection();
         });
@@ -1029,9 +1042,10 @@ class DynamicVoiceAgent {
             </div>
         `;
         
-        const controls = document.getElementById('controls');
-        if (controls && controls.parentNode) {
-            controls.parentNode.insertBefore(container, controls.nextSibling);
+        // Since we don't have a controls element, we'll append to the chat container
+        const chatContainer = document.querySelector('.chat-container');
+        if (chatContainer) {
+            chatContainer.appendChild(container);
         } else {
             document.querySelector('.container').appendChild(container);
         }
@@ -1756,7 +1770,8 @@ class DynamicVoiceAgent {
     }
     
     showControls() {
-        document.getElementById('controls').classList.add('show');
+        // Since we don't have a controls element, we'll show the chat interface
+        this.showChatInterface();
     }
     
     checkWorkerResponse() {
@@ -1899,7 +1914,10 @@ class DynamicVoiceAgent {
     }
     
     hideControls() {
-        document.getElementById('controls').classList.remove('show');
+        // Since we don't have a controls element, we'll hide the chat interface
+        document.getElementById('connectionForm').style.display = 'block';
+        document.getElementById('chatMessages').style.display = 'none';
+        document.getElementById('chatInputArea').style.display = 'none';
         
         const muteBtn = document.getElementById('muteBtn');
         muteBtn.textContent = '🔇 Mute';
