@@ -388,6 +388,10 @@ class DynamicVoiceAgent {
             }
             
             this.createTranscriptContainer();
+            
+            // Update intent display to show "Detecting..." when connected
+            this.updateIntentDisplay();
+            
             // console.log('🎉 Room connected and chat interface shown');
         });
         
@@ -417,6 +421,10 @@ class DynamicVoiceAgent {
         this.room.on(LivekitClient.RoomEvent.Disconnected, (reason) => {
             console.log('🔌 Room disconnected. Reason:', reason);
             this.isConnected = false;
+            
+            // Update intent display to show "Offline" when disconnected
+            this.updateIntentDisplay();
+            
             this.handleDisconnection();
         });
         
@@ -1095,9 +1103,25 @@ class DynamicVoiceAgent {
     updateIntentDisplay() {
         const intentDisplay = document.getElementById('intentDisplay');
         if (intentDisplay) {
-            const intent = this.currentIntent || 'Detecting...';
+            let intent;
+            let className;
+            
+            if (!this.isConnected) {
+                // When disconnected, show nothing or a neutral state
+                intent = 'Offline';
+                className = 'intent-offline';
+            } else if (this.currentIntent) {
+                // When connected and intent is detected
+                intent = this.currentIntent;
+                className = 'intent-detected';
+            } else {
+                // When connected but no intent detected yet
+                intent = 'Detecting...';
+                className = 'intent-detecting';
+            }
+            
             intentDisplay.textContent = intent;
-            intentDisplay.className = intent === 'Detecting...' ? 'intent-detecting' : 'intent-detected';
+            intentDisplay.className = className;
         }
     }
     
@@ -1327,6 +1351,9 @@ class DynamicVoiceAgent {
         this.updateStatusIndicator('offline');
         this.updateChatHeader('Voice Assistant', 'Ready to help');
         
+        // Update intent display to show "Offline"
+        this.updateIntentDisplay();
+        
         // Clean up analytics interface elements
         const conversationLog = document.getElementById('conversationLog');
         if (conversationLog) {
@@ -1510,8 +1537,16 @@ class DynamicVoiceAgent {
 
     // New chatbot interface methods
     updateChatHeader(botName, status) {
-        document.getElementById('botName').textContent = botName || 'Voice Assistant';
-        document.getElementById('botStatus').textContent = status || 'Ready to help';
+        const botNameElement = document.getElementById('botName');
+        const botStatusElement = document.getElementById('botStatus');
+        
+        if (botNameElement) {
+            botNameElement.textContent = botName || 'Voice Assistant';
+        }
+        
+        if (botStatusElement) {
+            botStatusElement.textContent = status || 'Ready to help';
+        }
     }
 
     updateStatusIndicator(status) {
