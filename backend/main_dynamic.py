@@ -338,11 +338,11 @@ async def is_ambiguous_transcription(user_text: str) -> bool:
     
     # Skip empty or very short inputs
     if not u or len(u) < 2:
-        return True
+            return True
     
     # For very obvious cases, use simple heuristics to avoid unnecessary LLM calls
     if len(u) < 3:
-        return True
+            return True
     
     try:
         # Use LLM to determine if the transcription is complete and meaningful
@@ -397,31 +397,30 @@ Respond with ONLY the JSON object."""
         response_text = response.choices[0].message.content.strip()
         
         # Parse the JSON response
-        try:
-            result = json.loads(response_text)
-            is_complete = result.get("is_complete", False)
-            is_meaningful = result.get("is_meaningful", False)
-            is_garbled = result.get("is_garbled", False)
-            confidence = result.get("confidence", "low")
-            reasoning = result.get("reasoning", "")
-            
-            logger.info(f"🧠 TRANSCRIPTION ANALYSIS: '{u}' -> Complete: {is_complete}, Meaningful: {is_meaningful}, Garbled: {is_garbled}, Confidence: {confidence}")
-            logger.info(f"🧠 REASONING: {reasoning}")
-            
-            # Return True if it's garbled or incomplete/not meaningful
-            if is_garbled:
-                return True
-            if not is_complete or not is_meaningful:
-                return True
-    
-            return False
-
-        except json.JSONDecodeError as e:
-            logger.error(f"🧠 TRANSCRIPTION ANALYSIS: Failed to parse LLM response: {e}")
-            logger.error(f"🧠 RAW RESPONSE: {response_text}")
-            # Fallback to simple heuristics if LLM response is malformed
-            return len(u.split()) <= 2 and not re.search(r"\b(yes|no|ok|okay|thanks|bye|hello|hi)\b", u.lower())
+        result = json.loads(response_text)
+        is_complete = result.get("is_complete", False)
+        is_meaningful = result.get("is_meaningful", False)
+        is_garbled = result.get("is_garbled", False)
+        confidence = result.get("confidence", "low")
+        reasoning = result.get("reasoning", "")
         
+        logger.info(f"🧠 TRANSCRIPTION ANALYSIS: '{u}' -> Complete: {is_complete}, Meaningful: {is_meaningful}, Garbled: {is_garbled}, Confidence: {confidence}")
+        logger.info(f"🧠 REASONING: {reasoning}")
+        
+        # Return True if it's garbled or incomplete/not meaningful
+        if is_garbled:
+            return True
+        if not is_complete or not is_meaningful:
+            return True
+
+        return False
+
+    except json.JSONDecodeError as e:
+        logger.error(f"🧠 TRANSCRIPTION ANALYSIS: Failed to parse LLM response: {e}")
+        logger.error(f"🧠 RAW RESPONSE: {response_text}")
+        # Fallback to simple heuristics if LLM response is malformed
+        return len(u.split()) <= 2 and not re.search(r"\b(yes|no|ok|okay|thanks|bye|hello|hi)\b", u.lower())
+    
     except Exception as e:
         logger.error(f"🧠 TRANSCRIPTION ANALYSIS: Error calling LLM: {e}")
         # Fallback to simple heuristics if LLM call fails
@@ -1329,32 +1328,45 @@ async def initialize_bot_template_with_config(botchain_name: str, org_name: str)
             
             if response.status_code == 200:
                 template_data = response.json()
+                # Check if this is a different template before clearing flow states
+                global bot_template
+                is_different_template = not bot_template or (
+                    bot_template.get('botchain_name') != botchain_name or 
+                    bot_template.get('org_name') != org_name
+                )
+                
                 # Add botchain and org info to template for tracking
                 template_data['botchain_name'] = botchain_name
                 template_data['org_name'] = org_name
                 bot_template = template_data
                 
-                # 🧹 CLEAR ALL FLOW STATES when loading new template
-                logger.info("🧹 CLEARING ALL FLOW STATES - New template loaded")
-                flow_states.clear()
-                
-                # Also clear any persisted flow state files
-                try:
-                    import glob
-                    flow_state_files = glob.glob("flow_states/*.json")
-                    for file_path in flow_state_files:
-                        try:
-                            os.remove(file_path)
-                            logger.info(f"🧹 CLEARED FLOW STATE FILE: {file_path}")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Could not remove flow state file {file_path}: {e}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Could not clear flow state files: {e}")
+                # 🧹 CLEAR ALL FLOW STATES only if this is a different template
+                if is_different_template:
+                    logger.info("🧹 CLEARING ALL FLOW STATES - Different template loaded")
+                    flow_states.clear()
+                    
+                    # Also clear any persisted flow state files
+                    try:
+                        import glob
+                        flow_state_files = glob.glob("flow_states/*.json")
+                        for file_path in flow_state_files:
+                            try:
+                                os.remove(file_path)
+                                logger.info(f"🧹 CLEARED FLOW STATE FILE: {file_path}")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Could not remove flow state file {file_path}: {e}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not clear flow state files: {e}")
+                else:
+                    logger.info("🧹 SKIPPING FLOW STATE CLEAR - Same template reloaded")
                 
                 logger.info("✅ CUSTOM TEMPLATE LOADED SUCCESSFULLY")
                 logger.info(f"🔧 LOADED BOTCHAIN: {botchain_name}")
                 logger.info(f"🔧 LOADED ORG: {org_name}")
-                logger.info(f"🧹 CLEARED {len(flow_states)} FLOW STATES")
+                if is_different_template:
+                    logger.info(f"🧹 CLEARED {len(flow_states)} FLOW STATES")
+                else:
+                    logger.info(f"🧹 PRESERVED {len(flow_states)} FLOW STATES")
                 
                 return bot_template
             else:
@@ -1530,7 +1542,7 @@ def add_agent_response_to_history(flow_state: FlowState, response_text: str):
 
 def print_flow_status(room_name: str, flow_state: FlowState, action: str, details: str = ""):
     """Print visual flow status to console"""
-    print("="*80)
+    print("\n" + "="*80)
     print(f"🎯 FLOW TRACKING - Room: {room_name}")
     print(f"📋 Action: {action}")
     print(f"📍 Current Flow: {flow_state.current_flow or 'None'}")
@@ -1539,7 +1551,7 @@ def print_flow_status(room_name: str, flow_state: FlowState, action: str, detail
         print(f"💬 User Responses: {flow_state.user_responses}")
     if details:
         print(f"📝 Details: {details}")
-    print("="*80)
+    print("="*80 + "\n")
 
 async def process_flow_message(room_name: str, user_message: str, frontend_conversation_history: List[Dict[str, str]] = None, botchain_name: str = None, org_name: str = None) -> Dict[str, Any]:
     """Process user message through the flow system - requires template to be loaded"""
@@ -1582,10 +1594,8 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     }
                 }
             logger.info(f"FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
-            print(f"✅ FLOW_MANAGEMENT: Successfully loaded template for botchain: {botchain_name}")
         except Exception as e:
             logger.error(f"FLOW_MANAGEMENT: Error loading template with custom config: {e}")
-            print(f"❌ FLOW_MANAGEMENT: Error loading template with custom config: {e}")
             return {
             "status": "error",
             "message": f"Error loading bot configuration: {str(e)}",
@@ -1761,66 +1771,66 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 logger.info("FLOW_MANAGEMENT: Greeting intent detected, but greeting is handled by worker - skipping")
                 # Don't send another greeting response, just continue with normal flow
                 pass
-            
-            # Handle regular intent flows
-            logger.info(f"FLOW_MANAGEMENT: ✅ INTENT DETECTED - {matching_intent['intent']} -> {matching_intent['flow_key']}")
-            logger.info(f"FLOW_MANAGEMENT: Flow data: {matching_intent['flow_data']}")
-            
-            flow_state.current_flow = matching_intent["flow_key"]
-            flow_state.current_step = matching_intent["flow_data"]["name"]
-            flow_state.flow_data = matching_intent["flow_data"]
-            auto_save_flow_state()  # Save after flow state changes
-            
-            logger.info(f"FLOW_MANAGEMENT: LLM started flow {flow_state.current_flow} for intent: {matching_intent['intent']}")
-            logger.info(f"FLOW_MANAGEMENT: Current step set to: {flow_state.current_step}")
-            logger.info(f"FLOW_MANAGEMENT: Flow data type: {matching_intent['flow_data'].get('type')}")
-            logger.info(f"FLOW_MANAGEMENT: Has next_flow: {bool(matching_intent['flow_data'].get('next_flow'))}")
-            
-            # Check if this intent has a next_flow and automatically transition to it
-            next_flow = matching_intent["flow_data"].get("next_flow")
-            if next_flow:
-                logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
-                flow_state.current_step = next_flow.get("name")
-                flow_state.flow_data = next_flow
-                auto_save_flow_state()  # Save after step transition
-                
-                print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
-                                f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
-                
-                # Use the next_flow response instead of intent response
-                response_text = next_flow.get("text", "")
-                add_agent_response_to_history(flow_state, response_text)
-                
-                return {
-                    "type": "flow_started",
-                    "flow_name": matching_intent["intent"],
-                    "response": response_text,
-                    "next_step": next_flow.get("next_flow")
-                }
             else:
-                # No next_flow, use intent response
-                logger.info(f"FLOW_MANAGEMENT: No next_flow found for intent, using intent response")
-                print_flow_status(room_name, flow_state, "🎉 FLOW STARTED", 
-                                f"Intent: {matching_intent['intent']} | Flow: {matching_intent['flow_key']} | Response: '{matching_intent['flow_data'].get('text', '')}'")
+                # Handle regular intent flows
+                logger.info(f"FLOW_MANAGEMENT: ✅ INTENT DETECTED - {matching_intent['intent']} -> {matching_intent['flow_key']}")
+                logger.info(f"FLOW_MANAGEMENT: Flow data: {matching_intent['flow_data']}")
                 
-                # Add agent response to conversation history
-                response_text = matching_intent["flow_data"].get("text", "")
-                if not response_text or response_text == "N/A":
-                    response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
-                    logger.warning(f"FLOW_MANAGEMENT: Intent response was empty or N/A, using generic fallback")
+                flow_state.current_flow = matching_intent["flow_key"]
+                flow_state.current_step = matching_intent["flow_data"]["name"]
+                flow_state.flow_data = matching_intent["flow_data"]
+                auto_save_flow_state()  # Save after flow state changes
                 
-                # Ensure we have a valid response
-                if not response_text or response_text.strip() == "":
-                    response_text = f"I can help you with {matching_intent['intent']}. What would you like to know?"
+                logger.info(f"FLOW_MANAGEMENT: LLM started flow {flow_state.current_flow} for intent: {matching_intent['intent']}")
+                logger.info(f"FLOW_MANAGEMENT: Current step set to: {flow_state.current_step}")
+                logger.info(f"FLOW_MANAGEMENT: Flow data type: {matching_intent['flow_data'].get('type')}")
+                logger.info(f"FLOW_MANAGEMENT: Has next_flow: {bool(matching_intent['flow_data'].get('next_flow'))}")
                 
-                add_agent_response_to_history(flow_state, response_text)
-                
-                return {
-                    "type": "flow_started",
-                    "flow_name": matching_intent["intent"],
-                    "response": response_text,
-                    "next_step": matching_intent["flow_data"].get("next_flow")
-                }
+                # Check if this intent has a next_flow and automatically transition to it
+                next_flow = matching_intent["flow_data"].get("next_flow")
+                if next_flow:
+                    logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
+                    flow_state.current_step = next_flow.get("name")
+                    flow_state.flow_data = next_flow
+                    auto_save_flow_state()  # Save after step transition
+                    
+                    print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
+                                    f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
+                    
+                    # Use the next_flow response instead of intent response
+                    response_text = next_flow.get("text", "")
+                    add_agent_response_to_history(flow_state, response_text)
+                    
+                    return {
+                        "type": "flow_started",
+                        "flow_name": matching_intent["intent"],
+                        "response": response_text,
+                        "next_step": next_flow.get("next_flow")
+                    }
+                else:
+                    # No next_flow, use intent response
+                    logger.info(f"FLOW_MANAGEMENT: No next_flow found for intent, using intent response")
+                    print_flow_status(room_name, flow_state, "🎉 FLOW STARTED", 
+                                    f"Intent: {matching_intent['intent']} | Flow: {matching_intent['flow_key']} | Response: '{matching_intent['flow_data'].get('text', '')}'")
+                    
+                    # Add agent response to conversation history
+                    response_text = matching_intent["flow_data"].get("text", "")
+                    if not response_text or response_text == "N/A":
+                        response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+                        logger.warning(f"FLOW_MANAGEMENT: Intent response was empty or N/A, using generic fallback")
+                    
+                    # Ensure we have a valid response
+                    if not response_text or response_text.strip() == "":
+                        response_text = f"I can help you with {matching_intent['intent']}. What would you like to know?"
+                    
+                    add_agent_response_to_history(flow_state, response_text)
+                    
+                    return {
+                        "type": "flow_started",
+                        "flow_name": matching_intent["intent"],
+                        "response": response_text,
+                        "next_step": matching_intent["flow_data"].get("next_flow")
+                    }
         else:
             # No matching intent found, but check for escalation before FAQ fallback
             logger.info("FLOW_MANAGEMENT: ❌ LLM found no matching intent, checking for escalation")
@@ -1846,11 +1856,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             return await get_faq_response(user_message, flow_state=flow_state)
     
     # SMART MESSAGE PROCESSING: Use LLM to analyze every user message
-    print(f"🔍 FLOW STATE DEBUG: Room: {room_name}")
-    print(f"🔍 FLOW STATE DEBUG: Current flow: {flow_state.current_flow}")
-    print(f"🔍 FLOW STATE DEBUG: Current step: {flow_state.current_step}")
-    print(f"🔍 FLOW STATE DEBUG: Flow data: {flow_state.flow_data}")
-    print(f"🔍 FLOW STATE DEBUG: Flow data type: {flow_state.flow_data.get('type') if flow_state.flow_data else 'None'}")
+    logger.info(f"🔍 FLOW STATE: {room_name} -> Flow: {flow_state.current_flow}, Step: {flow_state.current_step}")
     
     current_flow_context = {
         "current_flow": flow_state.current_flow,
@@ -1885,18 +1891,13 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     if flow_state.current_flow and flow_state.current_step:
         logger.info(f"FLOW_MANAGEMENT: Already in flow {flow_state.current_flow}, step {flow_state.current_step}")
         logger.info(f"FLOW_MANAGEMENT: Flow data: {flow_state.flow_data}")
-        print(f"🔍 FLOW DEBUG: Current flow: {flow_state.current_flow}, step: {flow_state.current_step}")
-        print(f"🔍 FLOW DEBUG: Flow data type: {flow_state.flow_data.get('type') if flow_state.flow_data else 'None'}")
         
         
         # Check if current step is a question, greeting, or message and user provided a response
         current_step_data = flow_state.flow_data
-        print(f"🔍 STEP DEBUG: Current step data: {current_step_data}")
-        print(f"🔍 STEP DEBUG: Step type: {current_step_data.get('type') if current_step_data else 'None'}")
         if current_step_data and current_step_data.get("type") in ["question", "greeting", "message"]:
             step_type = current_step_data.get("type")
             logger.info(f"FLOW_MANAGEMENT: Current step is a {step_type}, processing user response: '{user_message}'")
-            print(f"🔍 STEP DEBUG: Processing {step_type} step")
             
             # Global farewell within any step context
             um_low_q = (user_message or "").lower().strip()
@@ -3279,7 +3280,7 @@ async def change_voice(request: dict):
                     "voice_id": voice_id,
                     "timestamp": time.time()
                 }).encode('utf-8'),
-                kind=api.DataPacket_Kind.RELIABLE
+                kind=api.DataPacketKind.RELIABLE
             )
             
             logger.info(f"🎤 VOICE_CHANGE: Sent voice change signal to room {room_name}")

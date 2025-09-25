@@ -225,8 +225,7 @@ class FlowBasedLLM(llm.LLM):
             except Exception as e:
                 logger.warning(f"🔧 Could not get session info for botchain: {e}")
             
-            logger.info(f"🔧 Making HTTP request to: {self.backend_url}/api/process_flow_message")
-            logger.info(f"🔧 Request payload: room_name={self.room_name}, user_message='{user_message}', botchain_name={botchain_name}")
+            logger.info(f"🔧 Processing message: '{user_message}'")
             
             # Prepare request payload
             payload = {
@@ -250,16 +249,13 @@ class FlowBasedLLM(llm.LLM):
                 )
                 
                 logger.info(f"🔧 Backend response status: {response.status_code}")
-                logger.info(f"🔧 Backend response text: {response.text}")
                 
                 if response.status_code == 200:
                     data = response.json()
-                    logger.info(f"🔧 Backend response data: {data}")
                     
                     # Check for both "success" and "processed" status
                     if data.get("status") in ["success", "processed"] and "flow_result" in data:
                         flow_result = data["flow_result"]
-                        logger.info(f"🔧 Flow result: {flow_result}")
                         
                         # Normalize fields
                         ftype = (flow_result or {}).get("type")
@@ -291,7 +287,6 @@ class FlowBasedLLM(llm.LLM):
                         
                         if ftype == "error":
                             response_text = response_text or "I'm here to help!"
-                            logger.info(f"🔧 Error response: '{response_text}'")
                             return {"text": response_text, "type": "error"}
                         
                         if ftype == "agent_handoff":
@@ -623,7 +618,7 @@ class FlowBasedAssistant(Agent):
     
     async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
         """Called when user finishes speaking; aggregate multiple turns before processing"""
-        logger.info(f"🎤 USER TURN COMPLETED: '{new_message.text_content}'")
+        logger.info(f"\n🎤 USER TURN COMPLETED: '{new_message.text_content}'")
         self._last_chat_ctx = turn_ctx
         text = (new_message.text_content or "").strip()
         if not text:
@@ -735,7 +730,7 @@ class FlowBasedAssistant(Agent):
                 "timestamp": datetime.now().isoformat()
             })
 
-            logger.info(f"🎤 Aggregated user message: '{user_text}'")
+            logger.info(f"🎤 Aggregated user message: '{user_text}'\n")
             async with self._backend_call_lock:
                 backend_out = await self.custom_llm._call_backend_async(user_text, conversation_history)
             response_text = backend_out.get("text", "")
