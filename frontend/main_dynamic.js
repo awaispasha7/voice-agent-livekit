@@ -186,9 +186,9 @@ class DynamicVoiceAgent {
         const joinForm = document.getElementById('joinForm');
         if (joinForm) {
             joinForm.addEventListener('submit', (e) => {
-                e.preventDefault();
-                this.joinRoom();
-            });
+            e.preventDefault();
+            this.joinRoom();
+        });
         }
         
         const disconnectBtn = document.getElementById('disconnectBtn');
@@ -395,7 +395,7 @@ class DynamicVoiceAgent {
         this.room.on(LivekitClient.RoomEvent.ParticipantConnected, (participant) => {
             console.log('👤 Participant joined:', participant.identity, 'isAgent:', participant.isAgent);
         });
-
+        
         // Handle participant metadata changes (worker status signals)
         this.room.on(LivekitClient.RoomEvent.ParticipantMetadataChanged, (metadata, participant) => {
             if (participant.isAgent) {
@@ -784,8 +784,8 @@ class DynamicVoiceAgent {
         // Handle different flow types
         switch (flowType) {
             case 'flow_started':
-                const flowName = flowResult.flow_name || 'Unknown';
-                this.handleIntentUpdate(flowName, 'Flow System');
+            const flowName = flowResult.flow_name || 'Unknown';
+            this.handleIntentUpdate(flowName, 'Flow System');
                 break;
                 
             case 'agent_handoff':
@@ -1088,23 +1088,16 @@ class DynamicVoiceAgent {
     }
     
     initializeConversationLog() {
-        const logContainer = document.createElement('div');
-        logContainer.id = 'conversationLog';
-        logContainer.className = 'conversation-log';
-        logContainer.innerHTML = `
-            <h4>🎯 Conversation Analytics</h4>
-            <div class="intent-status">
-                <span class="current-intent">Current Intent: <strong id="current-intent-display">${this.currentIntent || 'Detecting...'}</strong></span>
-                <span class="auto-detection">🤖 Live detection</span>
-            </div>
-            <div class="log-entries" id="logEntries"></div>
-        `;
-        
-        const container = document.querySelector('.container');
-        if (container) {
-            // Add margin instead of divider for cleaner look
-            logContainer.style.marginTop = '2rem';
-            container.appendChild(logContainer);
+        // Simple intent indicator in header - no complex analytics interface
+        this.updateIntentDisplay();
+    }
+    
+    updateIntentDisplay() {
+        const intentDisplay = document.getElementById('intentDisplay');
+        if (intentDisplay) {
+            const intent = this.currentIntent || 'Detecting...';
+            intentDisplay.textContent = intent;
+            intentDisplay.className = intent === 'Detecting...' ? 'intent-detecting' : 'intent-detected';
         }
     }
     
@@ -1125,85 +1118,14 @@ class DynamicVoiceAgent {
             this.addMessage(entry.message, entry.type, entry.timestamp);
         }
         
-        let logContainer = document.querySelector('.conversation-log');
-        if (!logContainer) {
-            this.initializeConversationLog();
-            logContainer = document.querySelector('.conversation-log');
-        }
-        
-        const logEntries = logContainer.querySelector('.log-entries');
-        if (!logEntries) return;
-        
-        const logEntryEl = document.createElement('div');
-        logEntryEl.className = `log-entry ${entry.type || ''}`;
-        
-        // Enhanced styling based on entry type
-        const entryStyles = {
-            user: 'background: #e3f2fd; border-left: 4px solid #2196f3; margin: 0.5rem 0; padding: 0.75rem; border-radius: 8px;',
-            agent: 'background: #f3e5f5; border-left: 4px solid #9c27b0; margin: 0.5rem 0; padding: 0.75rem; border-radius: 8px;',
-            system: 'background: #fff3e0; border-left: 4px solid #ff9800; margin: 0.5rem 0; padding: 0.5rem; border-radius: 6px; font-size: 0.9rem;',
-            chat: 'background: #e8f5e8; border-left: 4px solid #4caf50; margin: 0.5rem 0; padding: 0.75rem; border-radius: 8px;'
-        };
-        
-        logEntryEl.style.cssText = entryStyles[entry.type] || entryStyles.user;
-        
-        let displayTime;
-        try {
-            const entryTime = new Date(entry.timestamp);
-            displayTime = entryTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        } catch (e) {
-            displayTime = 'now';
-        }
-        
-        logEntryEl.innerHTML = `
-            <div class="log-header" style="
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 0.5rem;
-                font-size: 0.85rem;
-                opacity: 0.8;
-            ">
-                <span class="speaker" style="font-weight: 600; color: #2c3e50;">${entry.speaker || 'Unknown'}</span>
-                <span class="timestamp" style="color: #6c757d;">${displayTime}</span>
-            </div>
-            <div class="log-message" style="
-                color: #2c3e50;
-                line-height: 1.4;
-                word-wrap: break-word;
-            ">${entry.message}</div>
-        `;
-        
+        // Update intent display if this is an intent update
         if (entry.intent) {
-            const intentSpan = document.createElement('span');
-            intentSpan.className = 'intent-change';
-            intentSpan.style.cssText = `
-                background: #4caf50;
-                color: white;
-                padding: 0.2rem 0.5rem;
-                border-radius: 12px;
-                font-size: 0.75rem;
-                margin-left: 0.5rem;
-            `;
-            intentSpan.textContent = `Intent: ${entry.intent}`;
-            logEntryEl.querySelector('.log-header').appendChild(intentSpan);
+            this.currentIntent = entry.intent;
+            this.updateIntentDisplay();
         }
         
-        logEntries.appendChild(logEntryEl);
-        
-        // Smooth scroll to new entry
-        logEntryEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        
-        // Fade in animation
-        logEntryEl.style.opacity = '0';
-        logEntryEl.style.transform = 'translateY(10px)';
-        setTimeout(() => {
-            logEntryEl.style.transition = 'all 0.3s ease';
-            logEntryEl.style.opacity = '1';
-            logEntryEl.style.transform = 'translateY(0)';
-        }, 10);
-        
-        return logEntryEl;
+        // Simple console logging for debugging (no complex UI)
+        console.log(`[${entry.type.toUpperCase()}] ${entry.speaker}: ${entry.message}`);
     }
     
     handleIntentUpdate(intent, source) {
@@ -1212,22 +1134,8 @@ class DynamicVoiceAgent {
         const oldIntent = this.currentIntent;
         this.currentIntent = intent;
         
-        const intentElement = document.getElementById('current-intent-display');
-        if (intentElement) {
-            const intentLabels = {
-                sales: 'Sales & Pricing',
-                support: 'Technical Support',
-                billing: 'Billing & Account',
-                general: 'General Inquiry'
-            };
-            
-            intentElement.textContent = intentLabels[intent] || intent;
-            intentElement.classList.add('updated');
-            
-            setTimeout(() => {
-                intentElement.classList.remove('updated');
-            }, 2000);
-        }
+        // Update the simple intent display in header
+        this.updateIntentDisplay();
         
         if (oldIntent !== intent) {
             this.addLogEntry({
@@ -1418,6 +1326,18 @@ class DynamicVoiceAgent {
         this.showConnectionForm();
         this.updateStatusIndicator('offline');
         this.updateChatHeader('Voice Assistant', 'Ready to help');
+        
+        // Clean up analytics interface elements
+        const conversationLog = document.getElementById('conversationLog');
+        if (conversationLog) {
+            conversationLog.remove();
+        }
+        
+        // Clean up transcript container
+        const transcriptContainer = document.getElementById('transcriptContainer');
+        if (transcriptContainer) {
+            transcriptContainer.remove();
+        }
         
         // Cleanup audio elements
         document.querySelectorAll('audio').forEach(el => {
