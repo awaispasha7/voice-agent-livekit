@@ -209,17 +209,41 @@ class FlowBasedLLM(llm.LLM):
         try:
             import httpx
             
+            # Get botchain information from session
+            botchain_name = None
+            org_name = None
+            try:
+                session_endpoint = f"{self.backend_url}/api/sessions/{self.room_name}"
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                    session_response = await client.get(session_endpoint)
+                    if session_response.status_code == 200:
+                        session_data = session_response.json()
+                        user_data = session_data.get("user_data", {})
+                        botchain_name = user_data.get("botchain_name")
+                        org_name = user_data.get("org_name")
+            except Exception as e:
+                logger.warning(f"🔧 Could not get session info for botchain: {e}")
+            
             logger.info(f"🔧 Making HTTP request to: {self.backend_url}/api/process_flow_message")
-            logger.info(f"🔧 Request payload: room_name={self.room_name}, user_message='{user_message}'")
+            logger.info(f"🔧 Request payload: room_name={self.room_name}, user_message='{user_message}', botchain_name={botchain_name}")
+            
+            # Prepare request payload
+            payload = {
+                "room_name": self.room_name,
+                "user_message": user_message,
+                "conversation_history": conversation_history
+            }
+            
+            # Add botchain information if available
+            if botchain_name:
+                payload["botchain_name"] = botchain_name
+            if org_name:
+                payload["org_name"] = org_name
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.backend_url}/api/process_flow_message",
-                    json={
-                        "room_name": self.room_name,
-                        "user_message": user_message,
-                        "conversation_history": conversation_history
-                    },
+                    json=payload,
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     timeout=BACKEND_TIMEOUT
                 )
@@ -296,8 +320,23 @@ class FlowBasedLLM(llm.LLM):
             if not backend_healthy:
                 return "I'm experiencing some technical difficulties. Let me connect you to a human agent who can help you right away."
             
+            # Get botchain information from session
+            botchain_name = None
+            org_name = None
+            try:
+                session_endpoint = f"{self.backend_url}/api/sessions/{self.room_name}"
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                    session_response = await client.get(session_endpoint)
+                    if session_response.status_code == 200:
+                        session_data = session_response.json()
+                        user_data = session_data.get("user_data", {})
+                        botchain_name = user_data.get("botchain_name")
+                        org_name = user_data.get("org_name")
+            except Exception as e:
+                logger.warning(f"🔄 Could not get session info for botchain: {e}")
+            
             # Send to backend flow processor
-            logger.info(f"🔄 BACKEND REQUEST: Room={self.room_name}, Message='{user_message}'")
+            logger.info(f"🔄 BACKEND REQUEST: Room={self.room_name}, Message='{user_message}', Botchain={botchain_name}")
             
             async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
                 payload = {
@@ -305,6 +344,12 @@ class FlowBasedLLM(llm.LLM):
                     "user_message": user_message,
                     "conversation_history": conversation_history[-10:]  # Last 10 messages
                 }
+                
+                # Add botchain information if available
+                if botchain_name:
+                    payload["botchain_name"] = botchain_name
+                if org_name:
+                    payload["org_name"] = org_name
                 
                 response = await client.post(
                     f"{self.backend_url}/api/process_flow_message",
