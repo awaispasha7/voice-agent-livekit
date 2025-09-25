@@ -323,12 +323,17 @@
             align-items: center;
             justify-content: center;
             padding: 2rem;
+            flex-direction: column;
+            gap: 1rem;
         }
 
         .form-container {
             width: 100%;
             max-width: 400px;
             text-align: center;
+            margin-bottom: 2rem;
+            position: relative;
+            z-index: 2;
         }
 
         .form-container h2 {
@@ -502,8 +507,10 @@
         .status {
             padding: 1rem;
             border-radius: 12px;
-            margin-bottom: 1rem;
+            margin: 1rem 0;
             font-weight: 500;
+            position: relative;
+            z-index: 1;
         }
 
         /* Toast notification styles */
