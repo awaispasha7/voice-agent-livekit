@@ -234,6 +234,10 @@ class DynamicVoiceAgent {
             this.showStatus('Connecting to Alive5 Support with dynamic intent detection...', 'connecting');
             document.getElementById('joinBtn').disabled = true;
             
+            // Get botchain and org info from form
+            const botchainName = document.getElementById('botchainName')?.value?.trim() || null;
+            const orgName = document.getElementById('orgName')?.value?.trim() || null;
+            
             // Get connection details
             const response = await this.fetchWithFallback(this.config.ENDPOINTS.CONNECTION_DETAILS, {
                 method: 'POST',
@@ -243,7 +247,9 @@ class DynamicVoiceAgent {
                 body: JSON.stringify({
                     participant_name: this.participantName,
                     user_data: {
-                        session_start: new Date().toISOString()
+                        session_start: new Date().toISOString(),
+                        botchain_name: botchainName,
+                        org_name: orgName
                     }
                 })
             });

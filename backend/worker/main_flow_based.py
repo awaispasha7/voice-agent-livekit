@@ -475,8 +475,52 @@ class FlowBasedAssistant(Agent):
     async def _get_greeting_from_backend(self) -> Optional[str]:
         """Get greeting from backend template if available"""
         try:
-            # Call backend to get greeting from template
+            # First, get session info to check for custom botchain
             backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+            session_endpoint = f"{backend_url}/api/sessions/{self.room_name}"
+            
+            botchain_name = None
+            org_name = None
+            
+            # Try to get session info to check for custom botchain
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                    session_response = await client.get(session_endpoint)
+                    if session_response.status_code == 200:
+                        session_data = session_response.json()
+                        user_data = session_data.get("user_data", {})
+                        botchain_name = user_data.get("botchain_name")
+                        org_name = user_data.get("org_name")
+                        
+                        if botchain_name:
+                            logger.info(f"🎯 GREETING BOT: Found custom botchain in session: {botchain_name}/{org_name}")
+                        else:
+                            logger.info("🎯 GREETING BOT: No custom botchain found, using default template")
+            except Exception as e:
+                logger.warning(f"🎯 GREETING BOT: Could not get session info: {e}")
+            
+            # If we have a custom botchain, load it first
+            if botchain_name:
+                try:
+                    logger.info(f"🎯 GREETING BOT: Loading custom template for botchain: {botchain_name}")
+                    # Call the template refresh endpoint with custom botchain
+                    refresh_endpoint = f"{backend_url}/api/refresh_template"
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                        refresh_response = await client.post(
+                            refresh_endpoint,
+                            json={
+                                "botchain_name": botchain_name,
+                                "org_name": org_name or "alive5stage0"
+                            }
+                        )
+                        if refresh_response.status_code == 200:
+                            logger.info(f"🎯 GREETING BOT: Successfully loaded custom template for {botchain_name}")
+                        else:
+                            logger.warning(f"🎯 GREETING BOT: Failed to load custom template: {refresh_response.status_code}")
+                except Exception as e:
+                    logger.warning(f"🎯 GREETING BOT: Error loading custom template: {e}")
+            
+            # Now get the greeting from the (potentially updated) template
             greeting_endpoint = f"{backend_url}/api/get_greeting"
             
             async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:

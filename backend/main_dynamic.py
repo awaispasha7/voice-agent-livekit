@@ -2847,15 +2847,22 @@ async def process_flow_message_endpoint(request: ProcessFlowMessageRequest):
 
 # Template Management Endpoints
 @app.post("/api/refresh_template")
-async def refresh_template():
+async def refresh_template(request: dict = None):
     """Refresh the bot template from Alive5 API using direct API call"""
     try:
-        # Load default template using environment variables
-        default_botchain = os.getenv("A5_BOTCHAIN_NAME", "voice-1")
-        default_org = os.getenv("A5_ORG_NAME", "alive5stage0")
+        # Check if custom botchain parameters are provided
+        if request and request.get("botchain_name"):
+            botchain_name = request.get("botchain_name")
+            org_name = request.get("org_name", "alive5stage0")
+            logger.info(f"🔄 REFRESH_TEMPLATE: Loading custom template - Botchain: {botchain_name}, Org: {org_name}")
+        else:
+            # Load default template using environment variables
+            botchain_name = os.getenv("A5_BOTCHAIN_NAME", "voice-1")
+            org_name = os.getenv("A5_ORG_NAME", "alive5stage0")
+            logger.info(f"🔄 REFRESH_TEMPLATE: Loading default template - Botchain: {botchain_name}, Org: {org_name}")
         
         # Use the same function as initialization
-        result = await initialize_bot_template_with_config(default_botchain, default_org)
+        result = await initialize_bot_template_with_config(botchain_name, org_name)
         
         if result:
             return {
@@ -2863,7 +2870,9 @@ async def refresh_template():
                 "message": "Template refreshed successfully",
                 "template_version": result.get("code", "unknown"),
                 "template_hash": "direct_api_call",
-                "last_updated": datetime.now().isoformat()
+                "last_updated": datetime.now().isoformat(),
+                "botchain_name": botchain_name,
+                "org_name": org_name
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to refresh template")
