@@ -1714,7 +1714,7 @@ class DynamicVoiceAgent {
             if (result.status === 'success') {
                 this.selectedVoice = voiceId;
                 const voiceName = result.voice_name || this.getVoiceName(voiceId);
-                this.addMessage(`Voice changed to ${voiceName}`, 'system');
+                this.addMessage(`Voice changed to ${voiceName}`, 'agent');
                 this.updateConnectionStatus('connected', 'Voice changed successfully');
                 console.log(`🎤 VOICE_CHANGE: Successfully changed voice to ${voiceId} (${voiceName})`);
             } else {
@@ -1774,7 +1774,7 @@ class DynamicVoiceAgent {
             '41f3c367-e0a8-4a85-89e0-c27bae9c9b6d': 'Australian Customer Support Man',
             '421b3369-f63f-4b03-8980-37a44df1d4e8': 'Friendly Australian Man',
             'b043dea0-a007-4bbe-a708-769dc0d0c569': 'Wise Man',
-            '6926713a-4b0c-4b0c-4b0c-4b0c4b0c4b0c': 'Friendly Reading Man',
+            // '6926713a-4b0c-4b0c-4b0c-4b0c4b0c4b0c': 'Friendly Reading Man',
             '3f6e78a8-5283-42aa-b5e7-af82e8bb310c': 'German Reporter Man',
             '63ff761f-c1e8-414b-b969-d1833d1c870c': 'Confident British Man',
             '98a34ef2-2140-4c28-9c71-663dc4dd7022': 'Southern Man',
