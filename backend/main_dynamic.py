@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
 # from livekit.rtc import DataPacketKind
-from livekit.api.room_models import DataPacketKind as APIDataPacketKind
+# from livekit.api.room_models import DataPacketKind as APIDataPacketKind
 from pydantic import BaseModel, Field
 
 # Get the current file's directory
@@ -3383,7 +3383,7 @@ async def change_voice(request: dict):
                     "voice_id": voice_id,
                     "timestamp": time.time()
                 }).encode('utf-8'),
-                kind=APIDataPacketKind.RELIABLE,   # ✅ correct enum
+                kind="RELIABLE",    # ✅ correct enum
                 topic="lk.voice.change"            # optional, but clearer
             )
             
