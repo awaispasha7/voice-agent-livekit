@@ -507,7 +507,7 @@ class DynamicVoiceAgent {
                     this.handleUserTranscription(message, participantInfo, reader.info.attributes);
                 } else if (isAgentIdentity || (!isUserTranscript && participantInfo.identity !== this.participantName)) {
                     // This is likely agent speech - but we'll handle it via our custom agent transcript stream
-                    console.log('🤖 Scott:', message);
+                    // console.log('🤖 Scott:', message);
                     
                     // Clear worker timeout since agent is responding
                     this.clearWorkerTimeoutError();
