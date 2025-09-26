@@ -1,14 +1,17 @@
+import asyncio
+import json
 import logging
 import os
-import uuid
-import asyncio
-import httpx
-from datetime import datetime
-from dotenv import load_dotenv
-from typing import Dict, Any, Optional, Union, Literal, AsyncIterable
-import json
 import re
-import os, psutil, threading, time
+import threading
+import time
+import uuid
+from datetime import datetime
+from typing import Dict, Any, Optional, Union, Literal, AsyncIterable
+
+import httpx
+import psutil
+from dotenv import load_dotenv
 
 def monitor_memory():
     process = psutil.Process(os.getpid())
@@ -60,7 +63,6 @@ def preprocess_text_for_tts(text: str) -> str:
 
 # Load environment variables
 # Try multiple possible paths for .env file
-import os
 from pathlib import Path
 
 # Get the current file's directory

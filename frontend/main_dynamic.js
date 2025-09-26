@@ -66,7 +66,6 @@ class DynamicVoiceAgent {
         for (const baseUrl of urls) {
             try {
                 const url = baseUrl + endpoint;
-                // console.log(`🔄 Trying API call to: ${url}`);
                 
                 const response = await fetch(url, {
                     ...options,
@@ -74,13 +73,10 @@ class DynamicVoiceAgent {
                 });
                 
                 if (response.ok) {
-                    // console.log(`✅ API call successful to: ${url}`);
                     return response;
-                } else {
-                    // console.warn(`⚠️ API call failed with status ${response.status} to: ${url}`);
                 }
             } catch (error) {
-                // console.warn(`❌ API call failed to ${baseUrl + endpoint}:`, error.message);
+                // Continue to next URL
             }
         }
         
@@ -108,7 +104,7 @@ class DynamicVoiceAgent {
         // Check if we've already processed this exact message recently (within 5 seconds)
         if (this.processedMessages.has(messageHash) || 
             (this.lastProcessedMessage === transcriptText && (currentTime - this.lastProcessedTime) < 5000)) {
-            console.log('🔄 Skipping duplicate message processing:', transcriptText);
+            // Skipping duplicate message
             return;
         }
         
@@ -116,7 +112,7 @@ class DynamicVoiceAgent {
         if (this.lastProcessedMessage && 
             this.lastProcessedMessage.includes(transcriptText) && 
             (currentTime - this.lastProcessedTime) < 5000) {
-            console.log('🔄 Skipping partial message processing:', transcriptText);
+            // Skipping partial message
             return;
         }
         
@@ -125,7 +121,7 @@ class DynamicVoiceAgent {
             transcriptText.length < this.lastProcessedMessage.length &&
             this.lastProcessedMessage.startsWith(transcriptText) &&
             (currentTime - this.lastProcessedTime) < 5000) {
-            console.log('🔄 Skipping substring message processing:', transcriptText);
+            // Skipping substring message
             return;
         }
         
@@ -310,8 +306,7 @@ class DynamicVoiceAgent {
             
             if (!response.ok) throw new Error('Failed to get connection details');
             const connectionDetails = await response.json();
-            // console.log('Connection details received:', connectionDetails);
-            console.log('Successfully received connection details');
+            // Connection details received
             
             this.currentRoomName = connectionDetails.roomName;
             
@@ -321,7 +316,7 @@ class DynamicVoiceAgent {
                 dynacast: true,
                 reconnectPolicy: {
                     nextRetryDelayInMs: (context) => {
-                        console.log('Reconnection attempt:', context.retryCount);
+                        // Reconnection attempt
                         return Math.min(1000 * Math.pow(2, context.retryCount), 30000);
                     },
                     maxRetries: 5,
@@ -378,7 +373,7 @@ class DynamicVoiceAgent {
     setupRoomEvents() {
         // Handle connection state
         this.room.on(LivekitClient.RoomEvent.Connected, () => {
-            console.log('✅ Room connected successfully!');
+            // Room connected successfully
             this.isConnected = true;
             this.showStatus('Connected to Alive5 Dynamic Voice Support', 'connected');
             
@@ -395,12 +390,11 @@ class DynamicVoiceAgent {
             // Update intent display to show "Detecting..." when connected
             this.updateIntentDisplay();
             
-            // console.log('🎉 Room connected and chat interface shown');
         });
         
         // Handle participant joining
         this.room.on(LivekitClient.RoomEvent.ParticipantConnected, (participant) => {
-            console.log('👤 Participant joined:', participant.identity, 'isAgent:', participant.isAgent);
+            // Participant joined
         });
         
         // Handle participant metadata changes (worker status signals)
@@ -409,7 +403,6 @@ class DynamicVoiceAgent {
                 try {
                     // Check if metadata is valid JSON string
                     if (!metadata || metadata.trim() === '') {
-                        // console.log('Empty worker metadata received');
                         return;
                     }
                     
@@ -422,7 +415,7 @@ class DynamicVoiceAgent {
         });
         
         this.room.on(LivekitClient.RoomEvent.Disconnected, (reason) => {
-            console.log('🔌 Room disconnected. Reason:', reason);
+            // Room disconnected
             this.isConnected = false;
             
             // Update intent display to show "Offline" when disconnected
@@ -443,7 +436,6 @@ class DynamicVoiceAgent {
                     audioElement.autoplay = true;
                     audioElement.controls = false;
                     document.body.appendChild(audioElement);
-                    // console.log('Created audio element for', participant.identity);
                 }
                 
                 track.attach(audioElement);

@@ -1,29 +1,24 @@
 import os
-from datetime import timedelta, datetime
+import json
+import logging
+import re
+import time
+import uuid
+import hashlib
+import threading
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+
+import httpx
+import openai
+import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
 from livekit.rtc import DataPacketKind
-from dotenv import load_dotenv
-import random
-import time
-import uuid
-import uvicorn
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
-import json
-import logging
-import re
-import openai
-import httpx
-import hashlib
-import threading
-
-
-# Load environment variables
-# Try multiple possible paths for .env file
-import os
-from pathlib import Path
 
 # Get the current file's directory
 current_dir = Path(__file__).parent
@@ -87,31 +82,13 @@ FAQ_BOT_ID = os.getenv("FAQ_BOT_ID", "default-bot-id")
 TEMPLATE_POLLING_INTERVAL = int(os.getenv("TEMPLATE_POLLING_INTERVAL", "1"))  # hours
 TEMPLATE_POLLING_ENABLED = os.getenv("TEMPLATE_POLLING_ENABLED", "true").lower() == "true"
 
-print(f"Loaded credentials:")
-print(f"API_KEY: {LIVEKIT_API_KEY}")
-print(f"API_SECRET: {LIVEKIT_API_SECRET[:10] if LIVEKIT_API_SECRET else 'None'}...")
-print(f"URL: {LIVEKIT_URL}")
-print(f"OPENAI_KEY: {OPENAI_API_KEY[:10] if OPENAI_API_KEY else 'None'}...")
-print(f"A5_BASE_URL: {A5_BASE_URL}")
-print(f"A5_API_KEY: {A5_API_KEY}")
-print(f"A5_TEMPLATE_URL: {A5_TEMPLATE_URL}")
-print(f"A5_FAQ_URL: {A5_FAQ_URL}")
-print(f"A5_BOTCHAIN_NAME: {A5_BOTCHAIN_NAME}")
-print(f"A5_ORG_NAME: {A5_ORG_NAME}")
-print(f"FAQ_BOT_ID: {FAQ_BOT_ID}")
-
-# Debug: Show current working directory and file locations
-print(f"🔍 DEBUG: Current working directory: {os.getcwd()}")
-print(f"🔍 DEBUG: Backend file location: {__file__}")
-print(f"🔍 DEBUG: Environment variables loaded: {env_loaded}")
+# Environment variables loaded successfully
 
 # Create persistence directory
 PERSISTENCE_DIR = "flow_states"
 if not os.path.exists(PERSISTENCE_DIR):
     os.makedirs(PERSISTENCE_DIR)
-    print(f"✅ Created persistence directory: {PERSISTENCE_DIR}")
-else:
-    print(f"✅ Using existing persistence directory: {PERSISTENCE_DIR}")
+# Persistence directory ready
 
 # Intent descriptions for LLM-based detection
 INTENT_DESCRIPTIONS = {
@@ -405,8 +382,7 @@ Respond with ONLY the JSON object."""
         confidence = result.get("confidence", "low")
         reasoning = result.get("reasoning", "")
         
-        logger.info(f"🧠 TRANSCRIPTION ANALYSIS: '{u}' -> Complete: {is_complete}, Meaningful: {is_meaningful}, Garbled: {is_garbled}, Confidence: {confidence}")
-        logger.info(f"🧠 REASONING: {reasoning}")
+        # Transcription analysis completed
         
         # Return True if it's garbled or incomplete/not meaningful
         if is_garbled:
@@ -724,7 +700,7 @@ async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, A
         intent_mapping = {}
         
         for flow_key, flow_data in bot_template["data"].items():
-            logger.info(f"🔍 INTENT_EXTRACTION: Processing flow {flow_key}: type={flow_data.get('type')}, text='{flow_data.get('text')}'")
+            # Processing flow for intent extraction
             if flow_data.get("type") == "intent_bot":
                 intent_name = flow_data.get("text", flow_key)  # Use text field for intent name
                 if intent_name:
@@ -734,7 +710,7 @@ async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, A
                         "flow_data": flow_data,
                         "intent": intent_name
                     }
-                    logger.info(f"🔍 INTENT_EXTRACTION: Added intent '{intent_name}' from flow {flow_key}")
+                    # Intent added to mapping
         
         if not available_intents:
             logger.warning("INTENT_DETECTION: No intents found in template")
@@ -756,18 +732,18 @@ ANALYSIS STEPS:
 3. Match it to the most appropriate intent from the list above
 4. Consider the meaning and intent behind the words, not just exact matches
 
-SPECIAL CASES:
-- Simple greetings like "Hello", "Hi", "Hi there", "How are you?" → respond with "greeting" (let the flow continue naturally)
-- Specific person requests like "speak with Affan", "talk to Affan", "connect me with Affan", "can I speak with Affan" → match with "Speak with Affan" intent (if available)
-- General agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone", "real person", "human agent", "talk to someone", "can I speak with", "I want to speak with", "I need to speak with", "get me someone", "transfer me", "put me through", "connect me to an agent", "can I speak to someone", "I'm looking for someone to speak", "can you connect me with someone" → match with "agent" intent (if available)
-- Sales requests like "sales information", "sales related", "sales", "pricing", "cost", "price" → match with "sales" intent (if available)
-- Marketing requests like "marketing information", "marketing", "campaigns", "advertising" → match with "marketing" intent (if available)
+MATCHING STRATEGY:
+1. Look for exact or close matches to the available intents
+2. Consider the meaning and context, not just exact words
+3. If the user wants to speak with a person/agent, look for any intent that involves speaking with someone
+4. If the user wants information about sales, look for sales-related intents
+5. If the user wants information about marketing, look for marketing-related intents
 
 CRITICAL RULES:
-1. If the user mentions a specific person's name (like "Affan"), prioritize matching with that specific intent (like "Speak with Affan") if available.
-2. If the user is asking to speak with a human, agent, or person in ANY way, they want the "agent" intent (if available in the list).
-3. If the user mentions "sales" or "pricing" or "cost", they want the "sales" intent (if available).
-4. If the user mentions "marketing" or "campaigns", they want the "marketing" intent (if available).
+1. ONLY return intent names that are in the available intents list: {intent_list}
+2. If no intent matches, return "none"
+3. If it's just a greeting, return "greeting"
+4. Do NOT return "agent" or any other intent not in the list above
 
 IMPORTANT: The user said: "{user_message}"
 Think about what they really want. Are they asking to speak to a person? Do they want sales information? Do they want marketing information?
@@ -816,8 +792,41 @@ Examples:
                 print(f"✅ INTENT MATCHED: '{detected_intent}' -> '{intent_name}'")
                 return intent_data
         
-        logger.info(f"INTENT_DETECTION: ❌ No intent found, will use FAQ bot")
+        logger.info(f"INTENT_DETECTION: ❌ No intent found, trying fallback strategy")
         print(f"❌ INTENT NOT FOUND: '{detected_intent}' not in {list(intent_mapping.keys())}")
+        
+        # Fallback strategy: Use keyword matching
+        user_lower = user_message.lower()
+        
+        # Look for agent/person related keywords
+        agent_keywords = ["speak with", "talk to", "connect me", "agent", "human", "person", "someone", "representative"]
+        if any(keyword in user_lower for keyword in agent_keywords):
+            # Find any intent that might be related to speaking with someone
+            for intent_name, intent_data in intent_mapping.items():
+                if "speak" in intent_name.lower() or "talk" in intent_name.lower() or "connect" in intent_name.lower():
+                    logger.info(f"INTENT_DETECTION: 🔄 Fallback matched '{intent_name}' for agent request")
+                    print(f"🔄 FALLBACK MATCH: '{intent_name}' for agent request")
+                    return intent_data
+        
+        # Look for sales keywords
+        sales_keywords = ["sales", "pricing", "cost", "price", "buy", "purchase"]
+        if any(keyword in user_lower for keyword in sales_keywords):
+            for intent_name, intent_data in intent_mapping.items():
+                if "sales" in intent_name.lower():
+                    logger.info(f"INTENT_DETECTION: 🔄 Fallback matched '{intent_name}' for sales request")
+                    print(f"🔄 FALLBACK MATCH: '{intent_name}' for sales request")
+                    return intent_data
+        
+        # Look for marketing keywords
+        marketing_keywords = ["marketing", "campaign", "advertising", "promotion"]
+        if any(keyword in user_lower for keyword in marketing_keywords):
+            for intent_name, intent_data in intent_mapping.items():
+                if "marketing" in intent_name.lower():
+                    logger.info(f"INTENT_DETECTION: 🔄 Fallback matched '{intent_name}' for marketing request")
+                    print(f"🔄 FALLBACK MATCH: '{intent_name}' for marketing request")
+                    return intent_data
+        
+        logger.info(f"INTENT_DETECTION: ❌ No fallback match found, will use FAQ bot")
         return None
             
     except Exception as e:
@@ -1655,7 +1664,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     # Define escalation phrases and helper function here
     # Note: Removed "speak with" from generic escalation to allow specific intents like "Speak with Affan"
     escalate_phrases = [
-        "agent", "human", "representative", "connect me", "talk to", "speak to", "someone", "person", "escalate", "transfer", "over the phone", "over the line"
+        "agent", "human", "representative", "connect me", "talk to", "speak to", "speak with", "someone", "person", "escalate", "transfer", "over the phone", "over the line"
     ]
 
     def _matches_any(phrases: list[str], text: str) -> bool:
@@ -1792,7 +1801,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     # Use the next_flow response instead of intent response
                     response_text = next_flow.get("text", "")
                     add_agent_response_to_history(flow_state, response_text)
-                
+                    
                     return {
                         "type": "flow_started",
                         "flow_name": matching_intent["intent"],
