@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
+from livekit.api import room_service, models
 # from livekit.rtc import DataPacketKind
 # from livekit.api.room_models import DataPacketKind as APIDataPacketKind
 from pydantic import BaseModel, Field
@@ -3376,16 +3377,31 @@ async def change_voice(request: dict):
             )
             
             # Send a data message to the room to notify the worker
-            await livekit_api.room.send_data(
+
+            # await livekit_api.room.send_data(
+            #     room_name,
+            #     data=json.dumps({
+            #         "type": "voice_change",
+            #         "voice_id": voice_id,
+            #         "timestamp": time.time()
+            #     }).encode('utf-8'),
+            #     kind="RELIABLE",
+            #     topic="lk.voice.change"
+            # )
+
+            send_req = models.SendDataRequest(
                 room=room_name,
                 data=json.dumps({
                     "type": "voice_change",
                     "voice_id": voice_id,
-                    "timestamp": time.time()
-                }).encode('utf-8'),
-                kind="RELIABLE",    # ✅ correct enum
-                topic="lk.voice.change"            # optional, but clearer
+                    "timestamp": time.time(),
+                }).encode("utf-8"),
+                kind=models.DataPacketKind.RELIABLE,  # use RELIABLE
+                topic="lk.voice.change",
             )
+
+            # send it
+            await livekit_api.room.send_data(send_req)
             
             logger.info(f"🎤 VOICE_CHANGE: Sent voice change signal to room {room_name}")
             
