@@ -18,7 +18,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
 from livekit.api import room_service
-from livekit.api import room_models
+# from livekit.api import enums
+
+# from livekit.api import room_models
 # from livekit.rtc import DataPacketKind
 # from livekit.api.room_models import DataPacketKind as APIDataPacketKind
 from pydantic import BaseModel, Field
@@ -172,6 +174,7 @@ class ProcessFlowMessageRequest(BaseModel):
 class FlowState(BaseModel):
     current_flow: Optional[str] = None
     current_step: Optional[str] = None
+    flow_key: Optional[str] = None
     flow_data: Optional[Dict[str, Any]] = None
     user_responses: Optional[Dict[str, str]] = None
     conversation_history: List[Dict[str, str]] = Field(default_factory=list)
@@ -1730,6 +1733,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                         flow_state.current_flow = matching_intent["flow_key"]
                         flow_state.current_step = matching_intent["flow_data"]["name"]
                         flow_state.flow_data = matching_intent["flow_data"]
+                        flow_state.flow_key = matching_intent["flow_key"]
                         break
             
             # Also check if the current user message looks like a flow response
@@ -3185,6 +3189,7 @@ async def initialize_greeting_flow(request: dict):
         flow_state.current_flow = greeting_flow_key
         flow_state.current_step = greeting_flow_data.get("name", greeting_flow_key)
         flow_state.flow_data = greeting_flow_data
+        flow_state.flow_key = greeting_flow_key
         
         # Add greeting to conversation history
         add_agent_response_to_history(flow_state, greeting_text)
@@ -3390,19 +3395,21 @@ async def change_voice(request: dict):
             #     topic="lk.voice.change"
             # )
 
-            send_req = room_models.SendDataRequest(
+            
+            send_req = room_service.SendDataRequest(
                 room=room_name,
                 data=json.dumps({
                     "type": "voice_change",
                     "voice_id": voice_id,
                     "timestamp": time.time(),
                 }).encode("utf-8"),
-                kind=room_models.DataPacketKind.RELIABLE,  # use RELIABLE
+                kind=0,
                 topic="lk.voice.change",
             )
 
-            # send it
             await livekit_api.room.send_data(send_req)
+            
+
             
             logger.info(f"🎤 VOICE_CHANGE: Sent voice change signal to room {room_name}")
             

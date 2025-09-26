@@ -971,7 +971,7 @@ async def entrypoint(ctx: JobContext):
     
     try:
         # Connect to room
-        await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+        await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
         logger.info(f"🔗 Connected to room {room_name}")
         
         # Set up assistant references
@@ -1025,6 +1025,17 @@ async def entrypoint(ctx: JobContext):
         )
         
         assistant.agent_session = agent_session
+
+        # ✅ Explicitly subscribe to room data
+
+        def _handle_data(data: bytes, participant: Participant, kind: DataPacketKind, topic: str | None):
+            asyncio.create_task(assistant.on_data_received(data, participant, kind, topic))
+
+        ctx.room.on("data_received", _handle_data)
+
+
+
+        
         logger.info(f"🎙️ Agent session started for {session_id}")
         # on_enter handles initial greeting via TTS
         
