@@ -723,6 +723,7 @@ async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, A
         intent_mapping = {}
         
         for flow_key, flow_data in bot_template["data"].items():
+            logger.info(f"🔍 INTENT_EXTRACTION: Processing flow {flow_key}: type={flow_data.get('type')}, text='{flow_data.get('text')}'")
             if flow_data.get("type") == "intent_bot":
                 intent_name = flow_data.get("text", flow_key)  # Use text field for intent name
                 if intent_name:
@@ -732,6 +733,7 @@ async def detect_flow_intent_with_llm(user_message: str) -> Optional[Dict[str, A
                         "flow_data": flow_data,
                         "intent": intent_name
                     }
+                    logger.info(f"🔍 INTENT_EXTRACTION: Added intent '{intent_name}' from flow {flow_key}")
         
         if not available_intents:
             logger.warning("INTENT_DETECTION: No intents found in template")
@@ -755,14 +757,16 @@ ANALYSIS STEPS:
 
 SPECIAL CASES:
 - Simple greetings like "Hello", "Hi", "Hi there", "How are you?" → respond with "greeting" (let the flow continue naturally)
-- Agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone", "real person", "human agent", "talk to someone", "can I speak with", "I want to speak with", "I need to speak with", "get me someone", "transfer me", "put me through", "connect me to an agent", "can I speak to someone", "I'm looking for someone to speak", "can you connect me with someone" → match with "agent" intent (if available)
+- Specific person requests like "speak with Affan", "talk to Affan", "connect me with Affan", "can I speak with Affan" → match with "Speak with Affan" intent (if available)
+- General agent/human requests like "speak with someone", "talk to an agent", "connect me with a human", "over the phone", "real person", "human agent", "talk to someone", "can I speak with", "I want to speak with", "I need to speak with", "get me someone", "transfer me", "put me through", "connect me to an agent", "can I speak to someone", "I'm looking for someone to speak", "can you connect me with someone" → match with "agent" intent (if available)
 - Sales requests like "sales information", "sales related", "sales", "pricing", "cost", "price" → match with "sales" intent (if available)
 - Marketing requests like "marketing information", "marketing", "campaigns", "advertising" → match with "marketing" intent (if available)
 
 CRITICAL RULES:
-1. If the user is asking to speak with a human, agent, or person in ANY way, they want the "agent" intent (if available in the list).
-2. If the user mentions "sales" or "pricing" or "cost", they want the "sales" intent (if available).
-3. If the user mentions "marketing" or "campaigns", they want the "marketing" intent (if available).
+1. If the user mentions a specific person's name (like "Affan"), prioritize matching with that specific intent (like "Speak with Affan") if available.
+2. If the user is asking to speak with a human, agent, or person in ANY way, they want the "agent" intent (if available in the list).
+3. If the user mentions "sales" or "pricing" or "cost", they want the "sales" intent (if available).
+4. If the user mentions "marketing" or "campaigns", they want the "marketing" intent (if available).
 
 IMPORTANT: The user said: "{user_message}"
 Think about what they really want. Are they asking to speak to a person? Do they want sales information? Do they want marketing information?
@@ -770,6 +774,7 @@ Think about what they really want. Are they asking to speak to a person? Do they
 Respond with ONLY the exact intent name from the list above (case-insensitive), "greeting", or "none" if no intent matches.
 
 Examples:
+- "Can I speak with Affan?" → Speak with Affan (if available, they want to talk to Affan specifically)
 - "Can I speak with someone over the phone?" → agent (if available, they want to talk to a human)
 - "Can I speak with someone, please?" → agent (if available, they want human help)
 - "Connect me to an agent" → agent (if available, they want human help)
@@ -3237,6 +3242,34 @@ def clear_flow_states():
             "message": f"Failed to clear flow states: {str(e)}"
         }
 
+def get_voice_name_from_id(voice_id: str) -> str:
+    """Get human-readable voice name from voice ID"""
+    voice_names = {
+        'a167e0f3-df7e-4d52-a9c3-f949145efdab': 'Customer Support Man (Default)',
+        'a8a1eb38-5f15-4c1d-8722-7ac0f329727d': 'Calm French Woman',
+        '34bde396-9fde-4ebf-ad03-e3a1d1155205': 'New York Woman',
+        '846d6cb0-2301-48b6-9683-48f5618ea2f6': 'Spanish-speaking Lady',
+        '11af83e2-23eb-452f-956e-7fee218ccb5c': 'Midwestern Woman',
+        'ed81fd13-2016-4a49-8fe3-c0d2761695fc': 'Sportsman',
+        '996a8b96-4804-46f0-8e05-3fd4ef1a87cd': 'Storyteller Lady',
+        '34dbb662-8e98-413c-a1ef-1a3407675fe7': 'Spanish-speaking Man',
+        'fb26447f-308b-471e-8b00-8e9f04284eb5': 'Doctor Mischief',
+        '2695b6b5-5543-4be1-96d9-3967fb5e7fec': 'Spanish-speaking Reporter Man',
+        'db832ebd-3cb6-42e7-9d47-912b425adbaa': 'Young Spanish-speaking Woman',
+        '50d6beb4-80ea-4802-8387-6c948fe84208': 'The Merchant',
+        '0418348a-0ca2-4e90-9986-800fb8b3bbc0': 'Stern French Man',
+        'e13cae5c-ec59-4f71-b0a6-266df3c9bb8e': 'Madame Mischief',
+        'db229dfe-f5de-4be4-91fd-7b077c158578': 'German Storyteller Man',
+        '5c42302c-194b-4d0c-ba1a-8cb485c84ab9': 'Female Nurse',
+        '384b625b-da5d-49e8-a76d-a2855d4f31eb': 'German Conversation Man',
+        '6a16c1f4-462b-44de-998d-ccdaa4125a0a': 'Friendly Brazilian Man',
+        'b9de4a89-2257-424b-94c2-db18ba68c81a': 'German Woman',
+        'f9836c6e-a0bd-460e-9d3c-f7299fa60f94': 'Southern Woman',
+        'a01c369f-6d2d-4185-bc20-b32c225eab70': 'British Customer Support Lady',
+        'd4d4b115-57a0-48ea-9a1a-9898966c2966': 'Chinese Woman Narrator'
+    }
+    return voice_names.get(voice_id, f'Unknown Voice ({voice_id[:8]}...)')
+
 @app.post("/api/change_voice")
 async def change_voice(request: dict):
     """Change the TTS voice for a specific room"""
@@ -3291,9 +3324,10 @@ async def change_voice(request: dict):
         
         return {
             "status": "success",
-            "message": f"Voice changed to {voice_id}",
+            "message": f"Voice changed to {get_voice_name_from_id(voice_id)}",
             "room_name": room_name,
-            "voice_id": voice_id
+            "voice_id": voice_id,
+            "voice_name": get_voice_name_from_id(voice_id)
         }
         
     except Exception as e:

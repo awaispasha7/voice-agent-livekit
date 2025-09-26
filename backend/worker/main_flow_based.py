@@ -669,27 +669,52 @@ class FlowBasedAssistant(Agent):
     async def _update_voice(self, voice_id: str) -> None:
         """Update the TTS voice for the agent session"""
         try:
+            logger.info(f"🎤 VOICE_CHANGE: Starting voice update process for voice_id: {voice_id}")
+            
             if not hasattr(self, 'agent_session') or not self.agent_session:
                 logger.warning("🎤 VOICE_CHANGE: No agent session available to update voice")
                 return
                 
             # Update the selected voice
+            old_voice = getattr(self, 'selected_voice', 'default')
             self.selected_voice = voice_id
-            logger.info(f"🎤 VOICE_CHANGE: Updated selected_voice to {voice_id}")
+            logger.info(f"🎤 VOICE_CHANGE: Updated selected_voice from '{old_voice}' to '{voice_id}'")
             
-            # Create new TTS with the new voice
-            new_tts = cartesia.TTS(
-                model="sonic-2024-10-19",
-                voice=voice_id,
-                api_key=os.getenv("CARTESIA_API_KEY")
-            )
+            # Create new TTS with the new voice using the latest sonic-2 model
+            # Try different voice formats to ensure compatibility
+            voice_formats_to_try = [
+                voice_id,  # Direct voice ID
+                f"cartesia.{voice_id}",  # SignalWire format
+                f"cartesia:{voice_id}"   # Alternative format
+            ]
+            
+            new_tts = None
+            for voice_format in voice_formats_to_try:
+                try:
+                    logger.info(f"🎤 VOICE_CHANGE: Trying voice format: '{voice_format}'")
+                    new_tts = cartesia.TTS(
+                        model="sonic-2",  # Use the latest stable model from Cartesia docs
+                        voice=voice_format,   # Try different voice formats
+                        api_key=os.getenv("CARTESIA_API_KEY")
+                    )
+                    logger.info(f"🎤 VOICE_CHANGE: Successfully created TTS with voice format: '{voice_format}'")
+                    break
+                except Exception as e:
+                    logger.warning(f"🎤 VOICE_CHANGE: Failed with voice format '{voice_format}': {e}")
+                    continue
+            
+            if new_tts is None:
+                raise Exception(f"Failed to create TTS with any voice format for voice_id: {voice_id}")
             
             # Update the agent session's TTS
+            old_tts = self.agent_session.tts
             self.agent_session.tts = new_tts
             logger.info(f"🎤 VOICE_CHANGE: Successfully updated TTS voice to {voice_id}")
+            logger.info(f"🎤 VOICE_CHANGE: Old TTS: {type(old_tts)}, New TTS: {type(new_tts)}")
             
         except Exception as e:
             logger.error(f"🎤 VOICE_CHANGE: Failed to update voice: {e}")
+            logger.error(f"🎤 VOICE_CHANGE: Error details: {str(e)}")
 
     async def _process_aggregated_text(self, user_text: str) -> None:
         """Send aggregated text to backend and speak response"""
@@ -975,8 +1000,8 @@ async def entrypoint(ctx: JobContext):
             ),
             llm=custom_llm,  # Use our custom LLM
             tts=cartesia.TTS(
-                model="sonic-2024-10-19",
-                voice=assistant.selected_voice, 
+                model="sonic-2",  # Use the latest stable model from Cartesia docs
+                voice=assistant.selected_voice,  # Will be updated dynamically if needed
                 api_key=os.getenv("CARTESIA_API_KEY")
             ),
             vad=ctx.proc.userdata["vad"],

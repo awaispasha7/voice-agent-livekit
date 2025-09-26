@@ -1691,29 +1691,40 @@ class DynamicVoiceAgent {
 
         try {
             console.log(`🎤 VOICE_CHANGE: Attempting to change voice to ${voiceId} for room ${this.currentRoomName}`);
+            console.log(`🎤 VOICE_CHANGE: Voice name: ${this.getVoiceName(voiceId)}`);
             this.updateConnectionStatus('connecting', 'Changing voice...');
+            
+            const requestBody = {
+                room_name: this.currentRoomName,
+                voice_id: voiceId
+            };
+            console.log(`🎤 VOICE_CHANGE: Request body:`, requestBody);
             
             const response = await this.fetchWithFallback('/api/change_voice', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    room_name: this.currentRoomName,
-                    voice_id: voiceId
-                })
+                body: JSON.stringify(requestBody)
             });
 
+            console.log(`🎤 VOICE_CHANGE: Response status: ${response.status}`);
+            
             if (!response.ok) {
-                throw new Error('Failed to change voice');
+                const errorText = await response.text();
+                console.error(`🎤 VOICE_CHANGE: Response error: ${errorText}`);
+                throw new Error(`Failed to change voice: ${response.status} ${errorText}`);
             }
 
             const result = await response.json();
+            console.log(`🎤 VOICE_CHANGE: Response result:`, result);
             
             if (result.status === 'success') {
                 this.selectedVoice = voiceId;
-                this.addMessage(`Voice changed to ${this.getVoiceName(voiceId)}`, 'system');
+                const voiceName = result.voice_name || this.getVoiceName(voiceId);
+                this.addMessage(`Voice changed to ${voiceName}`, 'system');
                 this.updateConnectionStatus('connected', 'Voice changed successfully');
+                console.log(`🎤 VOICE_CHANGE: Successfully changed voice to ${voiceId} (${voiceName})`);
             } else {
                 throw new Error(result.message || 'Failed to change voice');
             }
