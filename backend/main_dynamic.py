@@ -1653,27 +1653,13 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         save_flow_state_to_file(room_name, flow_state)
     
     # Define escalation phrases and helper function here
+    # Note: Removed "speak with" from generic escalation to allow specific intents like "Speak with Affan"
     escalate_phrases = [
-        "agent", "human", "representative", "connect me", "talk to", "speak to", "speak with", "someone", "person", "escalate", "transfer", "over the phone", "over the line"
+        "agent", "human", "representative", "connect me", "talk to", "speak to", "someone", "person", "escalate", "transfer", "over the phone", "over the line"
     ]
 
     def _matches_any(phrases: list[str], text: str) -> bool:
         return any(p in text for p in phrases)
-
-    # Check for escalation phrases immediately
-    um_low = (user_message or "").lower().strip()
-    if _matches_any(escalate_phrases, um_low):
-        response_text = "I'm connecting you with a human agent. Please hold on."
-        add_agent_response_to_history(flow_state, response_text)
-        auto_save_flow_state()  # Save after escalation
-        logger.info("FLOW_MANAGEMENT: Global escalation detected → initiating agent handoff")
-        return {
-            "type": "agent_handoff",
-            "response": response_text,
-            "flow_state": flow_state,
-            "agent_required": True,
-            "escalation_reason": "user_requested_agent"
-        }
 
     # Initialize conversation history
     if flow_state.conversation_history is None:
@@ -3315,7 +3301,7 @@ async def change_voice(request: dict):
                     "voice_id": voice_id,
                     "timestamp": time.time()
                 }).encode('utf-8'),
-                kind=DataPacketKind.RELIABLE
+                kind=DataPacketKind.RELIABLE_ORDERED
             )
             
             logger.info(f"🎤 VOICE_CHANGE: Sent voice change signal to room {room_name}")
