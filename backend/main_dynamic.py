@@ -16,7 +16,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from livekit import api
+from livekit import api, rtc
 from livekit.api import room_service
 # from livekit.api import enums
 
@@ -204,6 +204,7 @@ def save_flow_state_to_file(room_name: str, flow_state: FlowState) -> bool:
             "current_flow": flow_state.current_flow,
             "current_step": flow_state.current_step,
             "flow_data": flow_state.flow_data,
+            "flow_key": flow_state.flow_key, 
             "conversation_history": flow_state.conversation_history,
             "user_responses": flow_state.user_responses,
             "pending_step": flow_state.pending_step,
@@ -248,6 +249,7 @@ def load_flow_state_from_file(room_name: str) -> Optional[FlowState]:
             current_flow=data.get("current_flow"),
             current_step=data.get("current_step"),
             flow_data=data.get("flow_data"),
+            flow_key=data.get("flow_key"),
             conversation_history=data.get("conversation_history", []),
             user_responses=data.get("user_responses"),
             pending_step=data.get("pending_step"),
@@ -2539,53 +2541,107 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 # ... existing code ...
     
     # Check for intent shift even when in a flow using LLM
+    # print_flow_status(room_name, flow_state, "CHECKING FOR INTENT SHIFT", f"Current flow: {flow_state.current_flow}")
+    # matching_intent = await detect_flow_intent_with_llm(user_message)
+    # if matching_intent and matching_intent["flow_key"] != flow_state.current_flow:
+    #     # User shifted to a different intent - start new flow and auto-transition to its first actionable step
+    #     old_flow = flow_state.current_flow
+    #     logger.info(f"FLOW_MANAGEMENT: LLM detected intent shift from {flow_state.current_flow} to {matching_intent['flow_key']}")
+    #     flow_state.current_flow = matching_intent["flow_key"]
+    #     flow_state.user_responses = {}  # Reset user responses for new flow
+
+    #     # Set to intent node first
+    #     intent_node = matching_intent["flow_data"]
+    #     flow_state.current_step = intent_node["name"]
+    #     flow_state.flow_data = intent_node
+
+    #     print_flow_status(room_name, flow_state, "🔄 INTENT SHIFT DETECTED", 
+    #                     f"From: {old_flow} → To: {matching_intent['flow_key']} | Intent: {matching_intent['intent']}")
+
+    #     # If the intent has a next_flow (e.g., a question), auto-transition to it (same behavior as initial detection)
+    #     next_flow = intent_node.get("next_flow")
+    #     if next_flow:
+    #         flow_state.current_step = next_flow.get("name")
+    #         flow_state.flow_data = next_flow
+
+    #         print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
+    #                         f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
+
+    #         response_text = next_flow.get("text", "")
+    #         add_agent_response_to_history(flow_state, response_text)
+
+    #         return {
+    #             "type": "flow_started",
+    #             "flow_name": matching_intent["intent"],
+    #             "response": response_text,
+    #             "next_step": next_flow.get("next_flow")
+    #         }
+    #     else:
+    #         # No next_flow on intent node; reply with the intent text
+    #         response_text = intent_node.get("text", "")
+    #         if not response_text or response_text == "N/A":
+    #             response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+    #         add_agent_response_to_history(flow_state, response_text)
+    #         return {
+    #             "type": "flow_started",
+    #             "flow_name": matching_intent["intent"],
+    #             "response": response_text,
+    #             "next_step": None
+    #         }
+
     print_flow_status(room_name, flow_state, "CHECKING FOR INTENT SHIFT", f"Current flow: {flow_state.current_flow}")
     matching_intent = await detect_flow_intent_with_llm(user_message)
-    if matching_intent and matching_intent["flow_key"] != flow_state.current_flow:
-        # User shifted to a different intent - start new flow and auto-transition to its first actionable step
-        old_flow = flow_state.current_flow
-        logger.info(f"FLOW_MANAGEMENT: LLM detected intent shift from {flow_state.current_flow} to {matching_intent['flow_key']}")
-        flow_state.current_flow = matching_intent["flow_key"]
-        flow_state.user_responses = {}  # Reset user responses for new flow
 
-        # Set to intent node first
-        intent_node = matching_intent["flow_data"]
-        flow_state.current_step = intent_node["name"]
-        flow_state.flow_data = intent_node
+    # Only shift if intent has a real flow_key (ignore greetings/none)
+    if matching_intent and matching_intent.get("flow_key") and matching_intent.get("type") != "greeting":
+        if matching_intent["flow_key"] != flow_state.current_flow:
+            old_flow = flow_state.current_flow
+            logger.info(f"FLOW_MANAGEMENT: LLM detected intent shift from {flow_state.current_flow} to {matching_intent['flow_key']}")
+            flow_state.current_flow = matching_intent["flow_key"]
+            flow_state.user_responses = {}
 
-        print_flow_status(room_name, flow_state, "🔄 INTENT SHIFT DETECTED", 
-                        f"From: {old_flow} → To: {matching_intent['flow_key']} | Intent: {matching_intent['intent']}")
+            intent_node = matching_intent["flow_data"]
+            flow_state.current_step = intent_node["name"]
+            flow_state.flow_data = intent_node
 
-        # If the intent has a next_flow (e.g., a question), auto-transition to it (same behavior as initial detection)
-        next_flow = intent_node.get("next_flow")
-        if next_flow:
-            flow_state.current_step = next_flow.get("name")
-            flow_state.flow_data = next_flow
+            print_flow_status(
+                room_name,
+                flow_state,
+                "🔄 INTENT SHIFT DETECTED",
+                f"From: {old_flow} → To: {matching_intent['flow_key']} | Intent: {matching_intent['intent']}"
+            )
 
-            print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
-                            f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
+            next_flow = intent_node.get("next_flow")
+            if next_flow:
+                flow_state.current_step = next_flow.get("name")
+                flow_state.flow_data = next_flow
 
-            response_text = next_flow.get("text", "")
-            add_agent_response_to_history(flow_state, response_text)
+                print_flow_status(
+                    room_name,
+                    flow_state,
+                    "🔄 AUTO-TRANSITION",
+                    f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'"
+                )
 
-            return {
-                "type": "flow_started",
-                "flow_name": matching_intent["intent"],
-                "response": response_text,
-                "next_step": next_flow.get("next_flow")
-            }
-        else:
-            # No next_flow on intent node; reply with the intent text
-            response_text = intent_node.get("text", "")
-            if not response_text or response_text == "N/A":
-                response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
-            add_agent_response_to_history(flow_state, response_text)
-            return {
-                "type": "flow_started",
-                "flow_name": matching_intent["intent"],
-                "response": response_text,
-                "next_step": None
-            }
+                response_text = next_flow.get("text", "")
+                add_agent_response_to_history(flow_state, response_text)
+                return {
+                    "type": "flow_started",
+                    "flow_name": matching_intent["intent"],
+                    "response": response_text,
+                    "next_step": next_flow.get("next_flow")
+                }
+            else:
+                response_text = intent_node.get("text", "") or \
+                                f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+                add_agent_response_to_history(flow_state, response_text)
+                return {
+                    "type": "flow_started",
+                    "flow_name": matching_intent["intent"],
+                    "response": response_text,
+                    "next_step": None
+                }
+
     
     # If we reach here, we're in a flow but no specific handling was done
     # This should not happen with the new logic, but as a fallback
@@ -3353,84 +3409,56 @@ async def change_voice(request: dict):
     try:
         room_name = request.get("room_name")
         voice_id = request.get("voice_id")
-        
+
         logger.info(f"🎤 VOICE_CHANGE API: Received request - room: {room_name}, voice: {voice_id}")
-        
+
         if not room_name or not voice_id:
-            logger.error(f"🎤 VOICE_CHANGE API: Missing parameters - room: {room_name}, voice: {voice_id}")
-            return {
-                "status": "error",
-                "message": "room_name and voice_id are required"
-            }
-        
-        logger.info(f"🎤 VOICE_CHANGE: Changing voice for room {room_name} to {voice_id}")
-        
-        # Store voice preference in session
+            logger.error("🎤 VOICE_CHANGE API: Missing parameters")
+            return {"status": "error", "message": "room_name and voice_id are required"}
+
+        # Update local session
         if room_name in active_sessions:
             active_sessions[room_name]["selected_voice"] = voice_id
             active_sessions[room_name]["last_updated"] = time.time()
             logger.info(f"🎤 VOICE_CHANGE: Updated session voice preference to {voice_id}")
         else:
             logger.warning(f"🎤 VOICE_CHANGE: Room {room_name} not found in active sessions")
-        
-        # Send voice change signal to worker via LiveKit room
+
+        # Send signal to worker via LiveKit
+        livekit_api = api.LiveKitAPI(
+            url=os.getenv("LIVEKIT_URL"),
+            api_key=os.getenv("LIVEKIT_API_KEY"),
+            api_secret=os.getenv("LIVEKIT_API_SECRET"),
+        )
         try:
-            # Create LiveKit API client
-            livekit_api = api.LiveKitAPI(
-                url=os.getenv("LIVEKIT_URL"),
-                api_key=os.getenv("LIVEKIT_API_KEY"),
-                api_secret=os.getenv("LIVEKIT_API_SECRET")
-            )
-            
-            # Send a data message to the room to notify the worker
-
-            # await livekit_api.room.send_data(
-            #     room_name,
-            #     data=json.dumps({
-            #         "type": "voice_change",
-            #         "voice_id": voice_id,
-            #         "timestamp": time.time()
-            #     }).encode('utf-8'),
-            #     kind="RELIABLE",
-            #     topic="lk.voice.change"
-            # )
-
-            
+            payload = {
+                "type": "voice_change",
+                "voice_id": voice_id,
+                "timestamp": time.time(),
+            }
             send_req = room_service.SendDataRequest(
                 room=room_name,
-                data=json.dumps({
-                    "type": "voice_change",
-                    "voice_id": voice_id,
-                    "timestamp": time.time(),
-                }).encode("utf-8"),
-                kind=0,
+                data=json.dumps(payload).encode("utf-8"),
+                kind=rtc.DataPacketKind.RELIABLE, 
                 topic="lk.voice.change",
             )
-
             await livekit_api.room.send_data(send_req)
-            
-
-            
             logger.info(f"🎤 VOICE_CHANGE: Sent voice change signal to room {room_name}")
-            
-        except Exception as e:
-            logger.error(f"🎤 VOICE_CHANGE: Failed to send signal to room: {e}")
-            # Continue anyway - the session update is still useful
-        
+        finally:
+            await livekit_api.aclose()  # ✅ stop “Unclosed client session” warnings
+
         return {
             "status": "success",
             "message": f"Voice changed to {get_voice_name_from_id(voice_id)}",
             "room_name": room_name,
             "voice_id": voice_id,
-            "voice_name": get_voice_name_from_id(voice_id)
+            "voice_name": get_voice_name_from_id(voice_id),
         }
-        
+
     except Exception as e:
         logger.error(f"Error changing voice: {e}")
-        return {
-            "status": "error",
-            "message": f"Failed to change voice: {str(e)}"
-    }
+        return {"status": "error", "message": f"Failed to change voice: {str(e)}"}
+
 
 @app.get("/api/flow_debug/{room_name}")
 def get_flow_debug(room_name: str):

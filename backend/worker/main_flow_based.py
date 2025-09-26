@@ -672,51 +672,31 @@ class FlowBasedAssistant(Agent):
         """Update the TTS voice for the agent session"""
         try:
             logger.info(f"🎤 VOICE_CHANGE: Starting voice update process for voice_id: {voice_id}")
-            
+
             if not hasattr(self, 'agent_session') or not self.agent_session:
-                logger.warning("🎤 VOICE_CHANGE: No agent session available to update voice")
+                logger.warning("🎤 VOICE_CHANGE: No agent_session available to update voice")
                 return
-                
+
             # Update the selected voice
             old_voice = getattr(self, 'selected_voice', 'default')
             self.selected_voice = voice_id
             logger.info(f"🎤 VOICE_CHANGE: Updated selected_voice from '{old_voice}' to '{voice_id}'")
-            
-            # Create new TTS with the new voice using the latest sonic-2 model
-            # Try different voice formats to ensure compatibility
-            voice_formats_to_try = [
-                voice_id,  # Direct voice ID
-                f"cartesia.{voice_id}",  # SignalWire format
-                f"cartesia:{voice_id}"   # Alternative format
-            ]
-            
-            new_tts = None
-            for voice_format in voice_formats_to_try:
-                try:
-                    logger.info(f"🎤 VOICE_CHANGE: Trying voice format: '{voice_format}'")
-                    new_tts = cartesia.TTS(
-                        model="sonic-2",  # Use the latest stable model from Cartesia docs
-                        voice=voice_format,   # Try different voice formats
-                        api_key=os.getenv("CARTESIA_API_KEY")
-                    )
-                    logger.info(f"🎤 VOICE_CHANGE: Successfully created TTS with voice format: '{voice_format}'")
-                    break
-                except Exception as e:
-                    logger.warning(f"🎤 VOICE_CHANGE: Failed with voice format '{voice_format}': {e}")
-                    continue
-            
-            if new_tts is None:
-                raise Exception(f"Failed to create TTS with any voice format for voice_id: {voice_id}")
-            
-            # Update the agent session's TTS
-            old_tts = self.agent_session.tts
-            self.agent_session.tts = new_tts
+
+            # Create new TTS instance
+            new_tts = cartesia.TTS(
+                model="sonic-2",
+                voice=voice_id,
+                api_key=os.getenv("CARTESIA_API_KEY")
+            )
+
+            # 🔑 Apply the new voice to the active agent session
+            await self.agent_session.set_tts(new_tts)
+
             logger.info(f"🎤 VOICE_CHANGE: Successfully updated TTS voice to {voice_id}")
-            logger.info(f"🎤 VOICE_CHANGE: Old TTS: {type(old_tts)}, New TTS: {type(new_tts)}")
-            
+
         except Exception as e:
-            logger.error(f"🎤 VOICE_CHANGE: Failed to update voice: {e}")
-            logger.error(f"🎤 VOICE_CHANGE: Error details: {str(e)}")
+            logger.error(f"🎤 VOICE_CHANGE: Failed to update voice: {e}", exc_info=True)
+
 
     async def _process_aggregated_text(self, user_text: str) -> None:
         """Send aggregated text to backend and speak response"""
@@ -1026,12 +1006,20 @@ async def entrypoint(ctx: JobContext):
         
         assistant.agent_session = agent_session
 
-        # ✅ Explicitly subscribe to room data
 
         def _handle_data(data: bytes, participant: Participant, kind: DataPacketKind, topic: str | None):
-            asyncio.create_task(assistant.on_data_received(data, participant, kind, topic))
+            try:
+                if topic != "lk.voice.change":
+                    return
+                payload = json.loads(data.decode("utf-8"))
+                if payload.get("type") == "voice_change" and payload.get("voice_id"):
+                    asyncio.create_task(assistant._update_voice(payload["voice_id"]))
+            except Exception as e:
+                logger.error(f"VOICE_CHANGE handler error: {e}")
 
-        ctx.room.on("data_received", _handle_data)
+
+        ctx.room.on("data_packet_received", _handle_data)
+
 
 
 
