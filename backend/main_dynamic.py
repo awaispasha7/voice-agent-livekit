@@ -17,7 +17,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
-from livekit.api import room_service, models
+from livekit.api import room_service
+from livekit.api import room_models
 # from livekit.rtc import DataPacketKind
 # from livekit.api.room_models import DataPacketKind as APIDataPacketKind
 from pydantic import BaseModel, Field
@@ -3389,14 +3390,14 @@ async def change_voice(request: dict):
             #     topic="lk.voice.change"
             # )
 
-            send_req = models.SendDataRequest(
+            send_req = room_models.SendDataRequest(
                 room=room_name,
                 data=json.dumps({
                     "type": "voice_change",
                     "voice_id": voice_id,
                     "timestamp": time.time(),
                 }).encode("utf-8"),
-                kind=models.DataPacketKind.RELIABLE,  # use RELIABLE
+                kind=room_models.DataPacketKind.RELIABLE,  # use RELIABLE
                 topic="lk.voice.change",
             )
 
