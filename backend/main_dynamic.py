@@ -3,6 +3,7 @@ from datetime import timedelta, datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
+from livekit.rtc import DataPacketKind
 from dotenv import load_dotenv
 import random
 import time
@@ -412,7 +413,7 @@ Respond with ONLY the JSON object."""
             return True
         if not is_complete or not is_meaningful:
             return True
-
+        
         return False
 
     except json.JSONDecodeError as e:
@@ -1805,7 +1806,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     # Use the next_flow response instead of intent response
                     response_text = next_flow.get("text", "")
                     add_agent_response_to_history(flow_state, response_text)
-                    
+                
                     return {
                         "type": "flow_started",
                         "flow_name": matching_intent["intent"],
@@ -3198,6 +3199,7 @@ async def initialize_greeting_flow(request: dict):
         
         return {
             "success": True,
+            "message": "Greeting flow initialized successfully",
             "flow_key": greeting_flow_key,
             "flow_data": greeting_flow_data
         }
@@ -3313,7 +3315,7 @@ async def change_voice(request: dict):
                     "voice_id": voice_id,
                     "timestamp": time.time()
                 }).encode('utf-8'),
-                kind=api.DataPacketKind.RELIABLE
+                kind=DataPacketKind.RELIABLE
             )
             
             logger.info(f"🎤 VOICE_CHANGE: Sent voice change signal to room {room_name}")
