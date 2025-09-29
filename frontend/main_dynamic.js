@@ -2010,7 +2010,3 @@ class DynamicVoiceAgent {
         }
     }
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-    new DynamicVoiceAgent();
-});
