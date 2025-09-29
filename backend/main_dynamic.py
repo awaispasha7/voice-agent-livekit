@@ -1392,7 +1392,9 @@ def get_session_info(room_name: str):
         "duration_seconds": int(duration),
         "user_data": session.get("user_data", {}),
         "created_at": session["created_at"],
-        "last_updated": session.get("last_updated")
+        "last_updated": session.get("last_updated"),
+        "voice_id": session.get("voice_id"),
+        "selected_voice": session.get("selected_voice")
     }
 
 
@@ -4170,6 +4172,7 @@ async def change_voice(request: dict):
         # Update local session
         if room_name in active_sessions:
             active_sessions[room_name]["selected_voice"] = voice_id
+            active_sessions[room_name]["voice_id"] = voice_id
             active_sessions[room_name]["last_updated"] = time.time()
             logger.info(
                 f"🎤 VOICE_CHANGE: Updated session voice preference to {voice_id}")

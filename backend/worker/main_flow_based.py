@@ -1060,11 +1060,7 @@ async def entrypoint(ctx: JobContext):
         else:
             logger.info(f"🎤 No pre-selected voice, falling back to default {assistant.selected_voice}")
 
-        # Register data handler after session is ready
-        ctx.room.on("data_packet_received", _handle_data)
-        logger.info(f"📡 DATA HANDLER: Re-registered after session prep for {room_name}")
-
-        # Create agent session with custom LLM
+        # Create agent session with custom LLM (register data handler AFTER session starts)
         agent_session = AgentSession(
             stt=deepgram.STT(
                 model="nova-2",
@@ -1099,8 +1095,10 @@ async def entrypoint(ctx: JobContext):
         )
         
         assistant.agent_session = agent_session
-
-
+        
+        # Register data handler AFTER agent session is fully started
+        ctx.room.on("data_packet_received", _handle_data)
+        logger.info(f"📡 DATA HANDLER: Registered data packet handler AFTER session start for {room_name}")
 
         
         logger.info(f"🎙️ Agent session started for {session_id}")
