@@ -147,7 +147,7 @@ class DynamicVoiceAgent {
         
         for (const baseUrl of urls) {
             try {
-                const url = baseUrl + endpoint;
+                const url = baseUrl;
                 
                 const response = await fetch(url, {
                     ...options,
@@ -427,7 +427,7 @@ class DynamicVoiceAgent {
             
             this.isConnected = true;
             this.connectionAttempts = 0;
-
+            
             this.selectedVoice = connectionDetails.selectedVoice || selectedVoice || this.selectedVoice;
             localStorage.setItem('alive5.defaultVoice', this.selectedVoice);
 
