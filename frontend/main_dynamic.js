@@ -135,9 +135,12 @@ class DynamicVoiceAgent {
     
     // Helper function to try multiple URLs if one fails
     async fetchWithFallback(endpoint, options = {}) {
-        const urls = [
-            this.config.API_BASE_URL
-        ];
+        const urls = [];
+        if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
+            urls.push(endpoint);
+        } else {
+            urls.push(this.config.API_BASE_URL ? this.config.API_BASE_URL + endpoint : endpoint);
+        }
         
         for (const baseUrl of urls) {
             try {
