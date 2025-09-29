@@ -11,7 +11,8 @@ class DynamicVoiceAgent {
         this.currentIntent = null;
         this.detectedUserData = {};
         this.conversationLog = [];
-        this.selectedVoice = '7f423809-0011-4658-ba48-a411f5e516ba'; // Default voice (Ashwin - Warm Narrator)
+        this.selectedVoice = localStorage.getItem('alive5.defaultVoice') || '7f423809-0011-4658-ba48-a411f5e516ba'; // Default voice (Ashwin - Warm Narrator)
+        this.pendingVoiceChange = null;
         this.availableVoices = {}; // Will be populated from backend
         
         // Track processed messages to prevent duplicates
@@ -275,7 +276,17 @@ class DynamicVoiceAgent {
         const voiceSelect = document.getElementById('voiceSelect');
         if (voiceSelect) {
             voiceSelect.addEventListener('change', (e) => {
-                this.selectedVoice = e.target.value;
+                const newVoice = e.target.value;
+                this.pendingVoiceChange = newVoice;
+                try {
+                    localStorage.setItem('alive5.defaultVoice', newVoice);
+                } catch (err) {
+                    console.warn('Unable to persist selected voice', err);
+                }
+
+                if (this.isConnected && this.currentRoomName) {
+                    this.changeVoice(newVoice);
+                }
             });
         }
 
@@ -409,6 +420,18 @@ class DynamicVoiceAgent {
             
             this.isConnected = true;
             this.connectionAttempts = 0;
+
+            if (connectionDetails.selectedVoice) {
+                this.selectedVoice = connectionDetails.selectedVoice;
+                this.pendingVoiceChange = null;
+                try {
+                    localStorage.setItem('alive5.defaultVoice', this.selectedVoice);
+                } catch (err) {
+                    console.warn('Unable to persist selected voice', err);
+                }
+            }
+
+            this.applyPendingVoiceChange();
             
             // Switch to chat interface
             this.showChatInterface();
@@ -1752,6 +1775,7 @@ class DynamicVoiceAgent {
     async changeVoice(voiceId) {
         if (!this.isConnected || !this.currentRoomName) {
             console.warn('Cannot change voice: not connected');
+            this.pendingVoiceChange = voiceId;
             return;
         }
 
@@ -1787,6 +1811,7 @@ class DynamicVoiceAgent {
             
             if (result.status === 'success') {
                 this.selectedVoice = voiceId;
+                this.pendingVoiceChange = null;
                 const voiceName = result.voice_name || this.getVoiceName(voiceId);
                 this.addMessage(`Voice changed to ${voiceName}`, 'agent');
                 this.updateConnectionStatus('connected', 'Voice changed successfully');
@@ -1798,6 +1823,15 @@ class DynamicVoiceAgent {
             console.error('Error changing voice:', error);
             this.addMessage(`Failed to change voice: ${error.message}`, 'system');
             this.updateConnectionStatus('error', 'Voice change failed');
+            this.pendingVoiceChange = voiceId;
+        }
+    }
+
+    applyPendingVoiceChange() {
+        if (this.pendingVoiceChange) {
+            const voiceId = this.pendingVoiceChange;
+            this.pendingVoiceChange = null;
+            this.changeVoice(voiceId);
         }
     }
 

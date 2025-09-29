@@ -973,35 +973,51 @@ async def entrypoint(ctx: JobContext):
         await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
         logger.info(f"🔗 Connected to room {room_name}")
 
+        async def _apply_voice_change(voice_id: str) -> None:
+            for attempt in range(10):
+                if getattr(assistant, "agent_session", None):
+                    await assistant._update_voice(voice_id)
+                    return
+                await asyncio.sleep(0.2)
+            logger.warning(
+                "🎤 VOICE_CHANGE: Agent session not ready after retries, could not apply %s",
+                voice_id,
+            )
+
         def _handle_data(data: bytes, participant: Participant, kind: DataPacketKind, topic: str | None):
             try:
-                logger.info(f"📡 DATA RECEIVED: topic={topic}, kind={kind}, participant={getattr(participant, 'identity', None)}")
-                logger.info(f"📡 DATA CONTENT: {data.decode('utf-8') if data else 'No data'}")
-                logger.info(f"📡 DEBUG: Raw topic='{topic}', topic type={type(topic)}")
-                
-                # Process ALL data packets, not just voice change ones
-                if data:
-                    try:
-                        payload = json.loads(data.decode("utf-8"))
-                        logger.info(f"📡 PARSED PAYLOAD: {payload}")
-                        
-                        # Check if this is a voice change packet
-                        if topic and topic.lower() == "lk.voice.change" and payload.get("type") == "voice_change":
-                            logger.info(f"📡 VOICE CHANGE PACKET DETECTED!")
-                            if payload.get("voice_id"):
-                                logger.info(f"🎤 VOICE_CHANGE: About to call _update_voice with {payload['voice_id']}")
-                                asyncio.create_task(assistant._update_voice(payload["voice_id"]))
-                                logger.info(f"🎤 VOICE_CHANGE: Received and applied {payload['voice_id']}")
-                            else:
-                                logger.warning(f"📡 VOICE CHANGE: No voice_id in payload: {payload}")
-                        else:
-                            logger.info(f"📡 OTHER DATA PACKET: topic={topic}, type={payload.get('type', 'unknown')}")
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"📡 DATA PACKET: Could not parse JSON: {e}")
-                        logger.info(f"📡 RAW DATA: {data.decode('utf-8', errors='ignore')}")
+                logger.info(
+                    "📡 DATA RECEIVED: topic=%s, kind=%s, participant=%s",
+                    topic,
+                    kind,
+                    getattr(participant, "identity", None),
+                )
+
+                if not data:
+                    logger.warning("📡 DATA PACKET: No data content")
+                    return
+
+                payload_raw = data.decode("utf-8", errors="ignore")
+                logger.info("📡 DATA RAW: %s", payload_raw)
+
+                try:
+                    payload = json.loads(payload_raw)
+                except json.JSONDecodeError as e:
+                    logger.warning("📡 DATA PACKET: Could not parse JSON: %s", e)
+                    return
+
+                logger.info("📡 PARSED PAYLOAD: %s", payload)
+
+                if topic and topic.lower() == "lk.voice.change" and payload.get("type") == "voice_change":
+                    voice_id = payload.get("voice_id")
+                    if voice_id:
+                        logger.info("🎤 VOICE_CHANGE: Scheduling update for %s", voice_id)
+                        asyncio.create_task(_apply_voice_change(voice_id))
+                    else:
+                        logger.warning("📡 VOICE CHANGE: Missing voice_id in payload: %s", payload)
                 else:
-                    logger.warning(f"📡 DATA PACKET: No data content")
-                    
+                    logger.info("📡 OTHER DATA PACKET: topic=%s, payload_type=%s", topic, payload.get("type"))
+
             except Exception as e:
                 logger.error(f"VOICE_CHANGE handler error: {e}")
                 import traceback
@@ -1009,8 +1025,8 @@ async def entrypoint(ctx: JobContext):
 
 
 
-        # ctx.room.on("data_packet_received", _handle_data)
-        # logger.info(f"📡 DATA HANDLER: Registered data packet handler for room {room_name}")
+        ctx.room.on("data_packet_received", lambda topic, data, participant, kind: asyncio.create_task(_handle_data(topic, data, participant, kind)))
+        logger.info(f"📡 DATA HANDLER: Registered data packet handler for room {room_name}")
 
         
         # Set up assistant references
@@ -1040,6 +1056,9 @@ async def entrypoint(ctx: JobContext):
         else:
             logger.info(f"🎤 No pre-selected voice, falling back to default {assistant.selected_voice}")
 
+        # Register data handler after session is ready
+        ctx.room.on("data_packet_received", _handle_data)
+        logger.info(f"📡 DATA HANDLER: Re-registered after session prep for {room_name}")
 
         # Create agent session with custom LLM
         agent_session = AgentSession(
@@ -1068,7 +1087,6 @@ async def entrypoint(ctx: JobContext):
             room_input_options=RoomInputOptions(
                 noise_cancellation=noise_cancellation.BVC(),
                 text_enabled=True,
-                data_enabled=True,
             ),
             room_output_options=RoomOutputOptions(
                 transcription_enabled=True,
