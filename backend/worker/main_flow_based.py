@@ -655,7 +655,7 @@ class FlowBasedAssistant(Agent):
         try:
             if not data:
                 return
-                
+            logger.info(f"📡 AGENT on_data_received fired: topic={topic}, data={data.decode('utf-8', errors='ignore')}")
             message = json.loads(data.decode('utf-8'))
             message_type = message.get("type")
             
@@ -1009,8 +1009,8 @@ async def entrypoint(ctx: JobContext):
 
 
 
-        ctx.room.on("data_packet_received", _handle_data)
-        logger.info(f"📡 DATA HANDLER: Registered data packet handler for room {room_name}")
+        # ctx.room.on("data_packet_received", _handle_data)
+        # logger.info(f"📡 DATA HANDLER: Registered data packet handler for room {room_name}")
 
         
         # Set up assistant references
