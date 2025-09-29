@@ -682,12 +682,42 @@ class FlowBasedAssistant(Agent):
             self.selected_voice = voice_id
             logger.info(f"🎤 VOICE_CHANGE: Updated selected_voice from '{old_voice}' to '{voice_id}'")
 
-            # Update the TTS voice directly on the existing TTS instance
-            # The AgentSession doesn't support replacing TTS, so we update the voice property
+            # Try multiple approaches to update the TTS voice
             if hasattr(self.agent_session, 'tts') and self.agent_session.tts:
-                # Update the voice ID on the existing TTS instance
-                self.agent_session.tts._voice = voice_id  # Update internal voice
-                logger.info(f"🎤 VOICE_CHANGE: Successfully updated TTS voice to {voice_id}")
+                tts = self.agent_session.tts
+                
+                # Log current TTS attributes to debug
+                tts_attrs = [attr for attr in dir(tts) if 'voice' in attr.lower()]
+                logger.info(f"🎤 VOICE_CHANGE: TTS attributes with 'voice': {tts_attrs}")
+                
+                # Try different property names that Cartesia TTS might use
+                updated = False
+                
+                # Attempt 1: Update _voice property
+                if hasattr(tts, '_voice'):
+                    tts._voice = voice_id
+                    logger.info(f"🎤 VOICE_CHANGE: Updated tts._voice to {voice_id}")
+                    updated = True
+                
+                # Attempt 2: Update voice property
+                if hasattr(tts, 'voice'):
+                    try:
+                        tts.voice = voice_id
+                        logger.info(f"🎤 VOICE_CHANGE: Updated tts.voice to {voice_id}")
+                        updated = True
+                    except AttributeError:
+                        pass
+                
+                # Attempt 3: Update _opts or _config if it exists
+                if hasattr(tts, '_opts') and hasattr(tts._opts, 'voice'):
+                    tts._opts.voice = voice_id
+                    logger.info(f"🎤 VOICE_CHANGE: Updated tts._opts.voice to {voice_id}")
+                    updated = True
+                
+                if updated:
+                    logger.info(f"🎤 VOICE_CHANGE: Successfully updated TTS voice to {voice_id}")
+                else:
+                    logger.warning(f"🎤 VOICE_CHANGE: Could not find voice property to update. Available attrs: {tts_attrs}")
             else:
                 logger.warning("🎤 VOICE_CHANGE: No TTS instance available on agent session")
 
