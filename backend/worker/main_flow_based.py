@@ -972,6 +972,46 @@ async def entrypoint(ctx: JobContext):
         # Connect to room
         await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
         logger.info(f"🔗 Connected to room {room_name}")
+
+        def _handle_data(data: bytes, participant: Participant, kind: DataPacketKind, topic: str | None):
+            try:
+                logger.info(f"📡 DATA RECEIVED: topic={topic}, kind={kind}, participant={getattr(participant, 'identity', None)}")
+                logger.info(f"📡 DATA CONTENT: {data.decode('utf-8') if data else 'No data'}")
+                logger.info(f"📡 DEBUG: Raw topic='{topic}', topic type={type(topic)}")
+                
+                # Process ALL data packets, not just voice change ones
+                if data:
+                    try:
+                        payload = json.loads(data.decode("utf-8"))
+                        logger.info(f"📡 PARSED PAYLOAD: {payload}")
+                        
+                        # Check if this is a voice change packet
+                        if topic and topic.lower() == "lk.voice.change" and payload.get("type") == "voice_change":
+                            logger.info(f"📡 VOICE CHANGE PACKET DETECTED!")
+                            if payload.get("voice_id"):
+                                logger.info(f"🎤 VOICE_CHANGE: About to call _update_voice with {payload['voice_id']}")
+                                asyncio.create_task(assistant._update_voice(payload["voice_id"]))
+                                logger.info(f"🎤 VOICE_CHANGE: Received and applied {payload['voice_id']}")
+                            else:
+                                logger.warning(f"📡 VOICE CHANGE: No voice_id in payload: {payload}")
+                        else:
+                            logger.info(f"📡 OTHER DATA PACKET: topic={topic}, type={payload.get('type', 'unknown')}")
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"📡 DATA PACKET: Could not parse JSON: {e}")
+                        logger.info(f"📡 RAW DATA: {data.decode('utf-8', errors='ignore')}")
+                else:
+                    logger.warning(f"📡 DATA PACKET: No data content")
+                    
+            except Exception as e:
+                logger.error(f"VOICE_CHANGE handler error: {e}")
+                import traceback
+                logger.error(f"VOICE_CHANGE handler traceback: {traceback.format_exc()}")
+
+
+
+        ctx.room.on("data_packet_received", _handle_data)
+        logger.info(f"📡 DATA HANDLER: Registered data packet handler for room {room_name}")
+
         
         # Set up assistant references
         assistant.room = ctx.room
@@ -999,43 +1039,6 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"🎤 Starting session with pre-selected voice {assistant.selected_voice}")
         else:
             logger.info(f"🎤 No pre-selected voice, falling back to default {assistant.selected_voice}")
-
-
-        def _handle_data(data: bytes, participant: Participant, kind: DataPacketKind, topic: str | None):
-            try:
-                logger.info(f"📡 DATA RECEIVED: topic={topic}, kind={kind}, participant={getattr(participant, 'identity', None)}")
-                logger.info(f"📡 DATA CONTENT: {data.decode('utf-8') if data else 'No data'}")
-                logger.info(f"📡 DEBUG: Raw topic='{topic}', topic type={type(topic)}")
-                
-                # Check if this is a voice change packet
-                if topic and topic.lower() == "lk.voice.change":
-                    logger.info(f"📡 VOICE CHANGE PACKET DETECTED!")
-                else:
-                    logger.info(f"📡 OTHER DATA PACKET: topic={topic}")
-                
-                # normalize topic
-                if not topic or topic.lower() != "lk.voice.change":
-                    logger.info(f"📡 SKIPPING: Data packet with topic={topic} (not lk.voice.change)")
-                    return
-
-                payload = json.loads(data.decode("utf-8"))
-                logger.info(f"📡 VOICE CHANGE PAYLOAD: {payload}")
-                
-                if payload.get("type") == "voice_change" and payload.get("voice_id"):
-                    logger.info(f"🎤 VOICE_CHANGE: About to call _update_voice with {payload['voice_id']}")
-                    asyncio.create_task(assistant._update_voice(payload["voice_id"]))
-                    logger.info(f"🎤 VOICE_CHANGE: Received and applied {payload['voice_id']}")
-                else:
-                    logger.warning(f"📡 VOICE CHANGE: Invalid payload structure: {payload}")
-            except Exception as e:
-                logger.error(f"VOICE_CHANGE handler error: {e}")
-                import traceback
-                logger.error(f"VOICE_CHANGE handler traceback: {traceback.format_exc()}")
-
-
-
-        ctx.room.on("data_packet_received", _handle_data)
-        logger.info(f"📡 DATA HANDLER: Registered data packet handler for room {room_name}")
 
 
         # Create agent session with custom LLM
