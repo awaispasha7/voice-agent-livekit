@@ -984,47 +984,46 @@ async def entrypoint(ctx: JobContext):
                 voice_id,
             )
 
-        def _handle_data(data: bytes, participant: Participant, kind: DataPacketKind, topic: str | None):
-            async def _process():
+        def _handle_data(packet):
+            """Synchronous handler that processes data packets"""
+            try:
+                logger.info(
+                    "📡 DATA RECEIVED: kind=%s, topic=%s",
+                    packet.kind if hasattr(packet, 'kind') else 'unknown',
+                    packet.topic if hasattr(packet, 'topic') else 'unknown',
+                )
+                
+                data = packet.data if hasattr(packet, 'data') else packet
+                if not data:
+                    logger.warning("📡 DATA PACKET: No data content")
+                    return
+
+                payload_raw = data.decode("utf-8", errors="ignore")
+                logger.info("📡 DATA RAW: %s", payload_raw)
+
                 try:
-                    logger.info(
-                        "📡 DATA RECEIVED: topic=%s, kind=%s, participant=%s",
-                        topic,
-                        kind,
-                        getattr(participant, "identity", None),
-                    )
+                    payload = json.loads(payload_raw)
+                except json.JSONDecodeError as e:
+                    logger.warning("📡 DATA PACKET: Could not parse JSON: %s", e)
+                    return
 
-                    if not data:
-                        logger.warning("📡 DATA PACKET: No data content")
-                        return
+                logger.info("📡 PARSED PAYLOAD: %s", payload)
 
-                    payload_raw = data.decode("utf-8", errors="ignore")
-                    logger.info("📡 DATA RAW: %s", payload_raw)
-
-                    try:
-                        payload = json.loads(payload_raw)
-                    except json.JSONDecodeError as e:
-                        logger.warning("📡 DATA PACKET: Could not parse JSON: %s", e)
-                        return
-
-                    logger.info("📡 PARSED PAYLOAD: %s", payload)
-
-                    if topic and topic.lower() == "lk.voice.change" and payload.get("type") == "voice_change":
-                        voice_id = payload.get("voice_id")
-                        if voice_id:
-                            logger.info("🎤 VOICE_CHANGE: Scheduling update for %s", voice_id)
-                            await _apply_voice_change(voice_id)
-                        else:
-                            logger.warning("📡 VOICE CHANGE: Missing voice_id in payload: %s", payload)
+                topic = packet.topic if hasattr(packet, 'topic') else None
+                if topic and topic.lower() == "lk.voice.change" and payload.get("type") == "voice_change":
+                    voice_id = payload.get("voice_id")
+                    if voice_id:
+                        logger.info("🎤 VOICE_CHANGE: Scheduling update for %s", voice_id)
+                        asyncio.create_task(_apply_voice_change(voice_id))
                     else:
-                        logger.info("📡 OTHER DATA PACKET: topic=%s, payload_type=%s", topic, payload.get("type"))
+                        logger.warning("📡 VOICE CHANGE: Missing voice_id in payload: %s", payload)
+                else:
+                    logger.info("📡 OTHER DATA PACKET: topic=%s, payload_type=%s", topic, payload.get("type"))
 
-                except Exception as e:
-                    logger.error(f"VOICE_CHANGE handler error: {e}")
-                    import traceback
-                    logger.error(f"VOICE_CHANGE handler traceback: {traceback.format_exc()}")
-
-            asyncio.create_task(_process())
+            except Exception as e:
+                logger.error(f"VOICE_CHANGE handler error: {e}")
+                import traceback
+                logger.error(f"VOICE_CHANGE handler traceback: {traceback.format_exc()}")
 
         ctx.room.on(
             "data_packet_received",
@@ -1097,8 +1096,11 @@ async def entrypoint(ctx: JobContext):
         assistant.agent_session = agent_session
         
         # Register data handler AFTER agent session is fully started
+        # Try both event names - LiveKit might use "data_received" instead
         ctx.room.on("data_packet_received", _handle_data)
-        logger.info(f"📡 DATA HANDLER: Registered data packet handler AFTER session start for {room_name}")
+        ctx.room.on("data_received", _handle_data)
+        logger.info(f"📡 DATA HANDLER: Registered both data_packet_received and data_received handlers for {room_name}")
+        logger.info(f"📡 DEBUG: Room type: {type(ctx.room)}, Available methods: {[m for m in dir(ctx.room) if 'data' in m.lower()]}")
 
         
         logger.info(f"🎙️ Agent session started for {session_id}")
