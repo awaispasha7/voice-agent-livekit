@@ -655,14 +655,14 @@ class FlowBasedAssistant(Agent):
         try:
             if not data:
                 return
-            logger.info(f"📡 AGENT on_data_received fired: topic={topic}, data={data.decode('utf-8', errors='ignore')}")
+            # Data received - processing
             message = json.loads(data.decode('utf-8'))
             message_type = message.get("type")
             
             if message_type == "voice_change":
                 voice_id = message.get("voice_id")
                 if voice_id:
-                    logger.info(f"🎤 VOICE_CHANGE: Received voice change signal for voice {voice_id}")
+                    logger.info(f"🎤 VOICE CHANGE REQUEST: {voice_id}")
                     await self._update_voice(voice_id)
                     
         except Exception as e:
@@ -671,60 +671,42 @@ class FlowBasedAssistant(Agent):
     async def _update_voice(self, voice_id: str) -> None:
         """Update the TTS voice for the agent session"""
         try:
-            logger.info(f"🎤 VOICE_CHANGE: Starting voice update process for voice_id: {voice_id}")
-
             if not hasattr(self, 'agent_session') or not self.agent_session:
-                logger.warning("🎤 VOICE_CHANGE: No agent_session available to update voice")
+                logger.warning("🎤 VOICE_CHANGE: No agent session available")
                 return
 
             # Update the selected voice
             old_voice = getattr(self, 'selected_voice', 'default')
             self.selected_voice = voice_id
-            logger.info(f"🎤 VOICE_CHANGE: Updated selected_voice from '{old_voice}' to '{voice_id}'")
 
             # Try multiple approaches to update the TTS voice
             if hasattr(self.agent_session, 'tts') and self.agent_session.tts:
                 tts = self.agent_session.tts
-                
-                # Log current TTS attributes to debug
-                tts_attrs = [attr for attr in dir(tts) if 'voice' in attr.lower()]
-                logger.info(f"🎤 VOICE_CHANGE: TTS attributes with 'voice': {tts_attrs}")
-                
-                # Try different property names that Cartesia TTS might use
                 updated = False
                 
-                # Attempt 1: Update _voice property
+                # Try different property names that Cartesia TTS might use
                 if hasattr(tts, '_voice'):
                     tts._voice = voice_id
-                    logger.info(f"🎤 VOICE_CHANGE: Updated tts._voice to {voice_id}")
                     updated = True
-                
-                # Attempt 2: Update voice property
-                if hasattr(tts, 'voice'):
+                elif hasattr(tts, 'voice'):
                     try:
                         tts.voice = voice_id
-                        logger.info(f"🎤 VOICE_CHANGE: Updated tts.voice to {voice_id}")
                         updated = True
                     except AttributeError:
                         pass
-                
-                # Attempt 3: Update _opts or _config if it exists
-                if hasattr(tts, '_opts') and hasattr(tts._opts, 'voice'):
+                elif hasattr(tts, '_opts') and hasattr(tts._opts, 'voice'):
                     tts._opts.voice = voice_id
-                    logger.info(f"🎤 VOICE_CHANGE: Updated tts._opts.voice to {voice_id}")
                     updated = True
                 
                 if updated:
-                    logger.info(f"🎤 VOICE_CHANGE: Successfully updated TTS voice to {voice_id}")
+                    logger.info(f"🎤 VOICE CHANGED: {old_voice} → {voice_id}")
                 else:
-                    logger.warning(f"🎤 VOICE_CHANGE: Could not find voice property to update. Available attrs: {tts_attrs}")
+                    logger.error(f"🎤 VOICE CHANGE FAILED: Could not update TTS voice")
             else:
-                logger.warning("🎤 VOICE_CHANGE: No TTS instance available on agent session")
-
-            logger.info(f"🎤 VOICE_CHANGE: Voice change complete for {voice_id}")
+                logger.error("🎤 VOICE CHANGE FAILED: No TTS instance available")
 
         except Exception as e:
-            logger.error(f"🎤 VOICE_CHANGE: Failed to update voice: {e}", exc_info=True)
+            logger.error(f"🎤 VOICE CHANGE ERROR: {e}")
 
 
     async def _process_aggregated_text(self, user_text: str) -> None:
@@ -1012,49 +994,30 @@ async def entrypoint(ctx: JobContext):
         def _handle_data(packet):
             """Synchronous handler that processes data packets"""
             try:
-                logger.info(
-                    "📡 DATA RECEIVED: kind=%s, topic=%s",
-                    packet.kind if hasattr(packet, 'kind') else 'unknown',
-                    packet.topic if hasattr(packet, 'topic') else 'unknown',
-                )
-                
                 data = packet.data if hasattr(packet, 'data') else packet
                 if not data:
-                    logger.warning("📡 DATA PACKET: No data content")
                     return
-
-                payload_raw = data.decode("utf-8", errors="ignore")
-                logger.info("📡 DATA RAW: %s", payload_raw)
 
                 try:
-                    payload = json.loads(payload_raw)
-                except json.JSONDecodeError as e:
-                    logger.warning("📡 DATA PACKET: Could not parse JSON: %s", e)
+                    payload = json.loads(data.decode("utf-8", errors="ignore"))
+                except json.JSONDecodeError:
                     return
-
-                logger.info("📡 PARSED PAYLOAD: %s", payload)
 
                 topic = packet.topic if hasattr(packet, 'topic') else None
                 if topic and topic.lower() == "lk.voice.change" and payload.get("type") == "voice_change":
                     voice_id = payload.get("voice_id")
                     if voice_id:
-                        logger.info("🎤 VOICE_CHANGE: Scheduling update for %s", voice_id)
+                        logger.info(f"🎤 VOICE CHANGE REQUEST: {voice_id}")
                         asyncio.create_task(_apply_voice_change(voice_id))
-                    else:
-                        logger.warning("📡 VOICE CHANGE: Missing voice_id in payload: %s", payload)
-                else:
-                    logger.info("📡 OTHER DATA PACKET: topic=%s, payload_type=%s", topic, payload.get("type"))
 
             except Exception as e:
-                logger.error(f"VOICE_CHANGE handler error: {e}")
-                import traceback
-                logger.error(f"VOICE_CHANGE handler traceback: {traceback.format_exc()}")
+                logger.error(f"🎤 DATA HANDLER ERROR: {e}")
 
         ctx.room.on(
             "data_packet_received",
             _handle_data,
         )
-        logger.info(f"📡 DATA HANDLER: Registered data packet handler for room {room_name}")
+        logger.info(f"📡 Data handler registered for {room_name}")
 
         
         # Set up assistant references

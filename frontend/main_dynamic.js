@@ -65,14 +65,14 @@ class DynamicVoiceAgent {
     
     async loadAvailableVoices() {
         try {
-            console.log('🎤 Loading available voices from backend...');
+            // Loading voices...
             const response = await this.fetchWithFallback('/api/available_voices');
             
             if (response.ok) {
                 const data = await response.json();
                 if (data.status === 'success' && data.voices) {
                     this.availableVoices = data.voices;
-                    console.log(`🎤 Loaded ${Object.keys(this.availableVoices).length} voices from backend`);
+                    console.log(`🎤 Loaded ${Object.keys(this.availableVoices).length} voices`);
                     this.populateVoiceDropdowns();
                 } else {
                     console.warn('🎤 Failed to load voices from backend:', data.message);
@@ -1577,8 +1577,10 @@ class DynamicVoiceAgent {
         // Show toast notification for user feedback
         this.showToast(message, type);
         
-        // Also log to console for debugging
-        console.log(`Status (${type}): ${message}`);
+        // Log important status changes
+        if (type === 'error' || type === 'connected') {
+            console.log(`Status (${type}): ${message}`);
+        }
         
         // Update the connection status in the chat interface if available
         const connectionStatus = document.getElementById('connectionStatus');
@@ -1815,12 +1817,11 @@ class DynamicVoiceAgent {
         }
 
         try {
-            console.log(`🎤 VOICE_CHANGE: Attempting to change voice to ${voiceId} for room ${this.currentRoomName}`);
-            console.log(`🎤 VOICE_CHANGE: Voice name: ${this.getVoiceName(voiceId)}`);
+            console.log(`🎤 Changing voice to ${this.getVoiceName(voiceId)}`);
             this.updateConnectionStatus('connecting', 'Changing voice...');
             
             const result = await this.sendVoiceChangeRequest(this.currentRoomName, voiceId);
-            console.log('🎤 VOICE_CHANGE: Response result:', result);
+            // Voice change request sent
             
             if (result.status === 'success') {
                 this.selectedVoice = voiceId;
@@ -1828,7 +1829,7 @@ class DynamicVoiceAgent {
                 const voiceName = result.voice_name || this.getVoiceName(voiceId);
                 this.addMessage(`Voice changed to ${voiceName}`, 'agent');
                 this.updateConnectionStatus('connected', 'Voice changed successfully');
-                console.log(`🎤 VOICE_CHANGE: Successfully changed voice to ${voiceId} (${voiceName})`);
+                console.log(`🎤 Voice changed to ${voiceName}`);
             } else {
                 throw new Error(result.message || 'Failed to change voice');
             }
