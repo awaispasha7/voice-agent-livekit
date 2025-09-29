@@ -691,6 +691,10 @@ class FlowBasedAssistant(Agent):
 
             # 🔑 Apply the new voice to the active agent session
             await self.agent_session.set_tts(new_tts)
+            
+            # Final guard - ensure voice property is set
+            if self.agent_session and self.agent_session.tts:
+                self.agent_session.tts.voice = voice_id  # redundant but safe
 
             logger.info(f"🎤 VOICE_CHANGE: Successfully updated TTS voice to {voice_id}")
 
@@ -915,6 +919,21 @@ def prewarm(proc):
     """Preload models for better performance"""
     proc.userdata["vad"] = silero.VAD.load()
 
+async def fetch_session_info(room_name: str) -> dict:
+    """Fetch session info from backend API"""
+    try:
+        backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{backend_url}/api/sessions/{room_name}")
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                logger.warning(f"Failed to fetch session info: {resp.status_code}")
+                return {}
+    except Exception as e:
+        logger.warning(f"Error fetching session info: {e}")
+        return {}
+
 async def entrypoint(ctx: JobContext):
     """Main entry point for the flow-based voice agent"""
     session_id = str(uuid.uuid4())[:8]
@@ -973,6 +992,15 @@ async def entrypoint(ctx: JobContext):
             logger.warning("⏰ No participant joined within timeout")
             return
 
+        # Hydrate assistant before AgentSession - fetch from backend
+        session_info = await fetch_session_info(room_name)
+        if "voice_id" in session_info or "selected_voice" in session_info:
+            assistant.selected_voice = session_info.get("voice_id") or session_info.get("selected_voice")
+            logger.info(f"🎤 Starting session with pre-selected voice {assistant.selected_voice}")
+        else:
+            logger.info(f"🎤 No pre-selected voice, falling back to default {assistant.selected_voice}")
+
+
         # Create agent session with custom LLM
         agent_session = AgentSession(
             stt=deepgram.STT(
@@ -1009,16 +1037,32 @@ async def entrypoint(ctx: JobContext):
 
         def _handle_data(data: bytes, participant: Participant, kind: DataPacketKind, topic: str | None):
             try:
-                if topic != "lk.voice.change":
+                logger.info(f"📡 DATA RECEIVED: topic={topic}, kind={kind}, participant={getattr(participant, 'identity', None)}")
+                logger.info(f"📡 DATA CONTENT: {data.decode('utf-8') if data else 'No data'}")
+                
+                # normalize topic
+                if not topic or topic.lower() != "lk.voice.change":
+                    logger.info(f"📡 SKIPPING: Data packet with topic={topic} (not lk.voice.change)")
                     return
+
                 payload = json.loads(data.decode("utf-8"))
+                logger.info(f"📡 VOICE CHANGE PAYLOAD: {payload}")
+                
                 if payload.get("type") == "voice_change" and payload.get("voice_id"):
+                    logger.info(f"🎤 VOICE_CHANGE: About to call _update_voice with {payload['voice_id']}")
                     asyncio.create_task(assistant._update_voice(payload["voice_id"]))
+                    logger.info(f"🎤 VOICE_CHANGE: Received and applied {payload['voice_id']}")
+                else:
+                    logger.warning(f"📡 VOICE CHANGE: Invalid payload structure: {payload}")
             except Exception as e:
                 logger.error(f"VOICE_CHANGE handler error: {e}")
+                import traceback
+                logger.error(f"VOICE_CHANGE handler traceback: {traceback.format_exc()}")
+
 
 
         ctx.room.on("data_packet_received", _handle_data)
+        logger.info(f"📡 DATA HANDLER: Registered data packet handler for room {room_name}")
 
 
 

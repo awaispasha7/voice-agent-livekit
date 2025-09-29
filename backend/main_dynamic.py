@@ -27,6 +27,107 @@ from pydantic import BaseModel, Field
 
 # Get the current file's directory
 current_dir = Path(__file__).parent
+
+# Voice caching utilities
+VOICE_CACHE_FILE = current_dir / "cached_voices.json"
+
+def fetch_cartesia_voices():
+    """Fetch all available voices from Cartesia API with pagination support"""
+    try:
+        api_key = os.getenv("CARTESIA_API_KEY")
+        if not api_key:
+            logger.warning("CARTESIA_API_KEY not found, using fallback voices")
+            return {}
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Cartesia-Version": "2025-04-16",
+        }
+        
+        all_voices = {}
+        next_page = None
+        page_count = 0
+        
+        while True:
+            page_count += 1
+            url = "https://api.cartesia.ai/voices"
+            params = {}
+            if next_page:
+                params["starting_after"] = next_page
+            
+            response = httpx.get(url, headers=headers, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Extract voices from this page
+            voices = data.get("data", [])
+            if isinstance(voices, list):
+                page_voices = {}
+                for voice in voices:
+                    if isinstance(voice, dict) and "id" in voice:
+                        page_voices[voice["id"]] = voice.get("name", "Unknown")
+                all_voices.update(page_voices)
+                logger.info(f"Page {page_count}: Added {len(page_voices)} voices (total: {len(all_voices)})")
+            else:
+                logger.warning(f"Unexpected voices format on page {page_count}: {type(voices)}")
+            
+            # Check if there are more pages
+            has_more = data.get("has_more", False)
+            next_page = data.get("next_page")
+            
+            if not has_more or not next_page:
+                break
+                
+            # Safety limit to prevent infinite loops
+            if page_count >= 50:  # Max 50 pages (5000 voices)
+                logger.warning("Reached maximum page limit (50), stopping pagination")
+                break
+        
+        logger.info(f"✅ Fetched {len(all_voices)} voices across {page_count} pages")
+        return all_voices
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch Cartesia voices: {e}")
+        return {}
+
+def load_cached_voices():
+    """Load voices from cache file or return empty dict"""
+    try:
+        if VOICE_CACHE_FILE.exists():
+            with open(VOICE_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load cached voices: {e}")
+    return {}
+
+def save_cached_voices(voices_dict):
+    """Save voices to cache file"""
+    try:
+        with open(VOICE_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(voices_dict, f, indent=2, ensure_ascii=False)
+        logger.info(f"✅ Cached {len(voices_dict)} voices to {VOICE_CACHE_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to save cached voices: {e}")
+
+def update_voice_cache():
+    """Update voice cache with latest Cartesia voices"""
+    logger.info("🔄 Updating voice cache from Cartesia API...")
+    voices = fetch_cartesia_voices()
+    if voices:
+        save_cached_voices(voices)
+        logger.info(f"✅ Updated voice cache with {len(voices)} voices")
+        return voices
+    else:
+        logger.warning("⚠️ No voices fetched, keeping existing cache")
+        return load_cached_voices()
+
+def get_available_voices():
+    """Get available voices (cached or fresh)"""
+    cached_voices = load_cached_voices()
+    if not cached_voices:
+        logger.info("No cached voices found, fetching fresh voices...")
+        return update_voice_cache()
+    return cached_voices
 # Try different possible .env locations
 env_paths = [
     current_dir / "../.env",  # Relative to backend directory
@@ -3304,104 +3405,60 @@ def clear_flow_states():
         }
 
 def get_voice_name_from_id(voice_id: str) -> str:
-    """Get human-readable voice name from voice ID - matches SignalWire Cartesia documentation"""
-    voice_names = {
-        # Official SignalWire Cartesia Voice IDs
-        '3f4ade23-6eb4-4279-ab05-6a144947c4d5': 'German Conversational Woman',
-        '79f8b5fb-2cc8-479a-80df-29f7a7cf1a3e': 'Nonfiction Man',
-        'e00d0e4c-a5c8-443f-a8a3-473eb9a62355': 'Friendly Sidekick',
-        'a249eaff-1e96-4d2c-b23b-12efa4f66f41': 'French Conversational Lady',
+    """Get human-readable voice name from voice ID - uses cached Cartesia voices"""
+    # First try to get from cached Cartesia voices
+    cached_voices = load_cached_voices()
+    if voice_id in cached_voices:
+        return cached_voices[voice_id]
+    
+    # Fallback to hardcoded mapping for backward compatibility
+    fallback_voices = {
+        # Keep some popular voices as fallback
+        'a167e0f3-df7e-4d52-a9c3-f949145efdab': 'Blake - Helpful Agent (Default)',
+        'e07c00bc-4134-4eae-9ea4-1a55fb45746b': 'Brooke - Big Sister',
+        'f786b574-daa5-4673-aa0c-cbe3e8534c02': 'Katie - Friendly Fixer',
+        '9626c31c-bec5-4cca-baa8-f8ba9e84c8bc': 'Jacqueline - Reassuring Agent',
         '8832a0b5-47b2-4751-bb22-6a8e2149303d': 'French Narrator Lady',
-        '119e03e4-0705-43c9-b3ac-a658ce2b6639': 'German Reporter Woman',
-        '3b554273-4299-48b9-9aaf-eefd438e3941': 'Indian Lady',
-        '71a7ad14-091c-4e8e-a314-022ece01c121': 'British Reading Lady',
-        '4d2fd738-3b3d-4368-957a-bb4805275bd9': 'British Narration Lady',
-        '44863732-e415-4084-8ba1-deabe34ce3d2': 'Japanese Children Book',
-        '2b568345-1d48-4047-b25f-7baccf842eb0': 'Japanese Woman Conversational',
-        'e8a863c6-22c7-4671-86ca-91cacffc038d': 'Japanese Male Conversational',
-        '15a9cd88-84b0-4a8b-95f2-5d583b54c72e': 'Reading Lady',
-        'd46abd1d-2d02-43e8-819f-51fb652c1c61': 'Newsman',
-        '2ee87190-8f84-4925-97da-e52547f9462c': 'Child',
-        'cd17ff2d-5ea4-4695-be8f-42193949b946': 'Meditation Lady',
-        '5345cf08-6f37-424d-a5d9-8ae1101b9377': 'Maria',
-        '41534e16-2966-4c6b-9670-111411def906': '1920\'s Radioman',
-        'bf991597-6c13-47e4-8411-91ec2de5c466': 'Newslady',
-        '00a77add-48d5-4ef6-8157-71e5437b282d': 'Calm Lady',
-        '156fb8d2-335b-4950-9cb3-a2d33befec77': 'Helpful Woman',
-        '5c5ad5e7-1020-476b-8b91-fdcbe9cc313c': 'Mexican Woman',
-        'b7d50908-b17c-442d-ad8d-810c63997ed9': 'California Girl',
-        '663afeec-d082-4ab5-827e-2e41bf73a25b': 'Korean Narrator Woman',
-        '779673f3-895f-4935-b6b5-b031dc78b319': 'Russian Calm Lady',
-        '2b3bb17d-26b9-421f-b8ca-1dd92332279f': 'Russian Narrator Man 1',
-        'da05e96d-ca10-4220-9042-d8acef654fa9': 'Russian Narrator Man 2',
-        '642014de-c0e3-4133-adc0-36b5309c23e6': 'Russian Narrator Woman',
-        '95d51f79-c397-46f9-b49a-23763d3eaa2d': 'Hinglish Speaking Lady',
-        '0e21713a-5e9a-428a-bed4-90d410b87f13': 'Italian Narrator Woman',
-        '575a5d29-1fdc-4d4e-9afa-5a9a71759864': 'Polish Narrator Woman',
-        'e90c6678-f0d3-4767-9883-5d0ecf5894a8': 'Chinese Female Conversational',
-        '36b42fcb-60c5-4bec-b077-cb1a00a92ec6': 'Pilot over Intercom',
-        'eda5bbff-1ff1-4886-8ef1-4e69a77640a0': 'Chinese Commercial Man',
-        '5c3c89e5-535f-43ef-b14d-f8ffe148c1f0': 'French Narrator Man',
-        'a67e0421-22e0-4d5b-b586-bd4a64aee41d': 'Spanish Narrator Man',
-        'f146dcec-e481-45be-8ad2-96e1e40e7f32': 'Reading Man',
-        '34575e71-908f-4ab6-ab54-b08c95d6597d': 'New York Man',
-        'ab7c61f5-3daa-47dd-a23b-4ac0aac5f5c3': 'Friendly French Man',
-        'a0e99841-438c-4a64-b679-ae501e7d6091': 'Barbershop Man',
-        '638efaaa-4d0c-442e-b701-3fae16aad012': 'Indian Man',
-        '41f3c367-e0a8-4a85-89e0-c27bae9c9b6d': 'Australian Customer Support Man',
-        '421b3369-f63f-4b03-8980-37a44df1d4e8': 'Friendly Australian Man',
-        'b043dea0-a007-4bbe-a708-769dc0d0c569': 'Wise Man',
-        # '6926713a-4b0c-4b0c-4b0c-4b0c4b0c4b0c': 'Friendly Reading Man',
-        '3f6e78a8-5283-42aa-b5e7-af82e8bb310c': 'German Reporter Man',
-        '63ff761f-c1e8-414b-b969-d1833d1c870c': 'Confident British Man',
-        '98a34ef2-2140-4c28-9c71-663dc4dd7022': 'Southern Man',
-        '95856005-0332-41b0-935f-352e296aa0df': 'Classy British Man',
-        'ee7ea9f8-c0c1-498c-9279-764d6b56d189': 'Polite Man',
-        '15d0c2e2-8d29-44c3-be23-d585d5f154a1': 'Mexican Man',
-        '57dba6ff-fe3b-479d-836e-06f5a61cb5de': 'Korean Narrator Man',
-        '5a31e4fb-f823-4359-aa91-82c0ae9a991c': 'Turkish Narrator Man',
-        '39f753ef-b0eb-41cd-aa53-2f3c284f948f': 'Turkish Calm Man',
-        'ac7ee4fa-25db-420d-bfff-f590d740aeb2': 'Hindi Calm Man',
-        '7f423809-0011-4658-ba48-a411f5e516ba': 'Hindi Narrator Man',
-        '4ef93bb3-682a-46e6-b881-8e157b6b4388': 'Polish Narrator Man',
-        '82a7fc13-2927-4e42-9b8a-bb1f9e506521': 'Polish Young Man',
-        '40104aff-a015-4da1-9912-af950fbec99e': 'Alabama Male',
-        '13524ffb-a918-499a-ae97-c98c7c4408c4': 'Australian Male',
-        '1001d611-b1a8-46bd-a5ca-551b23505334': 'Anime Girl',
-        '97e7d7a9-dfaa-4758-a936-f5f844ac34cc': 'Japanese Man Book',
-        'e3827ec5-697a-4b7c-9704-1a23041bbc51': 'Sweet Lady',
-        'c2ac25f9-ecc4-4f56-9095-651354df60c0': 'Commercial Lady',
-        '573e3144-a684-4e72-ac2b-9b2063a50b53': 'Teacher Lady',
-        '8f091740-3df1-4795-8bd9-dc62d88e5131': 'Princess',
-        '7360f116-6306-4e9a-b487-1235f35a0f21': 'Commercial Man',
-        '03496517-369a-4db1-8236-3d3ae459ddf7': 'ASMR Lady',
-        '248be419-c632-4f23-adf1-5324ed7dbf1d': 'Professional Woman',
-        'bd9120b6-7761-47a6-a446-77ca49132781': 'Tutorial Man',
-        'a8a1eb38-5f15-4c1d-8722-7ac0f329727d': 'Calm French Woman',
-        '34bde396-9fde-4ebf-ad03-e3a1d1155205': 'New York Woman',
-        '846d6cb0-2301-48b6-9683-48f5618ea2f6': 'Spanish-speaking Lady',
-        '11af83e2-23eb-452f-956e-7fee218ccb5c': 'Midwestern Woman',
-        'ed81fd13-2016-4a49-8fe3-c0d2761695fc': 'Sportsman',
-        '996a8b96-4804-46f0-8e05-3fd4ef1a87cd': 'Storyteller Lady',
-        '34dbb662-8e98-413c-a1ef-1a3407675fe7': 'Spanish-speaking Man',
-        'fb26447f-308b-471e-8b00-8e9f04284eb5': 'Doctor Mischief',
-        '2695b6b5-5543-4be1-96d9-3967fb5e7fec': 'Spanish-speaking Reporter Man',
-        'db832ebd-3cb6-42e7-9d47-912b425adbaa': 'Young Spanish-speaking Woman',
-        '50d6beb4-80ea-4802-8387-6c948fe84208': 'The Merchant',
-        '0418348a-0ca2-4e90-9986-800fb8b3bbc0': 'Stern French Man',
-        'e13cae5c-ec59-4f71-b0a6-266df3c9bb8e': 'Madame Mischief',
-        'db229dfe-f5de-4be4-91fd-7b077c158578': 'German Storyteller Man',
-        '5c42302c-194b-4d0c-ba1a-8cb485c84ab9': 'Female Nurse',
-        '384b625b-da5d-49e8-a76d-a2855d4f31eb': 'German Conversation Man',
-        '6a16c1f4-462b-44de-998d-ccdaa4125a0a': 'Friendly Brazilian Man',
-        'b9de4a89-2257-424b-94c2-db18ba68c81a': 'German Woman',
-        'f9836c6e-a0bd-460e-9d3c-f7299fa60f94': 'Southern Woman',
-        'a01c369f-6d2d-4185-bc20-b32c225eab70': 'British Customer Support Lady',
-        'd4d4b115-57a0-48ea-9a1a-9898966c2966': 'Chinese Woman Narrator',
-        # Default voice (Customer Support Man)
-        'a167e0f3-df7e-4d52-a9c3-f949145efdab': 'Customer Support Man (Default)'
+        '3b554273-4299-48b9-9aaf-eefd438e3941': 'Simi - Support Specialist',
+        '95d51f79-c397-46f9-b49a-23763d3eaa2d': 'Arushi - Hinglish Speaker',
     }
-    return voice_names.get(voice_id, f'Voice ({voice_id[:8]}...)')
+    
+    return fallback_voices.get(voice_id, f'Voice ({voice_id[:8]}...)')
+
+@app.post("/api/update_voice_cache")
+async def update_voice_cache_endpoint():
+    """Update the voice cache with latest Cartesia voices"""
+    try:
+        logger.info("🔄 API: Updating voice cache...")
+        voices = update_voice_cache()
+        return {
+            "status": "success",
+            "message": f"Voice cache updated with {len(voices)} voices",
+            "voice_count": len(voices)
+        }
+    except Exception as e:
+        logger.error(f"Failed to update voice cache: {e}")
+        return {
+            "status": "error",
+            "message": f"Failed to update voice cache: {str(e)}"
+        }
+
+@app.get("/api/available_voices")
+async def get_available_voices_endpoint():
+    """Get list of available voices"""
+    try:
+        voices = get_available_voices()
+        return {
+            "status": "success",
+            "voices": voices,
+            "voice_count": len(voices)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get available voices: {e}")
+        return {
+            "status": "error",
+            "message": f"Failed to get available voices: {str(e)}"
+        }
 
 @app.post("/api/change_voice")
 async def change_voice(request: dict):
@@ -3436,14 +3493,17 @@ async def change_voice(request: dict):
                 "voice_id": voice_id,
                 "timestamp": time.time(),
             }
+            logger.info(f"🎤 VOICE_CHANGE: Attempting to send data packet to room {room_name}")
+            logger.info(f"🎤 VOICE_CHANGE: Payload: {payload}")
+            
             send_req = room_service.SendDataRequest(
                 room=room_name,
                 data=json.dumps(payload).encode("utf-8"),
-                kind=rtc.DataPacketKind.RELIABLE, 
+                kind=rtc.DataPacketKind.KIND_RELIABLE, 
                 topic="lk.voice.change",
             )
             await livekit_api.room.send_data(send_req)
-            logger.info(f"🎤 VOICE_CHANGE: Sent voice change signal to room {room_name}")
+            logger.info(f"🎤 VOICE_CHANGE: Successfully sent voice change signal to room {room_name}")
         finally:
             await livekit_api.aclose()  # ✅ stop “Unclosed client session” warnings
 
