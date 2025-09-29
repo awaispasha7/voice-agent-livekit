@@ -471,7 +471,7 @@ class FlowBasedAssistant(Agent):
         self._greeted = False
         self._speech_lock = asyncio.Lock()
         self._ending = False
-        self.selected_voice = "a167e0f3-df7e-4d52-a9c3-f949145efdab"  # Default voice (Customer Support Man)
+        self.selected_voice = "7f423809-0011-4658-ba48-a411f5e516ba"  # Default voice (Ashwin - Warm Narrator)
         # Aggregate multiple short user turns before backend call
         self._aggregate_buffer: str = ""
         self._aggregate_task: Optional[asyncio.Task] = None
@@ -535,7 +535,7 @@ class FlowBasedAssistant(Agent):
                         user_data = session_data.get("user_data", {})
                         botchain_name = user_data.get("botchain_name")
                         org_name = user_data.get("org_name")
-                        selected_voice = user_data.get("selected_voice", "a167e0f3-df7e-4d52-a9c3-f949145efdab")
+                        selected_voice = user_data.get("selected_voice", "7f423809-0011-4658-ba48-a411f5e516ba")
                         
                         if botchain_name:
                             logger.info(f"🎯 GREETING BOT: Found custom botchain in session: {botchain_name}/{org_name}")
@@ -1039,6 +1039,13 @@ async def entrypoint(ctx: JobContext):
             try:
                 logger.info(f"📡 DATA RECEIVED: topic={topic}, kind={kind}, participant={getattr(participant, 'identity', None)}")
                 logger.info(f"📡 DATA CONTENT: {data.decode('utf-8') if data else 'No data'}")
+                logger.info(f"📡 DEBUG: Raw topic='{topic}', topic type={type(topic)}")
+                
+                # Check if this is a voice change packet
+                if topic and topic.lower() == "lk.voice.change":
+                    logger.info(f"📡 VOICE CHANGE PACKET DETECTED!")
+                else:
+                    logger.info(f"📡 OTHER DATA PACKET: topic={topic}")
                 
                 # normalize topic
                 if not topic or topic.lower() != "lk.voice.change":

@@ -21,7 +21,7 @@ from livekit.api import room_service
 # from livekit.api import enums
 
 # from livekit.api import room_models
-# from livekit.rtc import DataPacketKind
+from livekit.rtc import DataPacketKind 
 # from livekit.api.room_models import DataPacketKind as APIDataPacketKind
 from pydantic import BaseModel, Field
 
@@ -500,7 +500,7 @@ Respond with ONLY the JSON object."""
             return True
         
         return False
-
+        
     except json.JSONDecodeError as e:
         logger.error(f"🧠 TRANSCRIPTION ANALYSIS: Failed to parse LLM response: {e}")
         logger.error(f"🧠 RAW RESPONSE: {response_text}")
@@ -1491,7 +1491,7 @@ async def initialize_bot_template_with_config(botchain_name: str, org_name: str)
                     logger.info(f"🧹 CLEARED {len(flow_states)} FLOW STATES")
                 else:
                     logger.info(f"🧹 PRESERVED {len(flow_states)} FLOW STATES")
-                
+            
                 return bot_template
             else:
                 logger.error(f"❌ API ERROR: {response.status_code} - {response.text}")
@@ -1891,57 +1891,57 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 flow_state.current_step = matching_intent["flow_data"]["name"]
                 flow_state.flow_data = matching_intent["flow_data"]
                 auto_save_flow_state()  # Save after flow state changes
+            
+            logger.info(f"FLOW_MANAGEMENT: LLM started flow {flow_state.current_flow} for intent: {matching_intent['intent']}")
+            logger.info(f"FLOW_MANAGEMENT: Current step set to: {flow_state.current_step}")
+            logger.info(f"FLOW_MANAGEMENT: Flow data type: {matching_intent['flow_data'].get('type')}")
+            logger.info(f"FLOW_MANAGEMENT: Has next_flow: {bool(matching_intent['flow_data'].get('next_flow'))}")
+            
+            # Check if this intent has a next_flow and automatically transition to it
+            next_flow = matching_intent["flow_data"].get("next_flow")
+            if next_flow:
+                logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
+                flow_state.current_step = next_flow.get("name")
+                flow_state.flow_data = next_flow
+                auto_save_flow_state()  # Save after step transition
                 
-                logger.info(f"FLOW_MANAGEMENT: LLM started flow {flow_state.current_flow} for intent: {matching_intent['intent']}")
-                logger.info(f"FLOW_MANAGEMENT: Current step set to: {flow_state.current_step}")
-                logger.info(f"FLOW_MANAGEMENT: Flow data type: {matching_intent['flow_data'].get('type')}")
-                logger.info(f"FLOW_MANAGEMENT: Has next_flow: {bool(matching_intent['flow_data'].get('next_flow'))}")
+                print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
+                                f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
                 
-                # Check if this intent has a next_flow and automatically transition to it
-                next_flow = matching_intent["flow_data"].get("next_flow")
-                if next_flow:
-                    logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
-                    flow_state.current_step = next_flow.get("name")
-                    flow_state.flow_data = next_flow
-                    auto_save_flow_state()  # Save after step transition
-                    
-                    print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION", 
-                                    f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'")
-                    
-                    # Use the next_flow response instead of intent response
-                    response_text = next_flow.get("text", "")
-                    add_agent_response_to_history(flow_state, response_text)
-                    
-                    return {
-                        "type": "flow_started",
-                        "flow_name": matching_intent["intent"],
-                        "response": response_text,
-                        "next_step": next_flow.get("next_flow")
-                    }
-                else:
-                    # No next_flow, use intent response
-                    logger.info(f"FLOW_MANAGEMENT: No next_flow found for intent, using intent response")
-                    print_flow_status(room_name, flow_state, "🎉 FLOW STARTED", 
-                                    f"Intent: {matching_intent['intent']} | Flow: {matching_intent['flow_key']} | Response: '{matching_intent['flow_data'].get('text', '')}'")
-                    
-                    # Add agent response to conversation history
-                    response_text = matching_intent["flow_data"].get("text", "")
-                    if not response_text or response_text == "N/A":
-                        response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
-                        logger.warning(f"FLOW_MANAGEMENT: Intent response was empty or N/A, using generic fallback")
-                    
-                    # Ensure we have a valid response
-                    if not response_text or response_text.strip() == "":
-                        response_text = f"I can help you with {matching_intent['intent']}. What would you like to know?"
-                    
-                    add_agent_response_to_history(flow_state, response_text)
-                    
-                    return {
-                        "type": "flow_started",
-                        "flow_name": matching_intent["intent"],
-                        "response": response_text,
-                        "next_step": matching_intent["flow_data"].get("next_flow")
-                    }
+                # Use the next_flow response instead of intent response
+                response_text = next_flow.get("text", "")
+                add_agent_response_to_history(flow_state, response_text)
+                
+                return {
+                    "type": "flow_started",
+                    "flow_name": matching_intent["intent"],
+                    "response": response_text,
+                    "next_step": next_flow.get("next_flow")
+                }
+            else:
+                # No next_flow, use intent response
+                logger.info(f"FLOW_MANAGEMENT: No next_flow found for intent, using intent response")
+                print_flow_status(room_name, flow_state, "🎉 FLOW STARTED", 
+                                f"Intent: {matching_intent['intent']} | Flow: {matching_intent['flow_key']} | Response: '{matching_intent['flow_data'].get('text', '')}'")
+                
+                # Add agent response to conversation history
+                response_text = matching_intent["flow_data"].get("text", "")
+                if not response_text or response_text == "N/A":
+                    response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+                    logger.warning(f"FLOW_MANAGEMENT: Intent response was empty or N/A, using generic fallback")
+                
+                # Ensure we have a valid response
+                if not response_text or response_text.strip() == "":
+                    response_text = f"I can help you with {matching_intent['intent']}. What would you like to know?"
+                
+                add_agent_response_to_history(flow_state, response_text)
+                
+                return {
+                    "type": "flow_started",
+                    "flow_name": matching_intent["intent"],
+                    "response": response_text,
+                    "next_step": matching_intent["flow_data"].get("next_flow")
+                }
         else:
             # No matching intent found, but check for escalation before FAQ fallback
             logger.info("FLOW_MANAGEMENT: ❌ LLM found no matching intent, checking for escalation")
@@ -2712,36 +2712,36 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 f"From: {old_flow} → To: {matching_intent['flow_key']} | Intent: {matching_intent['intent']}"
             )
 
-            next_flow = intent_node.get("next_flow")
-            if next_flow:
-                flow_state.current_step = next_flow.get("name")
-                flow_state.flow_data = next_flow
+        next_flow = intent_node.get("next_flow")
+        if next_flow:
+            flow_state.current_step = next_flow.get("name")
+            flow_state.flow_data = next_flow
 
-                print_flow_status(
-                    room_name,
-                    flow_state,
-                    "🔄 AUTO-TRANSITION",
-                    f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'"
-                )
+            print_flow_status(
+                room_name,
+                flow_state,
+                "🔄 AUTO-TRANSITION",
+                f"From intent to: {next_flow.get('type')} - '{next_flow.get('text', '')}'"
+            )
 
-                response_text = next_flow.get("text", "")
-                add_agent_response_to_history(flow_state, response_text)
-                return {
-                    "type": "flow_started",
-                    "flow_name": matching_intent["intent"],
-                    "response": response_text,
-                    "next_step": next_flow.get("next_flow")
-                }
-            else:
-                response_text = intent_node.get("text", "") or \
-                                f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
-                add_agent_response_to_history(flow_state, response_text)
-                return {
-                    "type": "flow_started",
-                    "flow_name": matching_intent["intent"],
-                    "response": response_text,
-                    "next_step": None
-                }
+            response_text = next_flow.get("text", "")
+            add_agent_response_to_history(flow_state, response_text)
+            return {
+                "type": "flow_started",
+                "flow_name": matching_intent["intent"],
+                "response": response_text,
+                "next_step": next_flow.get("next_flow")
+            }
+        else:
+            response_text = intent_node.get("text", "") or \
+                            f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+            add_agent_response_to_history(flow_state, response_text)
+            return {
+                "type": "flow_started",
+                "flow_name": matching_intent["intent"],
+                "response": response_text,
+                "next_step": None
+            }
 
     
     # If we reach here, we're in a flow but no specific handling was done
@@ -3414,7 +3414,8 @@ def get_voice_name_from_id(voice_id: str) -> str:
     # Fallback to hardcoded mapping for backward compatibility
     fallback_voices = {
         # Keep some popular voices as fallback
-        'a167e0f3-df7e-4d52-a9c3-f949145efdab': 'Blake - Helpful Agent (Default)',
+        '7f423809-0011-4658-ba48-a411f5e516ba': 'Ashwin - Warm Narrator (Default)',
+        'a167e0f3-df7e-4d52-a9c3-f949145efdab': 'Blake - Helpful Agent',
         'e07c00bc-4134-4eae-9ea4-1a55fb45746b': 'Brooke - Big Sister',
         'f786b574-daa5-4673-aa0c-cbe3e8534c02': 'Katie - Friendly Fixer',
         '9626c31c-bec5-4cca-baa8-f8ba9e84c8bc': 'Jacqueline - Reassuring Agent',
@@ -3499,11 +3500,23 @@ async def change_voice(request: dict):
             send_req = room_service.SendDataRequest(
                 room=room_name,
                 data=json.dumps(payload).encode("utf-8"),
-                kind=rtc.DataPacketKind.KIND_RELIABLE, 
+                kind=DataPacketKind.KIND_RELIABLE,
                 topic="lk.voice.change",
             )
             await livekit_api.room.send_data(send_req)
             logger.info(f"🎤 VOICE_CHANGE: Successfully sent voice change signal to room {room_name}")
+            logger.info(f"🎤 VOICE_CHANGE: Data packet details - topic: lk.voice.change, kind: KIND_RELIABLE, data: {payload}")
+            
+            # Send a test data packet to verify connection
+            test_payload = {"type": "test", "message": "test data packet", "timestamp": time.time()}
+            test_req = room_service.SendDataRequest(
+                room=room_name,
+                data=json.dumps(test_payload).encode("utf-8"),
+                kind=DataPacketKind.KIND_RELIABLE,
+                topic="test",
+            )
+            await livekit_api.room.send_data(test_req)
+            logger.info(f"🧪 TEST: Sent test data packet to room {room_name}")
         finally:
             await livekit_api.aclose()  # ✅ stop “Unclosed client session” warnings
 

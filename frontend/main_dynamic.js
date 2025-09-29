@@ -86,20 +86,21 @@ class DynamicVoiceAgent {
         }
     }
     
-    useFallbackVoices() {
-        // Fallback to a minimal set of popular voices if backend fails
-        this.availableVoices = {
-            'a167e0f3-df7e-4d52-a9c3-f949145efdab': 'Customer Support Man (Default)',
-            'e07c00bc-4134-4eae-9ea4-1a55fb45746b': 'Brooke - Big Sister',
-            'f786b574-daa5-4673-aa0c-cbe3e8534c02': 'Katie - Friendly Fixer',
-            '9626c31c-bec5-4cca-baa8-f8ba9e84c8bc': 'Jacqueline - Reassuring Agent',
-            '8832a0b5-47b2-4751-bb22-6a8e2149303d': 'French Narrator Lady',
-            '3b554273-4299-48b9-9aaf-eefd438e3941': 'Simi - Support Specialist',
-            '95d51f79-c397-46f9-b49a-23763d3eaa2d': 'Arushi - Hinglish Speaker'
-        };
-        console.log('🎤 Using fallback voices');
-        this.populateVoiceDropdowns();
-    }
+        useFallbackVoices() {
+            // Fallback to a minimal set of popular voices if backend fails
+            this.availableVoices = {
+                '7f423809-0011-4658-ba48-a411f5e516ba': 'Ashwin - Warm Narrator (Default)',
+                'a167e0f3-df7e-4d52-a9c3-f949145efdab': 'Blake - Helpful Agent',
+                'e07c00bc-4134-4eae-9ea4-1a55fb45746b': 'Brooke - Big Sister',
+                'f786b574-daa5-4673-aa0c-cbe3e8534c02': 'Katie - Friendly Fixer',
+                '9626c31c-bec5-4cca-baa8-f8ba9e84c8bc': 'Jacqueline - Reassuring Agent',
+                '8832a0b5-47b2-4751-bb22-6a8e2149303d': 'French Narrator Lady',
+                '3b554273-4299-48b9-9aaf-eefd438e3941': 'Simi - Support Specialist',
+                '95d51f79-c397-46f9-b49a-23763d3eaa2d': 'Arushi - Hinglish Speaker'
+            };
+            console.log('🎤 Using fallback voices');
+            this.populateVoiceDropdowns();
+        }
     
     populateVoiceDropdowns() {
         const voiceSelect = document.getElementById('voiceSelect');
@@ -1800,25 +1801,26 @@ class DynamicVoiceAgent {
         }
     }
 
-    getVoiceName(voiceId) {
-        // Use cached voices from backend, fallback to hardcoded if not available
-        if (this.availableVoices && this.availableVoices[voiceId]) {
-            return this.availableVoices[voiceId];
+        getVoiceName(voiceId) {
+            // Use cached voices from backend, fallback to hardcoded if not available
+            if (this.availableVoices && this.availableVoices[voiceId]) {
+                return this.availableVoices[voiceId];
+            }
+            
+            // Fallback to hardcoded names for backward compatibility
+            const fallbackVoices = {
+                '7f423809-0011-4658-ba48-a411f5e516ba': 'Ashwin - Warm Narrator (Default)',
+                'a167e0f3-df7e-4d52-a9c3-f949145efdab': 'Blake - Helpful Agent',
+                'e07c00bc-4134-4eae-9ea4-1a55fb45746b': 'Brooke - Big Sister',
+                'f786b574-daa5-4673-aa0c-cbe3e8534c02': 'Katie - Friendly Fixer',
+                '9626c31c-bec5-4cca-baa8-f8ba9e84c8bc': 'Jacqueline - Reassuring Agent',
+                '8832a0b5-47b2-4751-bb22-6a8e2149303d': 'French Narrator Lady',
+                '3b554273-4299-48b9-9aaf-eefd438e3941': 'Simi - Support Specialist',
+                '95d51f79-c397-46f9-b49a-23763d3eaa2d': 'Arushi - Hinglish Speaker'
+            };
+            
+            return fallbackVoices[voiceId] || `Voice (${voiceId.substring(0, 8)}...)`;
         }
-        
-        // Fallback to hardcoded names for backward compatibility
-        const fallbackVoices = {
-            'a167e0f3-df7e-4d52-a9c3-f949145efdab': 'Customer Support Man (Default)',
-            'e07c00bc-4134-4eae-9ea4-1a55fb45746b': 'Brooke - Big Sister',
-            'f786b574-daa5-4673-aa0c-cbe3e8534c02': 'Katie - Friendly Fixer',
-            '9626c31c-bec5-4cca-baa8-f8ba9e84c8bc': 'Jacqueline - Reassuring Agent',
-            '8832a0b5-47b2-4751-bb22-6a8e2149303d': 'French Narrator Lady',
-            '3b554273-4299-48b9-9aaf-eefd438e3941': 'Simi - Support Specialist',
-            '95d51f79-c397-46f9-b49a-23763d3eaa2d': 'Arushi - Hinglish Speaker'
-        };
-        
-        return fallbackVoices[voiceId] || `Voice (${voiceId.substring(0, 8)}...)`;
-    }
     
     showControls() {
         // Since we don't have a controls element, we'll show the chat interface
