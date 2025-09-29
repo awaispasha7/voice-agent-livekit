@@ -11,7 +11,7 @@ class DynamicVoiceAgent {
         this.currentIntent = null;
         this.detectedUserData = {};
         this.conversationLog = [];
-        this.selectedVoice = 'a167e0f3-df7e-4d52-a9c3-f949145efdab'; // Default voice (Customer Support Man)
+        this.selectedVoice = '7f423809-0011-4658-ba48-a411f5e516ba'; // Default voice (Ashwin - Warm Narrator)
         this.availableVoices = {}; // Will be populated from backend
         
         // Track processed messages to prevent duplicates
@@ -1820,7 +1820,7 @@ class DynamicVoiceAgent {
             };
             
             return fallbackVoices[voiceId] || `Voice (${voiceId.substring(0, 8)}...)`;
-        }
+    }
     
     showControls() {
         // Since we don't have a controls element, we'll show the chat interface

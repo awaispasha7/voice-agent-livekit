@@ -1001,40 +1001,6 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"🎤 No pre-selected voice, falling back to default {assistant.selected_voice}")
 
 
-        # Create agent session with custom LLM
-        agent_session = AgentSession(
-            stt=deepgram.STT(
-                model="nova-2",
-                language="en-US",
-                api_key=os.getenv("DEEPGRAM_API_KEY")
-            ),
-            llm=custom_llm,  # Use our custom LLM
-            tts=cartesia.TTS(
-                model="sonic-2",  # Use the latest stable model from Cartesia docs
-                voice=assistant.selected_voice,  # Will be updated dynamically if needed
-                api_key=os.getenv("CARTESIA_API_KEY")
-            ),
-            vad=ctx.proc.userdata["vad"],
-            turn_detection=None,  # Disable turn detection to avoid compatibility issues
-        )
-        
-        # Start session
-        await agent_session.start(
-            room=ctx.room,
-            agent=assistant,
-            room_input_options=RoomInputOptions(
-                noise_cancellation=noise_cancellation.BVC(),
-                text_enabled=True,
-            ),
-            room_output_options=RoomOutputOptions(
-                transcription_enabled=True,
-                sync_transcription=False,
-            ),
-        )
-        
-        assistant.agent_session = agent_session
-
-
         def _handle_data(data: bytes, participant: Participant, kind: DataPacketKind, topic: str | None):
             try:
                 logger.info(f"📡 DATA RECEIVED: topic={topic}, kind={kind}, participant={getattr(participant, 'identity', None)}")
@@ -1071,6 +1037,41 @@ async def entrypoint(ctx: JobContext):
         ctx.room.on("data_packet_received", _handle_data)
         logger.info(f"📡 DATA HANDLER: Registered data packet handler for room {room_name}")
 
+
+        # Create agent session with custom LLM
+        agent_session = AgentSession(
+            stt=deepgram.STT(
+                model="nova-2",
+                language="en-US",
+                api_key=os.getenv("DEEPGRAM_API_KEY")
+            ),
+            llm=custom_llm,  # Use our custom LLM
+            tts=cartesia.TTS(
+                model="sonic-2",  # Use the latest stable model from Cartesia docs
+                voice=assistant.selected_voice,  # Will be updated dynamically if needed
+                api_key=os.getenv("CARTESIA_API_KEY")
+            ),
+            vad=ctx.proc.userdata["vad"],
+            turn_detection=None,  # Disable turn detection to avoid compatibility issues
+        )
+
+        
+        
+        # Start session
+        await agent_session.start(
+            room=ctx.room,
+            agent=assistant,
+            room_input_options=RoomInputOptions(
+                noise_cancellation=noise_cancellation.BVC(),
+                text_enabled=True,
+            ),
+            room_output_options=RoomOutputOptions(
+                transcription_enabled=True,
+                sync_transcription=False,
+            ),
+        )
+        
+        assistant.agent_session = agent_session
 
 
 
