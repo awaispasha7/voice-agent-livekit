@@ -178,6 +178,9 @@ logging.basicConfig(
     format='%(message)s',  # Clean format without timestamps/prefixes
     force=True  # Override any existing configuration
 )
+
+# Disable verbose FastAPI request logs
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logger = logging.getLogger("token-server")
 
 # Add CORS middleware
@@ -4178,20 +4181,6 @@ async def change_voice(request: dict):
             )
             await livekit_api.room.send_data(send_req)
             logger.info(f"🎤 VOICE CHANGE SENT: {voice_id} to {room_name}")
-
-            # Send a test data packet to verify connection
-            test_payload = {
-                "type": "test",
-                "message": "test data packet",
-                "timestamp": time.time()}
-            test_req = room_service.SendDataRequest(
-                room=room_name,
-                data=json.dumps(test_payload).encode("utf-8"),
-                kind=DataPacketKind.KIND_RELIABLE,
-                topic="test",
-            )
-            await livekit_api.room.send_data(test_req)
-            logger.info(f"🧪 TEST: Sent test data packet to room {room_name}")
         finally:
             await livekit_api.aclose()  # ✅ stop "Unclosed client session" warnings
 

@@ -13,6 +13,12 @@ import httpx
 import psutil
 from dotenv import load_dotenv
 
+# Disable verbose HTTP logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
+logging.getLogger("httpcore.connection").setLevel(logging.WARNING)
+
 def monitor_memory():
     process = psutil.Process(os.getpid())
     while True:

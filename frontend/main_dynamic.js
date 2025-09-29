@@ -703,7 +703,7 @@ class DynamicVoiceAgent {
                     console.error('Error processing intent update data:', error);
                 }
             } else if (topic) {
-                console.log('📨 Other data received:', { topic, participant: participant?.identity, data: new TextDecoder().decode(payload) });
+                // console.log('📨 Other data received:', { topic, participant: participant?.identity, data: new TextDecoder().decode(payload) });
             }
         });
     }
