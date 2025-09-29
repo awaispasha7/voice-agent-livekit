@@ -1197,5 +1197,12 @@
     </script>
     
     <script src="main_dynamic.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            if (!window.voiceAgent) {
+                window.voiceAgent = new DynamicVoiceAgent();
+            }
+        });
+    </script>
 </body>
 </html>
