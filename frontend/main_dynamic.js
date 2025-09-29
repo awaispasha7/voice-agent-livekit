@@ -139,7 +139,10 @@ class DynamicVoiceAgent {
         if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
             urls.push(endpoint);
         } else {
-            urls.push(this.config.API_BASE_URL ? this.config.API_BASE_URL + endpoint : endpoint);
+            if (this.config.API_BASE_URL) {
+                urls.push(this.config.API_BASE_URL + endpoint);
+            }
+            urls.push(endpoint);
         }
         
         for (const baseUrl of urls) {
