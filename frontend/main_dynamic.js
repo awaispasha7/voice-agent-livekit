@@ -1787,6 +1787,26 @@ class DynamicVoiceAgent {
         }
     }
 
+    async sendVoiceChangeRequest(roomName, voiceId) {
+        const url = this.config.API_BASE_URL + this.config.ENDPOINTS.CHANGE_VOICE;
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                room_name: roomName,
+                voice_id: voiceId
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Voice change request failed: ${response.status}`);
+        }
+
+        return await response.json();
+    }
+
     async changeVoice(voiceId) {
         if (!this.isConnected || !this.currentRoomName) {
             console.warn('Cannot change voice: not connected');
