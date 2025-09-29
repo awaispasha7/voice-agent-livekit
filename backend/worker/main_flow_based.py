@@ -985,47 +985,51 @@ async def entrypoint(ctx: JobContext):
             )
 
         def _handle_data(data: bytes, participant: Participant, kind: DataPacketKind, topic: str | None):
-            try:
-                logger.info(
-                    "📡 DATA RECEIVED: topic=%s, kind=%s, participant=%s",
-                    topic,
-                    kind,
-                    getattr(participant, "identity", None),
-                )
-
-                if not data:
-                    logger.warning("📡 DATA PACKET: No data content")
-                    return
-
-                payload_raw = data.decode("utf-8", errors="ignore")
-                logger.info("📡 DATA RAW: %s", payload_raw)
-
+            async def _process():
                 try:
-                    payload = json.loads(payload_raw)
-                except json.JSONDecodeError as e:
-                    logger.warning("📡 DATA PACKET: Could not parse JSON: %s", e)
-                    return
+                    logger.info(
+                        "📡 DATA RECEIVED: topic=%s, kind=%s, participant=%s",
+                        topic,
+                        kind,
+                        getattr(participant, "identity", None),
+                    )
 
-                logger.info("📡 PARSED PAYLOAD: %s", payload)
+                    if not data:
+                        logger.warning("📡 DATA PACKET: No data content")
+                        return
 
-                if topic and topic.lower() == "lk.voice.change" and payload.get("type") == "voice_change":
-                    voice_id = payload.get("voice_id")
-                    if voice_id:
-                        logger.info("🎤 VOICE_CHANGE: Scheduling update for %s", voice_id)
-                        asyncio.create_task(_apply_voice_change(voice_id))
+                    payload_raw = data.decode("utf-8", errors="ignore")
+                    logger.info("📡 DATA RAW: %s", payload_raw)
+
+                    try:
+                        payload = json.loads(payload_raw)
+                    except json.JSONDecodeError as e:
+                        logger.warning("📡 DATA PACKET: Could not parse JSON: %s", e)
+                        return
+
+                    logger.info("📡 PARSED PAYLOAD: %s", payload)
+
+                    if topic and topic.lower() == "lk.voice.change" and payload.get("type") == "voice_change":
+                        voice_id = payload.get("voice_id")
+                        if voice_id:
+                            logger.info("🎤 VOICE_CHANGE: Scheduling update for %s", voice_id)
+                            await _apply_voice_change(voice_id)
+                        else:
+                            logger.warning("📡 VOICE CHANGE: Missing voice_id in payload: %s", payload)
                     else:
-                        logger.warning("📡 VOICE CHANGE: Missing voice_id in payload: %s", payload)
-                else:
-                    logger.info("📡 OTHER DATA PACKET: topic=%s, payload_type=%s", topic, payload.get("type"))
+                        logger.info("📡 OTHER DATA PACKET: topic=%s, payload_type=%s", topic, payload.get("type"))
 
-            except Exception as e:
-                logger.error(f"VOICE_CHANGE handler error: {e}")
-                import traceback
-                logger.error(f"VOICE_CHANGE handler traceback: {traceback.format_exc()}")
+                except Exception as e:
+                    logger.error(f"VOICE_CHANGE handler error: {e}")
+                    import traceback
+                    logger.error(f"VOICE_CHANGE handler traceback: {traceback.format_exc()}")
 
+            asyncio.create_task(_process())
 
-
-        ctx.room.on("data_packet_received", lambda topic, data, participant, kind: asyncio.create_task(_handle_data(topic, data, participant, kind)))
+        ctx.room.on(
+            "data_packet_received",
+            _handle_data,
+        )
         logger.info(f"📡 DATA HANDLER: Registered data packet handler for room {room_name}")
 
         

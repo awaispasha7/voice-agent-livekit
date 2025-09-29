@@ -37,7 +37,8 @@ class DynamicVoiceAgent {
                 CONNECTION_DETAILS: '/api/connection_details',
                 PROCESS_FLOW_MESSAGE: '/api/process_flow_message',
                 UPDATE_SESSION: '/api/sessions/update',
-                DELETE_ROOM: '/api/rooms'
+                DELETE_ROOM: '/api/rooms',
+                CHANGE_VOICE: '/api/change_voice'
             },
             CONNECTION: {
                 MAX_ATTEMPTS: 3,
@@ -421,13 +422,21 @@ class DynamicVoiceAgent {
             this.isConnected = true;
             this.connectionAttempts = 0;
 
-            if (connectionDetails.selectedVoice) {
+            this.selectedVoice = connectionDetails.selectedVoice || selectedVoice || this.selectedVoice;
+            localStorage.setItem('alive5.defaultVoice', this.selectedVoice);
+
+            // pre-session voice update if voice differs from default returned value
+            if (connectionDetails.selectedVoice && connectionDetails.selectedVoice !== this.selectedVoice) {
                 this.selectedVoice = connectionDetails.selectedVoice;
-                this.pendingVoiceChange = null;
+                localStorage.setItem('alive5.defaultVoice', this.selectedVoice);
+            }
+
+            // ensure the backend/worker know our desired voice before joining
+            if (connectionDetails.roomName && this.selectedVoice) {
                 try {
-                    localStorage.setItem('alive5.defaultVoice', this.selectedVoice);
+                    await this.sendVoiceChangeRequest(connectionDetails.roomName, this.selectedVoice);
                 } catch (err) {
-                    console.warn('Unable to persist selected voice', err);
+                    console.warn('Pre-session voice sync failed', err);
                 }
             }
 
@@ -1784,30 +1793,8 @@ class DynamicVoiceAgent {
             console.log(`🎤 VOICE_CHANGE: Voice name: ${this.getVoiceName(voiceId)}`);
             this.updateConnectionStatus('connecting', 'Changing voice...');
             
-            const requestBody = {
-                room_name: this.currentRoomName,
-                voice_id: voiceId
-            };
-            console.log(`🎤 VOICE_CHANGE: Request body:`, requestBody);
-            
-            const response = await this.fetchWithFallback('/api/change_voice', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestBody)
-            });
-
-            console.log(`🎤 VOICE_CHANGE: Response status: ${response.status}`);
-            
-            if (!response.ok) {
-                const errorText = await response.text();
-                console.error(`🎤 VOICE_CHANGE: Response error: ${errorText}`);
-                throw new Error(`Failed to change voice: ${response.status} ${errorText}`);
-            }
-
-            const result = await response.json();
-            console.log(`🎤 VOICE_CHANGE: Response result:`, result);
+            const result = await this.sendVoiceChangeRequest(this.currentRoomName, voiceId);
+            console.log('🎤 VOICE_CHANGE: Response result:', result);
             
             if (result.status === 'success') {
                 this.selectedVoice = voiceId;

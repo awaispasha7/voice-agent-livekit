@@ -1294,6 +1294,7 @@ def create_connection_with_custom_room(request: ConnectionRequest):
             "intent": intent,
             "status": "created",
             "selected_voice": user_data.get("selected_voice", DEFAULT_VOICE_ID),
+            "voice_id": user_data.get("selected_voice", DEFAULT_VOICE_ID),
             "user_data": user_data
         }
         active_sessions[room_name] = session_data
@@ -1348,6 +1349,7 @@ def update_session(request: SessionUpdateRequest):
             session["user_data"].update(request.user_data)
             if "selected_voice" in request.user_data:
                 session["selected_voice"] = request.user_data["selected_voice"]
+                session["voice_id"] = request.user_data["selected_voice"]
                 logger.info(
                     f"Session {room_name}: Selected voice updated to {
                         request.user_data['selected_voice']}")
