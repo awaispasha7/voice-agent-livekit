@@ -682,21 +682,16 @@ class FlowBasedAssistant(Agent):
             self.selected_voice = voice_id
             logger.info(f"🎤 VOICE_CHANGE: Updated selected_voice from '{old_voice}' to '{voice_id}'")
 
-            # Create new TTS instance
-            new_tts = cartesia.TTS(
-                model="sonic-2",
-                voice=voice_id,
-                api_key=os.getenv("CARTESIA_API_KEY")
-            )
+            # Update the TTS voice directly on the existing TTS instance
+            # The AgentSession doesn't support replacing TTS, so we update the voice property
+            if hasattr(self.agent_session, 'tts') and self.agent_session.tts:
+                # Update the voice ID on the existing TTS instance
+                self.agent_session.tts._voice = voice_id  # Update internal voice
+                logger.info(f"🎤 VOICE_CHANGE: Successfully updated TTS voice to {voice_id}")
+            else:
+                logger.warning("🎤 VOICE_CHANGE: No TTS instance available on agent session")
 
-            # 🔑 Apply the new voice to the active agent session
-            await self.agent_session.set_tts(new_tts)
-            
-            # Final guard - ensure voice property is set
-            if self.agent_session and self.agent_session.tts:
-                self.agent_session.tts.voice = voice_id  # redundant but safe
-
-            logger.info(f"🎤 VOICE_CHANGE: Successfully updated TTS voice to {voice_id}")
+            logger.info(f"🎤 VOICE_CHANGE: Voice change complete for {voice_id}")
 
         except Exception as e:
             logger.error(f"🎤 VOICE_CHANGE: Failed to update voice: {e}", exc_info=True)
