@@ -1056,6 +1056,7 @@ async def entrypoint(ctx: JobContext):
             ),
             vad=ctx.proc.userdata["vad"],
             turn_detection=None,  # Disable turn detection to avoid compatibility issues
+            
         )
 
         
@@ -1067,6 +1068,7 @@ async def entrypoint(ctx: JobContext):
             room_input_options=RoomInputOptions(
                 noise_cancellation=noise_cancellation.BVC(),
                 text_enabled=True,
+                data_enabled=True,
             ),
             room_output_options=RoomOutputOptions(
                 transcription_enabled=True,
