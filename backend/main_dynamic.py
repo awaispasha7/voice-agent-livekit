@@ -2851,7 +2851,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                         return await get_faq_response(user_message, flow_state=flow_state)
 
             # Handle question steps (existing logic)
-            if step_type == "question":
+            elif step_type == "question":
             # Use gated LLM approach for robust answer extraction
                 interp = await gated_llm_extract_answer(current_step_data.get("text", ""), user_message or "")
             logger.info(f"GATED_LLM_EXTRACT: {interp}")
