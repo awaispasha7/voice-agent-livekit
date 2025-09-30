@@ -492,12 +492,12 @@ async def is_ambiguous_transcription(user_text: str) -> bool:
 
     # Skip empty or very short inputs
     if not u or len(u) < 2:
-        return True
+            return True
     
     # For very obvious cases, use simple heuristics to avoid unnecessary LLM
     # calls
     if len(u) < 3:
-        return True
+            return True
     
     try:
         # Use LLM to determine if the transcription is complete and meaningful
@@ -566,7 +566,7 @@ Respond with ONLY the JSON object."""
             return True
         if not is_complete or not is_meaningful:
             return True
-        
+    
         return False
 
     except json.JSONDecodeError as e:
@@ -878,7 +878,12 @@ AVAILABLE INTENTS: {intents_list}
          2. CONTEXT UNDERSTANDING: Is this a response to a question, filler/stuttering, simple greeting, or a new topic?
          3. RESPONSE STRATEGY: What should the agent do next?
 
-         IMPORTANT: Simple greetings like "Hi", "Hi there", "Hello" should be treated as natural conversation flow, not filtered out. Let the flow continue naturally.
+         CRITICAL CONTEXT RULES:
+         - If user is already in a flow (Flow_1, Flow_2, Flow_3, etc.) and responding to a question, treat as "question_response" with "continue_flow"
+         - If user mentions menu items (pasta, biryani, qorma, fried rice) while in menu flow, treat as "question_response" not "new_topic"
+         - If user is answering a question about their choice, treat as "question_response" with "continue_flow"
+         - Only treat as "new_topic" if user is clearly starting a completely different conversation
+         - Simple greetings like "Hi", "Hi there", "Hello" should be treated as natural conversation flow, not filtered out. Let the flow continue naturally.
 
 RESPONSE FORMAT (JSON):
 {{
@@ -892,6 +897,8 @@ RESPONSE FORMAT (JSON):
          EXAMPLES:
          - "Yeah, I'm looking for someone to help" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Clear request for human help"}}
          - "Yeah" → {{"intent_detected": "none", "message_type": "question_response", "confidence": "medium", "action": "continue_flow", "reasoning": "Simple affirmation to current question"}}
+         - "Pasta" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is selecting menu item, continue with order flow"}}
+         - "I'll take the biryani" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is making menu selection, continue with order flow"}}
          - "Hi" → {{"intent_detected": "none", "message_type": "greeting", "confidence": "high", "action": "continue_flow", "reasoning": "Simple greeting, let flow continue naturally"}}
          - "Hi there" → {{"intent_detected": "none", "message_type": "greeting", "confidence": "high", "action": "continue_flow", "reasoning": "Simple greeting, let flow continue naturally"}}
          - "Uh, I, uh, I was asking" → {{"intent_detected": "none", "message_type": "filler", "confidence": "high", "action": "ignore", "reasoning": "Stuttering/filler, not meaningful content"}}
@@ -1749,7 +1756,7 @@ async def initialize_bot_template_with_config(
                     logger.info(f"🧹 CLEARED {len(flow_states)} FLOW STATES")
                 else:
                     logger.info(f"🧹 PRESERVED {len(flow_states)} FLOW STATES")
-            
+                
                 return bot_template
             else:
                 logger.error(f"❌ API ERROR: {response.status_code} - {response.text}")
