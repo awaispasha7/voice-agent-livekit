@@ -880,8 +880,13 @@ AVAILABLE INTENTS: {intents_list}
 
          CRITICAL CONTEXT RULES:
          - If user is already in a flow (Flow_1, Flow_2, Flow_3, etc.) and responding to a question, treat as "question_response" with "continue_flow"
-         - If user mentions menu items (pasta, biryani, qorma, fried rice) while in menu flow, treat as "question_response" not "new_topic"
-         - If user is answering a question about their choice, treat as "question_response" with "continue_flow"
+         - If user mentions menu items (pasta, biryani, qorma, fried rice) while in menu flow, treat as "question_response" with intent_detected="none"
+         - If user is answering a question about their choice, treat as "question_response" with "continue_flow" and intent_detected="none"
+         - INTENT DETECTION vs RESPONSE DISTINCTION:
+           * "What's in the menu?" → intent_detected="menu" (requesting menu information)
+           * "I'll take biryani" → intent_detected="none" (selecting from menu)
+           * "Give me pasta" → intent_detected="none" (selecting from menu)
+           * "Can I see the menu?" → intent_detected="menu" (requesting menu information)
          - Only treat as "new_topic" if user is clearly starting a completely different conversation
          - Simple greetings like "Hi", "Hi there", "Hello" should be treated as natural conversation flow, not filtered out. Let the flow continue naturally.
 
@@ -897,8 +902,11 @@ RESPONSE FORMAT (JSON):
          EXAMPLES:
          - "Yeah, I'm looking for someone to help" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Clear request for human help"}}
          - "Yeah" → {{"intent_detected": "none", "message_type": "question_response", "confidence": "medium", "action": "continue_flow", "reasoning": "Simple affirmation to current question"}}
+         - "What's in the menu?" → {{"intent_detected": "menu", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "User is requesting menu information"}}
+         - "Can I see the menu?" → {{"intent_detected": "menu", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "User is requesting menu information"}}
          - "Pasta" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is selecting menu item, continue with order flow"}}
          - "I'll take the biryani" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is making menu selection, continue with order flow"}}
+         - "Give me pasta" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is selecting menu item, continue with order flow"}}
          - "Hi" → {{"intent_detected": "none", "message_type": "greeting", "confidence": "high", "action": "continue_flow", "reasoning": "Simple greeting, let flow continue naturally"}}
          - "Hi there" → {{"intent_detected": "none", "message_type": "greeting", "confidence": "high", "action": "continue_flow", "reasoning": "Simple greeting, let flow continue naturally"}}
          - "Uh, I, uh, I was asking" → {{"intent_detected": "none", "message_type": "filler", "confidence": "high", "action": "ignore", "reasoning": "Stuttering/filler, not meaningful content"}}
