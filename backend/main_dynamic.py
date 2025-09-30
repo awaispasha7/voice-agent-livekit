@@ -2440,17 +2440,26 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 # Check for intent shift - if user mentions something that matches an intent, switch flows
                 # But don't detect greeting intents when we're already in a
                 # greeting flow
-                print(
-                    f"🎯 GREETING FLOW: Calling intent detection for: '{user_message}'")
-                try:
-                    matching_intent = await detect_flow_intent_with_llm(user_message)
-                    print(
-                        f"🎯 GREETING FLOW: Intent detection result: {matching_intent}")
-                except Exception as e:
-                    logger.error(
-                        f"🎯 GREETING FLOW: Error in intent detection: {e}")
-                    print(f"🎯 GREETING FLOW: Error in intent detection: {e}")
+                
+                # 🧠 SMART PROCESSOR OVERRIDE: Respect Smart Processor decision
+                if (message_analysis.get("action") == "continue_flow" and 
+                    message_analysis.get("confidence") == "high" and
+                    message_analysis.get("message_type") == "question_response"):
+                    logger.info(f"🧠 SMART PROCESSOR OVERRIDE: Skipping intent detection - Smart Processor says continue flow")
+                    print(f"🧠 SMART PROCESSOR OVERRIDE: Skipping intent detection - Smart Processor says continue flow")
                     matching_intent = None
+                else:
+                    print(
+                        f"🎯 GREETING FLOW: Calling intent detection for: '{user_message}'")
+                    try:
+                        matching_intent = await detect_flow_intent_with_llm(user_message)
+                        print(
+                            f"🎯 GREETING FLOW: Intent detection result: {matching_intent}")
+                    except Exception as e:
+                        logger.error(
+                            f"🎯 GREETING FLOW: Error in intent detection: {e}")
+                        print(f"🎯 GREETING FLOW: Error in intent detection: {e}")
+                        matching_intent = None
                 if matching_intent and matching_intent.get(
                         "type") != "greeting":
                     logger.info(
@@ -3296,7 +3305,16 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         "CHECKING FOR INTENT SHIFT",
         f"Current flow: {
             flow_state.current_flow}")
-    matching_intent = await detect_flow_intent_with_llm(user_message)
+    
+    # 🧠 SMART PROCESSOR OVERRIDE: Respect Smart Processor decision
+    if (message_analysis.get("action") == "continue_flow" and 
+        message_analysis.get("confidence") == "high" and
+        message_analysis.get("message_type") == "question_response"):
+        logger.info(f"🧠 SMART PROCESSOR OVERRIDE: Skipping intent detection - Smart Processor says continue flow")
+        print(f"🧠 SMART PROCESSOR OVERRIDE: Skipping intent detection - Smart Processor says continue flow")
+        matching_intent = None
+    else:
+        matching_intent = await detect_flow_intent_with_llm(user_message)
 
     # Only shift if intent has a real flow_key (ignore greetings/none)
     if matching_intent and matching_intent.get(
