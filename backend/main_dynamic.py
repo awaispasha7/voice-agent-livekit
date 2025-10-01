@@ -1426,7 +1426,8 @@ def get_next_flow_step(current_flow_state: FlowState,
                 return {
                     "type": "next_step",
                     "step_data": answer_data["next_flow"],
-                    "step_name": answer_data["name"]
+                    "step_name": answer_data["next_flow"].get("name"),
+                    "answer_data": answer_data  # Include the answer data for message combination
                 }
             else:
                 logger.info(
@@ -2284,56 +2285,66 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                         }
                     
                     # Handle regular next_step (with next_flow)
-                    # First, we need to get the current answer's message and the next flow
-                    # The next_step contains the next_flow data, but we need the current answer's message
+                    # The next_step now includes the answer_data for message combination
                     
-                    # Get the current step data to find the matched answer
-                    current_step_data = flow_state.flow_data
-                    if current_step_data and current_step_data.get("answers"):
-                        # Find the matched answer by looking at the step_name
-                        matched_answer_data = None
-                        for answer_key, answer_data in current_step_data["answers"].items():
-                            if answer_data.get("name") == next_step["step_name"]:
-                                matched_answer_data = answer_data
-                                break
+                    # Check if we have the answer data directly from get_next_flow_step
+                    logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_step keys: {list(next_step.keys())}")
+                    logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_step has answer_data: {'answer_data' in next_step}")
+                    if next_step.get("answer_data"):
+                        matched_answer_data = next_step["answer_data"]
+                        logger.info(f"FLOW_MANAGEMENT: ✅ Using answer data from get_next_flow_step")
+                    else:
+                        # Fallback: Get the current step data to find the matched answer
+                        logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - Using fallback logic to find matched answer")
+                        current_step_data = flow_state.flow_data
+                        if current_step_data and current_step_data.get("answers"):
+                            # Find the matched answer by looking at the step_name
+                            matched_answer_data = None
+                            logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - Looking for step_name: {next_step['step_name']}")
+                            for answer_key, answer_data in current_step_data["answers"].items():
+                                logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - Checking answer {answer_key} with name: {answer_data.get('name')}")
+                                if answer_data.get("name") == next_step["step_name"]:
+                                    matched_answer_data = answer_data
+                                    logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - Found matching answer: {answer_key}")
+                                    break
                         
-                        if matched_answer_data:
-                            # Combine current answer message with next flow
-                            current_message = matched_answer_data.get("text", "")
-                            next_flow_data = matched_answer_data.get("next_flow")
+                    if matched_answer_data:
+                        # Combine current answer message with next flow
+                        current_message = matched_answer_data.get("text", "")
+                        next_flow_data = matched_answer_data.get("next_flow")
+                        
+                        if current_message and next_flow_data:
+                            # Update flow state to the next step
+                            old_step = flow_state.current_step
+                            flow_state.current_step = next_flow_data.get("name")
+                            flow_state.flow_data = next_flow_data
+                            step_type = next_flow_data.get("type", "unknown")
                             
-                            if current_message and next_flow_data:
-                                # Update flow state to the next step
-                                old_step = flow_state.current_step
-                                flow_state.current_step = next_flow_data.get("name")
-                                flow_state.flow_data = next_flow_data
-                                step_type = next_flow_data.get("type", "unknown")
-                                
-                                # Combine messages: current answer + next question
-                                combined_response = current_message
-                                if next_flow_data.get("text"):
-                                    combined_response += " " + next_flow_data.get("text")
-                                
-                                logger.info(f"FLOW_MANAGEMENT: ✅ Combined response: '{combined_response}'")
-                                print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION WITH MESSAGE",
-                                                  f"From: {old_step} → To: {next_flow_data.get('name')} | Type: {step_type} | Combined: '{combined_response}'")
-                                
-                                # Set pending question lock if next is a question
-                                if step_type == 'question':
-                                    flow_state.pending_step = next_flow_data.get('name')
-                                    flow_state.pending_expected_kind = 'number' if (
-                                        'phone line' in next_flow_data.get('text', '').lower() or 'texts' in next_flow_data.get('text', '').lower()) else None
-                                    flow_state.pending_asked_at = time.time()
-                                
-                                add_agent_response_to_history(flow_state, combined_response)
-                                auto_save_flow_state()
-                                
-                                return {
-                                    "type": "flow_continued",
-                                    "response": combined_response,
-                                    "next_step": next_flow_data.get("next_flow"),
-                                    "flow_state": flow_state
-                                }
+                            # Combine messages: current answer + next question
+                            combined_response = current_message
+                            if next_flow_data.get("text"):
+                                combined_response += " " + next_flow_data.get("text")
+                            
+                            logger.info(f"FLOW_MANAGEMENT: ✅ Combined response: '{combined_response}'")
+                            print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION WITH MESSAGE",
+                                              f"From: {old_step} → To: {next_flow_data.get('name')} | Type: {step_type} | Combined: '{combined_response}'")
+                            
+                            # Set pending question lock if next is a question
+                            if step_type == 'question':
+                                flow_state.pending_step = next_flow_data.get('name')
+                                flow_state.pending_expected_kind = 'number' if (
+                                    'phone line' in next_flow_data.get('text', '').lower() or 'texts' in next_flow_data.get('text', '').lower()) else None
+                                flow_state.pending_asked_at = time.time()
+                            
+                            add_agent_response_to_history(flow_state, combined_response)
+                            auto_save_flow_state()
+                            
+                            return {
+                                "type": "flow_continued",
+                                "response": combined_response,
+                                "next_step": next_flow_data.get("next_flow"),
+                                "flow_state": flow_state
+                            }
                     
                     # Fallback to original logic if we can't find the matched answer
                     old_step = flow_state.current_step
