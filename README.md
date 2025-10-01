@@ -44,6 +44,7 @@ python backend/worker/main_flow_based.py start
 ```
 
 ### Service URLs
+- **Frontend**: https://voice-agent-livekit.vercel.app
 - **Backend API**: https://18.210.238.67.nip.io
 - **Health Check**: https://18.210.238.67.nip.io/health
 - **Template Status**: https://18.210.238.67.nip.io/api/template_status

@@ -111,8 +111,9 @@ ssh -i alive5-voice-ai-agent.pem ubuntu@18.210.238.67 "sudo journalctl -u alive5
 After running the script, you can verify the updates:
 
 1. **Frontend**: Check your Vercel dashboard for updated environment variables
-2. **Backend**: Visit https://18.210.238.67.nip.io/health
-3. **Template**: Visit https://18.210.238.67.nip.io/api/template_status
+2. **Frontend**: Visit https://voice-agent-livekit.vercel.app
+3. **Backend**: Visit https://18.210.238.67.nip.io/health
+4. **Template**: Visit https://18.210.238.67.nip.io/api/template_status
 
 ## Benefits
 
