@@ -511,11 +511,11 @@ async def is_ambiguous_transcription(user_text: str) -> bool:
 
     # Skip empty or very short inputs
     if not u or len(u) < 2:
-        return True
+            return True
     
     # For very obvious cases, use simple heuristics to avoid unnecessary LLM calls
     if len(u) < 3:
-        return True
+            return True
     
     try:
         # Use centralized LLM utility for transcription quality analysis
@@ -1303,7 +1303,7 @@ async def initialize_bot_template_with_config(
                     logger.info(f"🧹 CLEARED {len(flow_states)} FLOW STATES")
                 else:
                     logger.info(f"🧹 PRESERVED {len(flow_states)} FLOW STATES")
-                
+            
                 return bot_template
             else:
                 logger.error(f"❌ API ERROR: {response.status_code} - {response.text}")
@@ -1421,16 +1421,21 @@ def get_next_flow_step(current_flow_state: FlowState,
             logger.info(f"FLOW_NAVIGATION: ✅ LLM matched answer: '{matched_answer_key}' for response: '{user_response}'")
             answer_data = current_step_data["answers"][matched_answer_key]
             if answer_data.get("next_flow"):
-                    logger.info(
-                        f"FLOW_NAVIGATION: ✅ Next flow found for answer {matched_answer_key}")
-                    return {
-                        "type": "next_step",
-                        "step_data": answer_data["next_flow"],
-                        "step_name": answer_data["name"]
-                    }
+                logger.info(
+                    f"FLOW_NAVIGATION: ✅ Next flow found for answer {matched_answer_key}")
+                return {
+                    "type": "next_step",
+                    "step_data": answer_data["next_flow"],
+                    "step_name": answer_data["name"]
+                }
             else:
                 logger.info(
-                    f"FLOW_NAVIGATION: ❌ No next_flow for answer {matched_answer_key}")
+                    f"FLOW_NAVIGATION: ✅ Answer {matched_answer_key} has no next_flow, returning answer content")
+                return {
+                    "type": "answer_response",
+                    "step_data": answer_data,
+                    "step_name": answer_data["name"]
+                }
     
     # Check for next_flow
     if current_step_data.get("next_flow"):
@@ -2254,6 +2259,83 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 if next_step:
                     logger.info(
                         f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
+                    
+                    # Handle different result types from get_next_flow_step
+                    if next_step["type"] == "answer_response":
+                        # This is a final answer response (no next_flow)
+                        logger.info(f"FLOW_MANAGEMENT: ✅ Answer response found: {next_step['step_name']}")
+                        response_text = next_step["step_data"].get("text", "")
+                        
+                        # Clear the flow state since this is a final response
+                        flow_state.current_flow = None
+                        flow_state.current_step = None
+                        flow_state.flow_data = None
+                        flow_state.pending_step = None
+                        flow_state.pending_expected_kind = None
+                        flow_state.pending_asked_at = None
+                        
+                        add_agent_response_to_history(flow_state, response_text)
+                        auto_save_flow_state()
+                        
+                        return {
+                            "type": "flow_completed",
+                            "response": response_text,
+                            "flow_state": flow_state
+                        }
+                    
+                    # Handle regular next_step (with next_flow)
+                    # First, we need to get the current answer's message and the next flow
+                    # The next_step contains the next_flow data, but we need the current answer's message
+                    
+                    # Get the current step data to find the matched answer
+                    current_step_data = flow_state.flow_data
+                    if current_step_data and current_step_data.get("answers"):
+                        # Find the matched answer by looking at the step_name
+                        matched_answer_data = None
+                        for answer_key, answer_data in current_step_data["answers"].items():
+                            if answer_data.get("name") == next_step["step_name"]:
+                                matched_answer_data = answer_data
+                                break
+                        
+                        if matched_answer_data:
+                            # Combine current answer message with next flow
+                            current_message = matched_answer_data.get("text", "")
+                            next_flow_data = matched_answer_data.get("next_flow")
+                            
+                            if current_message and next_flow_data:
+                                # Update flow state to the next step
+                                old_step = flow_state.current_step
+                                flow_state.current_step = next_flow_data.get("name")
+                                flow_state.flow_data = next_flow_data
+                                step_type = next_flow_data.get("type", "unknown")
+                                
+                                # Combine messages: current answer + next question
+                                combined_response = current_message
+                                if next_flow_data.get("text"):
+                                    combined_response += " " + next_flow_data.get("text")
+                                
+                                logger.info(f"FLOW_MANAGEMENT: ✅ Combined response: '{combined_response}'")
+                                print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION WITH MESSAGE",
+                                                  f"From: {old_step} → To: {next_flow_data.get('name')} | Type: {step_type} | Combined: '{combined_response}'")
+                                
+                                # Set pending question lock if next is a question
+                                if step_type == 'question':
+                                    flow_state.pending_step = next_flow_data.get('name')
+                                    flow_state.pending_expected_kind = 'number' if (
+                                        'phone line' in next_flow_data.get('text', '').lower() or 'texts' in next_flow_data.get('text', '').lower()) else None
+                                    flow_state.pending_asked_at = time.time()
+                                
+                                add_agent_response_to_history(flow_state, combined_response)
+                                auto_save_flow_state()
+                                
+                                return {
+                                    "type": "flow_continued",
+                                    "response": combined_response,
+                                    "next_step": next_flow_data.get("next_flow"),
+                                    "flow_state": flow_state
+                                }
+                    
+                    # Fallback to original logic if we can't find the matched answer
                     old_step = flow_state.current_step
                     flow_state.current_step = next_step["step_name"]
                     flow_state.flow_data = next_step["step_data"]
@@ -2800,19 +2882,16 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             
             # Use specialized Intent Detection for accurate classification
             matching_intent = await detect_flow_intent_with_llm(user_message)
-    else:
-        # Smart Processor suggests intent detection or is uncertain - use specialized Intent Detection
-        matching_intent = await detect_flow_intent_with_llm(user_message)
 
-    # Only shift if intent has a real flow_key (ignore greetings/none)
-    if matching_intent and matching_intent.get(
-            "flow_key") and matching_intent.get("type") != "greeting":
-        if matching_intent["flow_key"] != flow_state.current_flow:
-            old_flow = flow_state.current_flow
-            logger.info(
-                f"FLOW_MANAGEMENT: LLM detected intent shift from {flow_state.current_flow} to {matching_intent['flow_key']}")
-            flow_state.current_flow = matching_intent["flow_key"]
-            flow_state.user_responses = {}
+        # Only shift if intent has a real flow_key (ignore greetings/none)
+        if matching_intent and matching_intent.get(
+                "flow_key") and matching_intent.get("type") != "greeting":
+            if matching_intent["flow_key"] != flow_state.current_flow:
+                old_flow = flow_state.current_flow
+                logger.info(
+                    f"FLOW_MANAGEMENT: LLM detected intent shift from {flow_state.current_flow} to {matching_intent['flow_key']}")
+                flow_state.current_flow = matching_intent["flow_key"]
+                flow_state.user_responses = {}
 
         intent_node = matching_intent["flow_data"]
         flow_state.current_step = intent_node["name"]
