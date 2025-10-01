@@ -31,7 +31,15 @@ from backend.llm_utils import (
     extract_answer_with_llm,
     analyze_message_with_smart_processor,
     detect_intent_with_llm,
-    match_answer_with_llm
+    match_answer_with_llm,
+    detect_uncertainty_with_llm
+)
+
+# Import orchestrator for intelligent conversation management
+from backend.conversational_orchestrator import (
+    ConversationalOrchestrator,
+    OrchestratorAction,
+    create_orchestrator_from_template
 )
 
 # =============================================================================
@@ -256,6 +264,9 @@ active_sessions: Dict[str, Dict[str, Any]] = {}
 # Flow management
 bot_template = None
 flow_states: Dict[str, Any] = {}
+
+# Conversational Orchestrator - The intelligent brain
+conversational_orchestrator: Optional[ConversationalOrchestrator] = None
 
 # Helper: find a step in the template by its exact text (case-insensitive)
 
@@ -1303,6 +1314,15 @@ async def initialize_bot_template_with_config(
                     logger.info(f"🧹 CLEARED {len(flow_states)} FLOW STATES")
                 else:
                     logger.info(f"🧹 PRESERVED {len(flow_states)} FLOW STATES")
+                
+                # Initialize the Conversational Orchestrator with the new template
+                global conversational_orchestrator
+                try:
+                    conversational_orchestrator = create_orchestrator_from_template(bot_template)
+                    logger.info("🧠 ORCHESTRATOR: Initialized successfully with template")
+                except Exception as e:
+                    logger.error(f"🧠 ORCHESTRATOR: Failed to initialize: {e}")
+                    conversational_orchestrator = None
             
                 return bot_template
             else:
@@ -2294,10 +2314,14 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - bool(next_step.get('answer_data')): {bool(next_step.get('answer_data'))}")
                     logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_step type: {type(next_step)}")
                     logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_step.get('answer_data') type: {type(next_step.get('answer_data'))}")
+                    logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - About to check if next_step.get('answer_data'):")
                     if next_step.get("answer_data"):
+                        logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - INSIDE if next_step.get('answer_data'):")
                         matched_answer_data = next_step["answer_data"]
                         logger.info(f"FLOW_MANAGEMENT: ✅ Using answer data from get_next_flow_step")
                     else:
+                        logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - NOT INSIDE if next_step.get('answer_data'):")
+                        logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_step.get('answer_data') is falsy: {next_step.get('answer_data')}")
                         # Fallback: Get the current step data to find the matched answer
                         logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - Using fallback logic to find matched answer")
                         current_step_data = flow_state.flow_data
@@ -2516,6 +2540,44 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     "value": True,
                     "confidence": 0.95}
 
+            # Handle uncertainty responses (user doesn't know the answer)
+            # Use LLM to detect uncertainty instead of hardcoded phrases
+            question_text = current_step_data.get("text", "")
+            is_uncertain = detect_uncertainty_with_llm(user_message or "", question_text)
+            
+            if is_uncertain and current_step_data.get("next_flow"):
+                # User is uncertain - acknowledge and move to next step
+                logger.info("FLOW_MANAGEMENT: User expressed uncertainty, progressing to next step")
+                nxt = current_step_data["next_flow"]
+                old_step = flow_state.current_step
+                flow_state.current_step = nxt.get("name")
+                flow_state.flow_data = nxt
+                step_type = nxt.get("type", "unknown")
+                response_text = "That's okay. " + nxt.get("text", "")
+                
+                logger.info(f"FLOW_MANAGEMENT: Uncertainty handler progressed to next step {flow_state.current_step}")
+                print_flow_status(
+                    room_name, flow_state, "➡️ STEP TRANSITION", 
+                    f"From: {old_step} → To: {flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
+                
+                if step_type == 'question':
+                    flow_state.pending_step = flow_state.current_step
+                    flow_state.pending_expected_kind = 'number' if (
+                        'phone line' in response_text.lower() or 'texts' in response_text.lower()) else None
+                    flow_state.pending_asked_at = time.time()
+                    flow_state.pending_reask_count = 0
+                else:
+                    flow_state.pending_step = None
+                
+                add_agent_response_to_history(flow_state, response_text)
+                auto_save_flow_state()
+                
+                return {
+                    "type": step_type,
+                    "response": response_text,
+                    "flow_state": flow_state
+                }
+            
             # Handle unclear responses in main question flow
             if interp.get("status") == "unclear":
                 if interp.get("kind") == "ambiguous":
@@ -2538,6 +2600,16 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             next_step = get_next_flow_step(flow_state, user_message)
             if next_step:
                 logger.info(f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
+                
+                # 🎯 MESSAGE COMBINATION: If we have answer_data, combine current answer message with next question
+                response_text = next_step["step_data"].get("text", "")
+                if next_step.get("answer_data"):
+                    logger.info(f"FLOW_MANAGEMENT: ✅ Found answer_data, combining messages")
+                    current_answer_message = next_step["answer_data"].get("text", "")
+                    if current_answer_message:
+                        response_text = current_answer_message + " " + response_text
+                        logger.info(f"FLOW_MANAGEMENT: ✅ Combined message: '{response_text}'")
+                
                 old_step = flow_state.current_step
                 flow_state.current_step = next_step["step_name"]
                 flow_state.flow_data = next_step["step_data"]
@@ -2547,10 +2619,8 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     f"FLOW_MANAGEMENT: STEP TRANSITION - From: {old_step} → To: {
                         next_step['step_name']} | Type: {step_type}")
                 print_flow_status(room_name, flow_state, f"➡️ STEP TRANSITION", 
-                                f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{next_step['step_data'].get('text', '')}'")
+                                f"From: {old_step} → To: {next_step['step_name']} | Type: {step_type} | Response: '{response_text}'")
                 
-                # Handle different step types
-                response_text = next_step["step_data"].get("text", "")
                 # Set pending question lock if next is a question
                 if step_type == 'question':
                     flow_state.pending_step = next_step['step_name']
@@ -2561,6 +2631,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 else:
                     flow_state.pending_step = None
                 add_agent_response_to_history(flow_state, response_text)
+                auto_save_flow_state()
                 
                 return {
                     "type": step_type,
@@ -2598,89 +2669,9 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     return {"type": step_type, "response": response_text,
                             "flow_state": flow_state}
 
-                # Heuristics: try to interpret common free-form answers to
-                # advance flow instead of falling back
-                qtext = (current_step_data.get("text") or "").lower()
-                ur = (user_message or "").lower()
-
-                def _extract_digits_from_words(t: str) -> str:
-                    words_map = {
-                        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
-                        "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"
-                    }
-                    parts = re.findall(
-                        r"\d|zero|one|two|three|four|five|six|seven|eight|nine", t)
-                    return "".join(words_map.get(p, p) for p in parts)
-
-                def _extract_quantity(t: str) -> Optional[int]:
-                    m = re.search(r"\b(\d{1,3})\b", t)
-                    if m:
-                        return int(m.group(1))
-                    words_to_num = {
-                        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-                        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-                        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
-                        "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
-                        "nineteen": 19, "twenty": 20
-                    }
-                    for w, v in words_to_num.items():
-                        if f" {w} " in f" {t} ":
-                            return v
-                    return None
-
-                advanced = False
-                if "zip" in qtext or "zipcode" in qtext or "zip code" in qtext:
-                    zip_digits = _extract_digits_from_words(ur)
-                    if len(zip_digits) >= 5 and current_step_data.get(
-                            "next_flow"):
-                        # Proceed to next step (FAQ for weather flow)
-                        nxt = current_step_data["next_flow"]
-                        old_step = flow_state.current_step
-                        flow_state.current_step = nxt.get("name")
-                        flow_state.flow_data = nxt
-                        step_type = nxt.get("type", "unknown")
-                        response_text = nxt.get("text", "")
-                        logger.info(
-                            f"FLOW_MANAGEMENT: Heuristic progressed ZIP question to next step {
-                                flow_state.current_step}")
-                        print_flow_status(
-                            room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {
-                                flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
-                        add_agent_response_to_history(
-                            flow_state, response_text)
-                        advanced = True
-                        return {
-                            "type": step_type,
-                            "response": response_text,
-                            "flow_state": flow_state
-                        }
-
-                qty = _extract_quantity(ur)
-                if not advanced and qty is not None and current_step_data.get(
-                        "next_flow"):
-                    # Proceed to next question in pricing regardless of
-                    # specific answer bucket
-                    nxt = current_step_data["next_flow"]
-                    old_step = flow_state.current_step
-                    flow_state.current_step = nxt.get("name")
-                    flow_state.flow_data = nxt
-                    step_type = nxt.get("type", "unknown")
-                    response_text = nxt.get("text", "")
-                    logger.info(
-                        f"FLOW_MANAGEMENT: Heuristic progressed numeric answer ({qty}) to next step {
-                            flow_state.current_step}")
-                    print_flow_status(
-                        room_name, flow_state, "➡️ STEP TRANSITION", f"From: {old_step} → To: {
-                            flow_state.current_step} | Type: {step_type} | Response: '{response_text}'")
-                    add_agent_response_to_history(flow_state, response_text)
-                    return {
-                        "type": step_type,
-                        "response": response_text,
-                        "flow_state": flow_state
-                    }
-
                 # If user utterance is too short/stopwordy, re-ask the same
                 # question instead of falling back
+                ur = (user_message or "").lower()
                 tokens = re.findall(r"\w+", ur)
                 if len(tokens) <= 2:
                     response_text = current_step_data.get("text", "")

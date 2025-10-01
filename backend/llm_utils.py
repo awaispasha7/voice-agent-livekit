@@ -417,16 +417,22 @@ Your job is to analyze a user's response and determine which predefined answer o
 
 MATCHING RULES:
 1. EXACT MATCHES: "zero" matches "0", "five" matches "5"
-2. RANGE MATCHES: "around fifteen" matches "11-20" (if 15 is in that range)
-3. THRESHOLD MATCHES: "about thirty" matches "More than 21" (if 30 > 21)
+2. RANGE MATCHES: "around fifteen" matches "11-20" (if 15 is in that range), "ten" matches "1-10" (if 10 is in that range)
+3. THRESHOLD MATCHES: "about thirty" matches "More than 21" (if 30 > 21), "26" matches "More than 21" (if 26 > 21)
 4. CONTEXT MATCHES: "I'm not running any" matches "0"
 5. CONFIDENCE: Only return a match if you're confident (confidence > 0.7)
 
-Return ONLY the matching answer key, or "none" if no confident match is found.
+CRITICAL: When matching numbers to ranges:
+- If the number is EXACTLY at the boundary (e.g., 10 for range "1-10"), match it to that range
+- If the number exceeds all ranges (e.g., 26 > 21), match to "More than X" option
+- Return ONLY the answer key EXACTLY as it appears in the options list
 
 EXAMPLES:
 Q: "How many campaigns?" A: "zero" Options: ["0", "1-10", "11-20", "More than 21"] → "0"
+Q: "How many campaigns?" A: "five" Options: ["0", "1-10", "11-20", "More than 21"] → "1-10"
+Q: "How many campaigns?" A: "ten" Options: ["0", "1-10", "11-20", "More than 21"] → "1-10"
 Q: "How many campaigns?" A: "around fifteen" Options: ["0", "1-10", "11-20", "More than 21"] → "11-20"
+Q: "How many campaigns?" A: "26" Options: ["0", "1-10", "11-20", "More than 21"] → "More than 21"
 Q: "How many campaigns?" A: "about thirty" Options: ["0", "1-10", "11-20", "More than 21"] → "More than 21"
 Q: "How many campaigns?" A: "I'm not running any" Options: ["0", "1-10", "11-20", "More than 21"] → "0"
 Q: "How many campaigns?" A: "the" Options: ["0", "1-10", "11-20", "More than 21"] → "none"
@@ -450,15 +456,340 @@ Which answer option does the user's response match? Return only the answer key o
         
         result = response.choices[0].message.content.strip()
         
+        # Strip surrounding quotes if present (LLM sometimes adds them)
+        result = result.strip('"').strip("'")
+        
+        # Debug logging
+        logger.info(f"🔍 ANSWER MATCHING: LLM returned: '{result}' for response: '{user_response}'")
+        logger.info(f"🔍 ANSWER MATCHING: Available keys: {answer_keys}")
+        logger.info(f"🔍 ANSWER MATCHING: Result in keys: {result in answer_keys}")
+        
         # Validate the result
         if result == "none" or result not in answer_keys:
+            logger.info(f"🔍 ANSWER MATCHING: ❌ No valid match found (result: '{result}')")
             return None
             
+        logger.info(f"🔍 ANSWER MATCHING: ✅ Matched to: '{result}'")
         return result
         
     except Exception as e:
         logger.error(f"🔍 ANSWER MATCHING: Error matching answer: {e}")
         return None
+
+
+def detect_uncertainty_with_llm(user_message: str, question_text: str) -> bool:
+    """
+    Use LLM to detect if user is expressing uncertainty or inability to answer.
+    
+    Args:
+        user_message: The user's response
+        question_text: The question being asked
+        
+    Returns:
+        True if user is uncertain/unable to answer, False otherwise
+    """
+    try:
+        client = get_openai_client()
+        
+        system = """You are an expert at detecting when users express uncertainty or inability to answer a question.
+
+Your job is to determine if the user is expressing that they:
+- Don't know the answer
+- Are unsure or uncertain
+- Can't provide the information
+- Need help figuring it out
+
+EXAMPLES OF UNCERTAINTY:
+- "I don't know"
+- "I'm not sure"
+- "I have no idea"
+- "Can't say"
+- "Uncertain"
+- "Not certain"
+- "I'm unsure"
+- "I don't have that information"
+- "I need to check"
+- "I'm not really sure about that"
+- "No clue"
+- "Beats me"
+
+EXAMPLES OF CLEAR ANSWERS (NOT UNCERTAINTY):
+- "Five"
+- "About ten"
+- "Around 100 dollars"
+- "Yes"
+- "No"
+- "Maybe later" (this is a decision, not uncertainty about information)
+
+Return ONLY "uncertain" or "certain" (no other text)."""
+
+        user_prompt = f"""QUESTION: "{question_text}"
+USER RESPONSE: "{user_message}"
+
+Is the user expressing uncertainty or inability to answer? Return only "uncertain" or "certain"."""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,
+            max_tokens=10
+        )
+        
+        result = response.choices[0].message.content.strip().lower()
+        
+        is_uncertain = result == "uncertain"
+        
+        logger.info(f"🔍 UNCERTAINTY DETECTION: User message: '{user_message}' → Result: '{result}' → Is uncertain: {is_uncertain}")
+        
+        return is_uncertain
+        
+    except Exception as e:
+        logger.error(f"🔍 UNCERTAINTY DETECTION: Error: {e}")
+        # Fallback to simple phrase detection if LLM fails
+        uncertainty_phrases = ["don't know", "not sure", "unsure", "no idea"]
+        return any(phrase in user_message.lower() for phrase in uncertainty_phrases)
+
+
+# ============================================================================
+# ORCHESTRATOR LLM FUNCTIONS
+# ============================================================================
+
+async def make_orchestrator_decision(context: Dict[str, Any]) -> Any:
+    """
+    Make an intelligent orchestration decision using LLM.
+    
+    This is the brain of the conversational orchestrator. It analyzes the full
+    context and decides the best action to take.
+    
+    Args:
+        context: Rich context including user message, profile, history, flow state
+        
+    Returns:
+        OrchestratorDecision with recommended action and reasoning
+    """
+    # Import here to avoid circular dependency
+    from backend.conversational_orchestrator import OrchestratorDecision, OrchestratorAction
+    
+    try:
+        client = get_openai_client()
+        
+        # Build comprehensive system prompt
+        system = """You are an intelligent conversation orchestrator for Alive5, a company that provides AI-powered solutions.
+
+**YOUR ROLE:**
+You sit above all conversation systems and make intelligent routing decisions to provide
+a natural, human-like conversation experience.
+
+**YOUR CAPABILITIES:**
+
+1. **FAQ Bot (Bedrock Knowledge Base)**: Client's knowledge base about Alive5
+   - Company information, products, features, pricing
+   - Use when user asks about: "What does Alive5 do?", "pricing", "features", etc.
+
+2. **Flow System**: Structured data collection flows
+   - Available flows: sales, marketing, speak with person
+   - Use when user wants: sales info, marketing info, to speak with someone
+   - BUT: Be intelligent about it!
+     * Never re-ask already collected information
+     * If user refuses a field, skip it gracefully
+     * Adapt based on user preferences and context
+
+3. **General Conversation**: Natural dialogue handling
+   - Clarifications, preferences, small talk
+   - Refusals ("I don't want to give my name")
+   - Uncertainty ("I'm not sure", "I don't know")
+   - Context questions ("What were we talking about?")
+   - Navigation ("Can we go back?", "Skip this")
+
+**DECISION CRITERIA:**
+
+**Route to FAQ Bot when:**
+- User asks about Alive5: products, features, pricing, company info
+- Questions like: "What is Alive5?", "How much?", "What do you offer?"
+- Any knowledge-base answerable question
+
+**Execute Flow when:**
+- User expresses intent: "I want sales info", "Tell me about marketing", "Speak with manager"
+- Clear objective that maps to a structured flow
+- User ready to provide information
+
+**Handle Conversationally when:**
+- User refuses: "I don't want to", "No thanks", "Skip that"
+- User uncertain: "I'm not sure", "I don't know", "Maybe"
+- User navigating: "Go back", "What did you ask?", "Can you repeat?"
+- Small talk or clarifications
+- Context questions
+
+**INTELLIGENT BEHAVIORS (CRITICAL):**
+
+1. **Memory**: NEVER re-ask for information already in user profile
+2. **Respect**: If user refused a field, acknowledge and move on
+3. **Context**: Remember conversation from 10+ messages ago
+4. **Adaptation**: Adjust flow based on user preferences
+5. **Natural**: Respond like a human, not a robot
+6. **Smooth Transitions**: Handle topic changes gracefully
+
+**RESPONSE FORMAT (JSON):**
+{{
+    "action": "use_faq | execute_flow | handle_conversationally | handle_refusal | handle_uncertainty",
+    "reasoning": "Why this action? (1-2 sentences)",
+    "response": "What to say to user (if handle_conversationally)",
+    "flow_to_execute": "sales | marketing | speak_with_person | null",
+    "skip_fields": ["field_name"],
+    "profile_updates": {{"key": "value"}},
+    "next_objective": "What user wants to accomplish",
+    "confidence": 0.95
+}}
+
+**EXAMPLES:**
+
+📌 **Example 1: FAQ Request**
+User: "What does Alive5 do?"
+Profile: {{}}
+→ {{"action": "use_faq", "reasoning": "Direct question about Alive5 company information", "confidence": 0.99}}
+
+📌 **Example 2: Flow Request**
+User: "I want marketing information"
+Profile: {{}}
+→ {{"action": "execute_flow", "reasoning": "Clear intent for marketing info", "flow_to_execute": "marketing", "next_objective": "get_marketing_info", "confidence": 0.95}}
+
+📌 **Example 3: Refusal Handling**
+User: "I'd rather not share my name"
+Current Question: "May I have your name?"
+→ {{"action": "handle_conversationally", "reasoning": "User refusing to provide name", "response": "That's perfectly fine! We can continue without it.", "skip_fields": ["name"], "profile_updates": {{"prefers_privacy": true}}, "confidence": 0.98}}
+
+📌 **Example 4: Uncertainty**
+User: "I'm not sure how many campaigns"
+Current Question: "How many campaigns are you running?"
+→ {{"action": "handle_conversationally", "reasoning": "User uncertain about answer", "response": "That's okay! If you don't have an exact number, a rough estimate works too. Or we can move on to the next question.", "confidence": 0.92}}
+
+📌 **Example 5: Smart Resume (Already Collected)**
+User: "What's my budget?"
+Profile: {{"collected_info": {{"budget": "5000"}}}}
+→ {{"action": "handle_conversationally", "reasoning": "User asking about already provided info", "response": "You mentioned your budget is $5000. Would you like to update that?", "confidence": 0.95}}
+
+📌 **Example 6: Context Switch**
+User: "Actually, tell me about your pricing first"
+Current Flow: "marketing" (in middle of questions)
+→ {{"action": "use_faq", "reasoning": "User wants to learn about pricing before continuing", "confidence": 0.90, "metadata": {{"resume_flow_after": "marketing"}}}}
+
+**CRITICAL RULES:**
+1. ALWAYS check profile.collected_info before deciding to execute flow
+2. ALWAYS respect profile.refused_fields
+3. ALWAYS provide reasoning
+4. BE NATURAL - avoid robotic responses
+5. If uncertain, prefer handle_conversationally over forcing a flow"""
+
+        # Build user prompt with full context
+        user_prompt = f"""**CURRENT CONTEXT:**
+
+**User Message:** "{context.get('user_message')}"
+
+**User Profile:**
+- Collected Info: {context['profile'].get('collected_info', {})}
+- Preferences: {context['profile'].get('preferences', [])}
+- Refused Fields: {context['profile'].get('refused_fields', [])}
+- Skipped Fields: {context['profile'].get('skipped_fields', [])}
+- Current Objectives: {context['profile'].get('objectives', [])}
+- Interaction Count: {context['profile'].get('interaction_count', 0)}
+
+**Available Systems:**
+- FAQ Bot: {"Available" if context.get('faq_available') else "Not Available"}
+- Available Flows: {context.get('available_flows', [])}
+
+**Current Conversation State:**
+- Current Flow: {context.get('current_flow', 'None')}
+- Current Step: {context.get('current_step', 'None')}
+- Current Question: {context.get('current_question', 'None')}
+- Expected Answers: {context.get('expected_answers', 'None')}
+
+**Recent Conversation History (Last 10 messages):**
+{chr(10).join(context.get('conversation_history', [])[-10:])}
+
+---
+
+**YOUR TASK:**
+Analyze this context and decide the best action. Return ONLY valid JSON (no markdown, no extra text).
+
+**Return format:**
+{{
+    "action": "use_faq | execute_flow | handle_conversationally | handle_refusal | handle_uncertainty",
+    "reasoning": "...",
+    "response": "..." (if applicable),
+    "flow_to_execute": "..." (if applicable),
+    "skip_fields": [...],
+    "profile_updates": {{}},
+    "next_objective": "...",
+    "confidence": 0.0-1.0
+}}"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o",  # Using GPT-4 for best decision-making
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,  # Lower temperature for more consistent decisions
+            max_tokens=500
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        # Remove markdown code blocks if present
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+            result_text = result_text.strip()
+        
+        logger.info(f"🧠 ORCHESTRATOR LLM: Raw response: {result_text[:200]}...")
+        
+        # Parse JSON response
+        decision_data = json.loads(result_text)
+        
+        # Create OrchestratorDecision object
+        decision = OrchestratorDecision(
+            action=OrchestratorAction(decision_data.get("action", "handle_conversationally")),
+            reasoning=decision_data.get("reasoning", "No reasoning provided"),
+            response=decision_data.get("response"),
+            flow_to_execute=decision_data.get("flow_to_execute"),
+            skip_fields=decision_data.get("skip_fields", []),
+            profile_updates=decision_data.get("profile_updates", {}),
+            next_objective=decision_data.get("next_objective"),
+            confidence=decision_data.get("confidence", 0.8),
+            metadata=decision_data.get("metadata", {})
+        )
+        
+        logger.info(f"🧠 ORCHESTRATOR LLM: Decision - {decision.action} (confidence: {decision.confidence})")
+        logger.info(f"🧠 ORCHESTRATOR LLM: Reasoning - {decision.reasoning}")
+        
+        return decision
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"🧠 ORCHESTRATOR LLM: JSON decode error: {e}")
+        logger.error(f"🧠 ORCHESTRATOR LLM: Raw response was: {result_text}")
+        
+        # Fallback decision
+        return OrchestratorDecision(
+            action=OrchestratorAction.HANDLE_CONVERSATIONALLY,
+            reasoning="Failed to parse LLM response, using safe fallback",
+            response="I'm here to help! Could you please rephrase that?",
+            confidence=0.5
+        )
+        
+    except Exception as e:
+        logger.error(f"🧠 ORCHESTRATOR LLM: Error: {e}")
+        
+        # Fallback decision
+        return OrchestratorDecision(
+            action=OrchestratorAction.HANDLE_CONVERSATIONALLY,
+            reasoning=f"Error in orchestrator: {str(e)}",
+            response="I'm having trouble processing that. Could you try again?",
+            confidence=0.3
+        )
 
 
 # All LLM functions are now centralized here for simplicity
