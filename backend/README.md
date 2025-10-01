@@ -42,6 +42,18 @@ Smart contextual analysis of user messages for intent detection.
 #### `detect_intent_with_llm(user_message: str, available_intents: List[str]) -> Optional[str]`
 Detects user intent from available options.
 
+#### `match_answer_with_llm(question_text: str, user_response: str, available_answers: Dict[str, Any]) -> Optional[str]`
+Matches user responses with predefined answer options using LLM intelligence.
+
+**Supported Matching Types:**
+- **Exact Matches**: "zero" matches "0", "five" matches "5"
+- **Range Matches**: "around fifteen" matches "11-20" (if 15 is in that range)
+- **Threshold Matches**: "about thirty" matches "More than 21" (if 30 > 21)
+- **Context Matches**: "I'm not running any" matches "0"
+
+**Returns:**
+- Matching answer key if found, `None` if no confident match
+
 ## 🔄 Flow Management
 
 ### Flow Types
@@ -165,12 +177,14 @@ Verbose logs from external libraries (`httpx`, `httpcore`, `uvicorn.access`) are
 - Add new LLM functions to `llm_utils.py`
 - Use `detect_intent_with_llm` for intent detection
 - Use `extract_answer_with_llm` for answer extraction
+- Use `match_answer_with_llm` for answer matching in flows
 - Keep functions simple and centralized
 
 ## 📝 Notes
 
 - All LLM calls are centralized in `llm_utils.py` for easy maintenance
-- The system uses an LLM-only approach for answer extraction
+- The system uses an LLM-only approach for answer extraction and matching
+- Answer matching uses intelligent LLM-based logic instead of hardcoded patterns
 - Voice changes are handled via LiveKit data packets for real-time updates
 - Flow states are automatically persisted and restored
 - The system gracefully handles API failures with fallback mechanisms

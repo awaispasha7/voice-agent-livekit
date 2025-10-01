@@ -26,11 +26,12 @@ from livekit.rtc import DataPacketKind
 from pydantic import BaseModel, Field
 
 # Import centralized LLM utilities
-from llm_utils import (
+from backend.llm_utils import (
     analyze_transcription_quality,
     extract_answer_with_llm,
     analyze_message_with_smart_processor,
-    detect_intent_with_llm
+    detect_intent_with_llm,
+    match_answer_with_llm
 )
 
 # =============================================================================
@@ -1410,57 +1411,26 @@ def get_next_flow_step(current_flow_state: FlowState,
             f"FLOW_NAVIGATION: Checking answers: {
                 list(
             current_step_data['answers'].keys())}")
-        # Use centralized LLM utility for number extraction
-        # This replaces the old deterministic parser with our centralized LLM approach
+        # Use centralized LLM utility for answer matching
+        # This replaces hardcoded matching logic with our centralized LLM approach
         # Benefits: Better accuracy, handles natural language, consistent with rest of system
         question_text = current_step_data.get("text", "")
-        llm_result = extract_answer_with_llm(question_text, user_response)
+        matched_answer_key = match_answer_with_llm(question_text, user_response, current_step_data["answers"])
         
-        # Extract normalized quantity from LLM result
-        normalized_qty = None
-        if llm_result.get("status") == "extracted" and llm_result.get("kind") == "number":
-            normalized_qty = llm_result.get("value")
-        # Find matching answer - more flexible matching
-        for answer_key, answer_data in current_step_data["answers"].items():
-            logger.info(
-                f"FLOW_NAVIGATION: Checking answer '{answer_key}' against user response '{user_response}'")
-            ak = answer_key.lower()
-            ur = user_response.lower()
-            match = ak in ur or ur in ak
-            if not match and normalized_qty is not None:
-                try:
-                    if "+" in ak:
-                        base = int(ak.replace("+", "").strip())
-                        match = normalized_qty >= base
-                    elif "-" in ak:
-                        low, high = ak.split("-", 1)
-                        match = int(
-                            low.strip()) <= normalized_qty <= int(
-                            high.strip())
-                    elif "more than" in ak.lower():
-                        # Handle "More than 21" patterns
-                        import re
-                        more_than_match = re.search(r"more than (\d+)", ak.lower())
-                        if more_than_match:
-                            threshold = int(more_than_match.group(1))
-                            match = normalized_qty > threshold
-                except Exception:
-                    match = False
-
-            if match:
-                logger.info(
-                    f"FLOW_NAVIGATION: ✅ Answer match found: {answer_key}")
-                if answer_data.get("next_flow"):
+        if matched_answer_key:
+            logger.info(f"FLOW_NAVIGATION: ✅ LLM matched answer: '{matched_answer_key}' for response: '{user_response}'")
+            answer_data = current_step_data["answers"][matched_answer_key]
+            if answer_data.get("next_flow"):
                     logger.info(
-                        f"FLOW_NAVIGATION: ✅ Next flow found for answer {answer_key}")
+                        f"FLOW_NAVIGATION: ✅ Next flow found for answer {matched_answer_key}")
                     return {
                         "type": "next_step",
                         "step_data": answer_data["next_flow"],
                         "step_name": answer_data["name"]
                     }
-                else:
-                    logger.info(
-                        f"FLOW_NAVIGATION: ❌ No next_flow for answer {answer_key}")
+            else:
+                logger.info(
+                    f"FLOW_NAVIGATION: ❌ No next_flow for answer {matched_answer_key}")
     
     # Check for next_flow
     if current_step_data.get("next_flow"):

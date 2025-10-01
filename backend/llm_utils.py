@@ -393,4 +393,72 @@ Examples:
         return None
 
 
+def match_answer_with_llm(question_text: str, user_response: str, available_answers: Dict[str, Any]) -> Optional[str]:
+    """
+    Use LLM to match user response with available answer options.
+    
+    Args:
+        question_text: The question being asked
+        user_response: The user's natural language response
+        available_answers: Dict of answer keys and their data
+        
+    Returns:
+        The matching answer key, or None if no match found
+    """
+    try:
+        client = get_openai_client()
+        
+        # Extract just the answer keys for the LLM
+        answer_keys = list(available_answers.keys())
+        
+        system = """You are an expert at matching user responses to predefined answer options.
+
+Your job is to analyze a user's response and determine which predefined answer option it matches.
+
+MATCHING RULES:
+1. EXACT MATCHES: "zero" matches "0", "five" matches "5"
+2. RANGE MATCHES: "around fifteen" matches "11-20" (if 15 is in that range)
+3. THRESHOLD MATCHES: "about thirty" matches "More than 21" (if 30 > 21)
+4. CONTEXT MATCHES: "I'm not running any" matches "0"
+5. CONFIDENCE: Only return a match if you're confident (confidence > 0.7)
+
+Return ONLY the matching answer key, or "none" if no confident match is found.
+
+EXAMPLES:
+Q: "How many campaigns?" A: "zero" Options: ["0", "1-10", "11-20", "More than 21"] → "0"
+Q: "How many campaigns?" A: "around fifteen" Options: ["0", "1-10", "11-20", "More than 21"] → "11-20"
+Q: "How many campaigns?" A: "about thirty" Options: ["0", "1-10", "11-20", "More than 21"] → "More than 21"
+Q: "How many campaigns?" A: "I'm not running any" Options: ["0", "1-10", "11-20", "More than 21"] → "0"
+Q: "How many campaigns?" A: "the" Options: ["0", "1-10", "11-20", "More than 21"] → "none"
+"""
+
+        user_prompt = f"""QUESTION: "{question_text}"
+USER RESPONSE: "{user_response}"
+AVAILABLE ANSWER OPTIONS: {answer_keys}
+
+Which answer option does the user's response match? Return only the answer key or "none"."""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,
+            max_tokens=50
+        )
+        
+        result = response.choices[0].message.content.strip()
+        
+        # Validate the result
+        if result == "none" or result not in answer_keys:
+            return None
+            
+        return result
+        
+    except Exception as e:
+        logger.error(f"🔍 ANSWER MATCHING: Error matching answer: {e}")
+        return None
+
+
 # All LLM functions are now centralized here for simplicity
