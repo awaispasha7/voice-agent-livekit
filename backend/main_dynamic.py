@@ -2290,6 +2290,10 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     # Check if we have the answer data directly from get_next_flow_step
                     logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_step keys: {list(next_step.keys())}")
                     logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_step has answer_data: {'answer_data' in next_step}")
+                    logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_step.get('answer_data'): {next_step.get('answer_data')}")
+                    logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - bool(next_step.get('answer_data')): {bool(next_step.get('answer_data'))}")
+                    logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_step type: {type(next_step)}")
+                    logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_step.get('answer_data') type: {type(next_step.get('answer_data'))}")
                     if next_step.get("answer_data"):
                         matched_answer_data = next_step["answer_data"]
                         logger.info(f"FLOW_MANAGEMENT: ✅ Using answer data from get_next_flow_step")
@@ -2312,6 +2316,12 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                         # Combine current answer message with next flow
                         current_message = matched_answer_data.get("text", "")
                         next_flow_data = matched_answer_data.get("next_flow")
+                        
+                        logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - matched_answer_data found: {matched_answer_data}")
+                        logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - current_message: '{current_message}'")
+                        logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_flow_data: {next_flow_data}")
+                        logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - current_message bool: {bool(current_message)}")
+                        logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - next_flow_data bool: {bool(next_flow_data)}")
                         
                         if current_message and next_flow_data:
                             # Update flow state to the next step
@@ -2347,6 +2357,8 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                             }
                     
                     # Fallback to original logic if we can't find the matched answer
+                    logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - Going to fallback logic")
+                    logger.info(f"FLOW_MANAGEMENT: 🔍 DEBUG - matched_answer_data: {matched_answer_data}")
                     old_step = flow_state.current_step
                     flow_state.current_step = next_step["step_name"]
                     flow_state.flow_data = next_step["step_data"]
