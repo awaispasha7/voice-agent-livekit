@@ -25,10 +25,24 @@ from livekit.rtc import DataPacketKind
 # from livekit.api.room_models import DataPacketKind as APIDataPacketKind
 from pydantic import BaseModel, Field
 
+# Import centralized LLM utilities
+from llm_utils import (
+    analyze_transcription_quality,
+    extract_answer_with_llm,
+    analyze_message_with_smart_processor,
+    detect_intent_with_llm
+)
+
+# =============================================================================
+# CONFIGURATION AND SETUP
+# =============================================================================
+
 # Get the current file's directory
 current_dir = Path(__file__).parent
 
-# Voice caching utilities
+# =============================================================================
+# VOICE CACHING UTILITIES
+# =============================================================================
 VOICE_CACHE_FILE = current_dir / "cached_voices.json"
 DEFAULT_VOICE_ID = "7f423809-0011-4658-ba48-a411f5e516ba"  # Ashwin - Warm Narrator
 
@@ -270,7 +284,9 @@ def _find_step_by_text(
     return None
 
 
-# TemplateManager class removed - using direct API calls instead
+# =============================================================================
+# PYDANTIC MODELS FOR REQUEST/RESPONSE VALIDATION
+# =============================================================================
 
 # Request models
 class ConnectionRequest(BaseModel):
@@ -313,8 +329,6 @@ class ProcessFlowMessageRequest(BaseModel):
     org_name: Optional[str] = None
 
 # Flow management models
-
-
 class FlowState(BaseModel):
     current_flow: Optional[str] = None
     current_step: Optional[str] = None
@@ -339,6 +353,10 @@ class FlowResponse(BaseModel):
 
 # Local file-based persistence functions
 
+
+# =============================================================================
+# FLOW STATE MANAGEMENT FUNCTIONS
+# =============================================================================
 
 def save_flow_state_to_file(room_name: str, flow_state: FlowState) -> bool:
     """Save flow state to local JSON file"""
@@ -492,88 +510,24 @@ async def is_ambiguous_transcription(user_text: str) -> bool:
 
     # Skip empty or very short inputs
     if not u or len(u) < 2:
-            return True
+        return True
     
-    # For very obvious cases, use simple heuristics to avoid unnecessary LLM
-    # calls
+    # For very obvious cases, use simple heuristics to avoid unnecessary LLM calls
     if len(u) < 3:
-            return True
+        return True
     
     try:
-        # Use LLM to determine if the transcription is complete and meaningful
-        client = openai.OpenAI(api_key=os.getenv("OPENAI_KEY"))
-
-        prompt = f"""You are a speech transcription quality analyzer. Your job is to determine if a transcribed text is complete, meaningful, and not garbled.
-
-TRANSCRIBED TEXT: "{u}"
-
-ANALYSIS TASKS:
-1. Is this a complete, meaningful phrase or sentence?
-2. Is this likely to be a garbled or incomplete transcription?
-3. Would a human understand what the speaker intended to say?
-
-EXAMPLES:
-- "thanks" → COMPLETE (simple gratitude)
-- "speak with someone" → COMPLETE (clear request)
-- "sales information" → COMPLETE (business inquiry)
-- "over the phone" → COMPLETE (communication preference)
-- "can I help" → COMPLETE (offer of assistance)
-- "the" → INCOMPLETE (incomplete sentence)
-- "we use" → INCOMPLETE (incomplete thought)
-- "uh can i" → GARBLED (stuttering/incomplete)
-- "some some" → GARBLED (repeated words)
-- "through phone lines" → GARBLED (nonsensical)
-
-RESPONSE FORMAT (JSON):
-{{
-    "is_complete": true/false,
-    "is_meaningful": true/false,
-    "is_garbled": true/false,
-    "confidence": "high|medium|low",
-    "reasoning": "brief explanation"
-}}
-
-IMPORTANT:
-- Simple words like "thanks", "yes", "no", "hello" are COMPLETE
-- Business phrases like "sales information", "speak with someone" are COMPLETE
-- Incomplete sentences ending with articles/prepositions are INCOMPLETE
-- Repeated words or stuttering are GARBLED
-- Consider context - even short phrases can be complete if they make sense
-
-Respond with ONLY the JSON object."""
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=200
-        )
-
-        response_text = response.choices[0].message.content.strip()
-
-        # Parse the JSON response
-        result = json.loads(response_text)
+        # Use centralized LLM utility for transcription quality analysis
+        result = await analyze_transcription_quality(u)
+        
         is_complete = result.get("is_complete", False)
-        is_meaningful = result.get("is_meaningful", False)
-        is_garbled = result.get("is_garbled", False)
-        confidence = result.get("confidence", "low")
-        reasoning = result.get("reasoning", "")
-
-        # Transcription analysis completed
-
-        # Return True if it's garbled or incomplete/not meaningful
-        if is_garbled:
+        confidence = result.get("confidence", 0.0)
+        
+        # Return True if it's incomplete or low confidence
+        if not is_complete or confidence < 0.5:
             return True
-        if not is_complete or not is_meaningful:
-            return True
-    
+        
         return False
-
-    except json.JSONDecodeError as e:
-        logger.error(f"🧠 TRANSCRIPTION ANALYSIS: Failed to parse LLM response: {e}")
-        logger.error(f"🧠 RAW RESPONSE: {response_text}")
-        # Fallback to simple heuristics if LLM response is malformed
-        return len(u.split()) <= 2 and not re.search(r"\b(yes|no|ok|okay|thanks|bye|hello|hi)\b", u.lower())
 
     except Exception as e:
         logger.error(f"🧠 TRANSCRIPTION ANALYSIS: Error calling LLM: {e}")
@@ -581,248 +535,18 @@ Respond with ONLY the JSON object."""
         return len(u.split()) <= 2 and not re.search(r"\b(yes|no|ok|okay|thanks|bye|hello|hi)\b", u.lower())
 
 
-async def interpret_answer(
-        question_text: str, user_text: str) -> Dict[str, Any]:
-    """Extract structured answers from natural speech for common question types."""
-    q = (question_text or "").lower()
-    u = (user_text or "").lower().strip()
-
-    # First check for ambiguous/garbled transcriptions using LLM
-    if await is_ambiguous_transcription(u):
-        return {"status": "unclear", "kind": "ambiguous",
-                "value": u, "confidence": 0.0}
-
-    # Yes/No
-    yes_triggers = [
-        "special needs",
-        "sso",
-        "salesforce",
-        "crm integration",
-        "do you",
-        "would you",
-        "are you",
-        "is it",
-        "should we",
-        "can you"]
-    if any(k in q for k in yes_triggers):
-        if re.search(
-                r"\b(yes|yeah|yep|yup|sure|of course|please|affirmative|ok|okay|absolutely)\b", u):
-            return {"status": "extracted", "kind": "yesno",
-                    "value": True, "confidence": 0.9}
-        if re.search(
-                r"\b(no|nope|nah|negative|not really|don\'t|do not)\b", u):
-            return {"status": "extracted", "kind": "yesno",
-                    "value": False, "confidence": 0.9}
-
-    # ZIP
-    if "zip" in q:
-        words_map = {
-    "zero": "0",
-    "one": "1",
-    "two": "2",
-    "three": "3",
-    "four": "4",
-    "five": "5",
-    "six": "6",
-    "seven": "7",
-    "eight": "8",
-     "nine": "9"}
-        parts = re.findall(
-            r"\d|zero|one|two|three|four|five|six|seven|eight|nine", u)
-        digits = "".join(words_map.get(p, p) for p in parts)
-        if len(digits) >= 5:
-            return {"status": "extracted", "kind": "zip",
-                    "value": digits[:5], "confidence": 0.85}
-
-    # Phone lines quantity
-    if "phone line" in q or "lines" in q:
-        # direct digits
-        m = re.search(r"\b(\d{1,3})\b", u)
-        if m:
-            return {"status": "extracted", "kind": "number",
-                    "value": int(m.group(1)), "confidence": 0.9}
-        # hyphenated or spaced tens-composite (twenty four, twenty-four)
-        tens_map = {
-            "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90
-        }
-        units_map = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-     "nine": 9}
-        m2 = re.search(
-            r"\b(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[ -]?(one|two|three|four|five|six|seven|eight|nine)?\b",
-            u)
-        if m2:
-            tens = tens_map.get(m2.group(1), 0)
-            unit = units_map.get(m2.group(2), 0) if m2.group(2) else 0
-            val = tens + unit
-            if val > 0:
-                return {"status": "extracted", "kind": "number",
-                        "value": val, "confidence": 0.85}
-        # basic units (fallback)
-        words_to_num = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-                        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
-                        "eighteen": 18, "nineteen": 19, "twenty": 20}
-        for w, n in words_to_num.items():
-            if re.search(rf"\b{w}\b", u):
-                return {"status": "extracted", "kind": "number",
-                        "value": n, "confidence": 0.8}
-
-    # Texts-per-month quantity
-    if "texts" in q:
-        # Look for numbers in various formats
-        m = re.search(r"\b(\d{1,5})\b", u)
-        if m:
-            return {"status": "extracted", "kind": "number",
-                    "value": int(m.group(1)), "confidence": 0.85}
-        
-        # Look for word numbers (five hundred, two fifty, etc.)
-        words_to_num = {
-            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
-            "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
-            "seventy": 70, "eighty": 80, "ninety": 90, "hundred": 100, "thousand": 1000
-        }
-        
-        # Handle "five hundred" pattern
-        if re.search(r"\bfive\s+hundred\b", u):
-            return {"status": "extracted", "kind": "number",
-                    "value": 500, "confidence": 0.9}
-        if re.search(r"\btwo\s+fifty\b", u):
-            return {"status": "extracted", "kind": "number",
-                    "value": 250, "confidence": 0.9}
-        if re.search(r"\btwo\s+hundred\b", u):
-            return {"status": "extracted", "kind": "number",
-                    "value": 200, "confidence": 0.9}
-        if re.search(r"\bthree\s+hundred\b", u):
-            return {"status": "extracted", "kind": "number",
-                    "value": 300, "confidence": 0.9}
-        if re.search(r"\bfour\s+hundred\b", u):
-            return {"status": "extracted", "kind": "number",
-                    "value": 400, "confidence": 0.9}
-        if re.search(r"\bsix\s+hundred\b", u):
-            return {"status": "extracted", "kind": "number",
-                    "value": 600, "confidence": 0.9}
-        if re.search(r"\bseven\s+hundred\b", u):
-            return {"status": "extracted", "kind": "number",
-                    "value": 700, "confidence": 0.9}
-        if re.search(r"\beight\s+hundred\b", u):
-            return {"status": "extracted", "kind": "number",
-                    "value": 800, "confidence": 0.9}
-        if re.search(r"\bnine\s+hundred\b", u):
-            return {"status": "extracted", "kind": "number",
-                    "value": 900, "confidence": 0.9}
-        
-        # Handle single word numbers
-        for w, n in words_to_num.items():
-            if re.search(
-                    rf"\b{w}\b", u) and n <= 1000:  # Only reasonable text message counts
-                return {"status": "extracted", "kind": "number",
-                        "value": n, "confidence": 0.8}
-
-    return {"status": "unclear", "kind": "text", "value": u, "confidence": 0.0}
+# Removed interpret_answer function - now using enhanced LLM-only approach
 
 
-async def gated_llm_extract_answer(
-        question_text: str, user_text: str) -> Dict[str, Any]:
-    """Always use LLM for answer extraction with deterministic parser context.
-    
-    This is the new robust approach that:
-    1. First runs deterministic parser for initial analysis
-    2. Always calls LLM with parser context for final decision
-    3. Provides more reliable extraction than either method alone
-    
-    Args:
-        question_text: The question being asked
-        user_text: The user's natural language response
-        
-    Returns:
-        Dict with status, kind, value, confidence
-    """
-    # Step 1: Run deterministic parser for initial analysis
-    parser_result = await interpret_answer(question_text, user_text)
-    
-    # Step 2: Always call LLM with parser context
-    llm_result = llm_extract_answer(question_text, user_text, parser_result)
-    
-    # Log the comparison for debugging
-    logger.info(f"GATED_LLM: Parser={parser_result}, LLM={llm_result}")
-    
-    # Return LLM result (it has the final decision)
-    return llm_result
+# Removed gated_llm_extract_answer - using extract_answer_with_llm directly for simplicity
 
 
-def llm_extract_answer(question_text: str, user_text: str,
-                       parser_context: Dict[str, Any] = None) -> Dict[str, Any]:
-    """LLM-based extractor for natural responses with deterministic parser context.
-    Returns the same schema as interpret_answer. Uses strict JSON output instructions.
-    """
-    try:
-        if not OPENAI_API_KEY:
-            return {"status": "unclear", "kind": "text",
-                    "value": user_text, "confidence": 0.0}
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        system = (
-            "You extract structured answers from a user's natural reply. "
-            "You will receive both the raw user input and a deterministic parser's analysis. "
-            "Use the parser's analysis as context, but make your own intelligent decision. "
-            "Return a JSON object only, no prose, with keys: status ('extracted'|'unclear'), "
-            "kind ('number'|'zip'|'yesno'|'text'|'ambiguous'), value, confidence (0..1)."
-        )
-        
-        # Build context from parser analysis
-        parser_info = ""
-        if parser_context:
-            parser_info = f"\nParser Analysis: {
-                parser_context.get(
-                    'status', 'unknown')} - {
-            parser_context.get(
-                'kind', 'unknown')} - {
-                    parser_context.get(
-                        'value', 'none')} (confidence: {
-                            parser_context.get(
-                                'confidence', 0)})"
-        
-        user = (
-            "Question: " + (question_text or "") + "\n"
-            "User reply: " + (user_text or "") + parser_info + "\n"
-            "Rules:\n"
-            "- If user gives a quantity like 'two phone lines' or 'twenty four', set kind='number' and value as integer.\n"
-            "- If it's a ZIP like 'two five nine six three', set kind='zip' and 5-digit value.\n"
-            "- If yes/no ('yes', 'no', etc.), set kind='yesno' and value true/false.\n"
-            "- If the reply appears garbled, incomplete, or nonsensical (like 'through phone lines we use', 'about to', 'uh can i'), set status='unclear' and kind='ambiguous'.\n"
-            "- If the reply is incomplete or ends with articles/prepositions ('the', 'to', 'we', 'use'), set status='unclear'.\n"
-            "- If words are repeated unnecessarily ('some some', 'two two'), set status='unclear'.\n"
-            "- Consider the parser's analysis but make your own decision - you may override the parser if it seems wrong.\n"
-            "- For ambiguous transcriptions, prioritize asking for clarification over guessing.\n"
-            "Respond with JSON only."
-        )
-        resp = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=0.2,
-            max_tokens=120
-        )
-        content = resp.choices[0].message.content or "{}"
-        data = json.loads(content)
-        # Basic validation
-        if isinstance(data, dict) and data.get(
-                "status") in ("extracted", "unclear"):
-            return data
-    except Exception as e:
-        logger.warning(f"ANSWER_LLM: extractor error {e}")
-    return {"status": "unclear", "kind": "text",
-            "value": user_text, "confidence": 0.0}
+# Removed llm_extract_answer wrapper - using extract_answer_with_llm directly for simplicity
 
+
+# =============================================================================
+# SMART MESSAGE PROCESSING AND UTILITY FUNCTIONS
+# =============================================================================
 
 async def smart_message_processor(
         user_message: str, current_flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -835,12 +559,9 @@ async def smart_message_processor(
     """
     try:
         # Get current flow context
-        current_flow = current_flow_context.get(
-            "current_flow") if current_flow_context else None
-        current_step = current_flow_context.get(
-            "current_step") if current_flow_context else None
-        current_step_type = current_flow_context.get(
-            "current_step_type") if current_flow_context else None
+        current_flow = current_flow_context.get("current_flow") if current_flow_context else None
+        current_step = current_flow_context.get("current_step") if current_flow_context else None
+        current_step_type = current_flow_context.get("current_step_type") if current_flow_context else None
 
         # Create context-aware prompt
         context_info = ""
@@ -858,92 +579,18 @@ CURRENT CONVERSATION CONTEXT:
         if bot_template and bot_template.get("data"):
             for flow_key, flow_data in bot_template["data"].items():
                 if flow_data.get("type") == "intent_bot":
-                    intent_name = flow_data.get(
-                        "text", flow_key)  # Use text field for intent name
+                    intent_name = flow_data.get("text", flow_key)  # Use text field for intent name
                     available_intents.append(intent_name)
 
-        intents_list = ", ".join(
-            available_intents) if available_intents else "none available"
-
-        prompt = f"""You are a smart conversation analyzer. Analyze the user's message and determine the best response strategy.
-
-{context_info}
-
-USER MESSAGE: "{user_message}"
-
-AVAILABLE INTENTS: {intents_list}
-
-         ANALYSIS TASKS:
-         1. INTENT DETECTION: Does this message indicate a clear intent from the available list?
-         2. CONTEXT UNDERSTANDING: Is this a response to a question, filler/stuttering, simple greeting, or a new topic?
-         3. RESPONSE STRATEGY: What should the agent do next?
-
-         CRITICAL CONTEXT RULES:
-         - If user is already in a flow (Flow_1, Flow_2, Flow_3, etc.) and responding to a question, treat as "question_response" with "continue_flow"
-         - If user mentions menu items (pasta, biryani, qorma, fried rice) while in menu flow, treat as "question_response" with intent_detected="none"
-         - If user is answering a question about their choice, treat as "question_response" with "continue_flow" and intent_detected="none"
-         - INTENT DETECTION vs RESPONSE DISTINCTION:
-           * "What's in the menu?" → intent_detected="menu" (requesting menu information)
-           * "I'll take biryani" → intent_detected="none" (selecting from menu)
-           * "Give me pasta" → intent_detected="none" (selecting from menu)
-           * "Can I see the menu?" → intent_detected="menu" (requesting menu information)
-         - Only treat as "new_topic" if user is clearly starting a completely different conversation
-         - Simple greetings like "Hi", "Hi there", "Hello" should be treated as natural conversation flow, not filtered out. Let the flow continue naturally.
-
-RESPONSE FORMAT (JSON):
-{{
-    "intent_detected": "intent_name|none",
-    "message_type": "intent_request|question_response|filler|unclear|new_topic|greeting",
-    "confidence": "high|medium|low",
-    "action": "continue_flow|switch_intent|ask_clarification|ignore|respond_naturally",
-    "reasoning": "brief explanation of the analysis"
-}}
-
-         EXAMPLES:
-         - "Yeah, I'm looking for someone to help" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Clear request for human help"}}
-         - "Yeah" → {{"intent_detected": "none", "message_type": "question_response", "confidence": "medium", "action": "continue_flow", "reasoning": "Simple affirmation to current question"}}
-         - "What's in the menu?" → {{"intent_detected": "menu", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "User is requesting menu information"}}
-         - "Can I see the menu?" → {{"intent_detected": "menu", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "User is requesting menu information"}}
-         - "Pasta" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is selecting menu item, continue with order flow"}}
-         - "I'll take the biryani" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is making menu selection, continue with order flow"}}
-         - "Give me pasta" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is selecting menu item, continue with order flow"}}
-         - "Hi" → {{"intent_detected": "none", "message_type": "greeting", "confidence": "high", "action": "continue_flow", "reasoning": "Simple greeting, let flow continue naturally"}}
-         - "Hi there" → {{"intent_detected": "none", "message_type": "greeting", "confidence": "high", "action": "continue_flow", "reasoning": "Simple greeting, let flow continue naturally"}}
-         - "Uh, I, uh, I was asking" → {{"intent_detected": "none", "message_type": "filler", "confidence": "high", "action": "ignore", "reasoning": "Stuttering/filler, not meaningful content"}}
-         - "Can I speak with someone?" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Direct request for human agent"}}
-         - "Can I speak with someone over the phone?" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Clear request to speak with human agent"}}
-         - "Connect me to an agent" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Direct request for agent connection"}}
-         - "I'm looking for someone to speak" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Request to speak with someone"}}
-
-Respond with ONLY the JSON object, no other text."""
+        intents_list = ", ".join(available_intents) if available_intents else "none available"
 
         logger.info(f"🧠 SMART PROCESSOR: Analyzing message: '{user_message}'")
 
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
-            temperature=0.1
-        )
-        response_text = response.choices[0].message.content.strip()
-        logger.info(f"🧠 SMART PROCESSOR: LLM response: {response_text}")
-
-        # Parse JSON response
-        try:
-            analysis = json.loads(response_text.strip())
-            logger.info(f"🧠 SMART PROCESSOR: Analysis result: {analysis}")
-            return analysis
-        except json.JSONDecodeError:
-            logger.error(
-                f"🧠 SMART PROCESSOR: Failed to parse JSON: {response_text}")
-            return {
-                "intent_detected": "none",
-                "message_type": "unclear",
-                "confidence": "low",
-                "action": "ask_clarification",
-                "reasoning": "Failed to parse LLM response"
-            }
+        # Use centralized LLM utility for smart message analysis
+        analysis = await analyze_message_with_smart_processor(user_message, context_info, intents_list)
+        
+        logger.info(f"🧠 SMART PROCESSOR: Analysis result: {analysis}")
+        return analysis
 
     except Exception as e:
         logger.error(f"🧠 SMART PROCESSOR: Error: {e}")
@@ -967,174 +614,41 @@ async def detect_flow_intent_with_llm(
             return None
         
         # Extract available intents from template
-        available_intents = []
         intent_mapping = {}
         
         for flow_key, flow_data in bot_template["data"].items():
-            # Processing flow for intent extraction
             if flow_data.get("type") == "intent_bot":
-                intent_name = flow_data.get(
-                    "text", flow_key)  # Use text field for intent name
+                intent_name = flow_data.get("text", flow_key)  # Use text field for intent name
                 if intent_name:
-                    available_intents.append(intent_name)
                     intent_mapping[intent_name] = {
                         "flow_key": flow_key,
                         "flow_data": flow_data,
                         "intent": intent_name
                     }
-                    # Intent added to mapping
         
-        if not available_intents:
+        if not intent_mapping:
             logger.warning("INTENT_DETECTION: No intents found in template")
             return None
         
-        # Simple prompt - just compare user message with available intents
-        intent_list = ", ".join(available_intents)
+        logger.info(f"INTENT_DETECTION: Analyzing message '{user_message}' for intents: {list(intent_mapping.keys())}")
+        print(f"🔍 INTENT_DETECTION: Available intents: {list(intent_mapping.keys())}")
+        print(f"🔍 INTENT_DETECTION: User message: '{user_message}'")
+
+        # Use centralized LLM utility for intent detection
+        result = await detect_intent_with_llm(user_message, intent_mapping)
         
-        prompt = f"""
-You are an intent classifier. Your job is to match the user's message to one of the available intents.
-
-Available intents: {intent_list}
-
-User message: "{user_message}"
-
-ANALYSIS STEPS:
-1. Read the user's message carefully
-2. Identify what the user is asking for or wants to do
-3. Match it to the most appropriate intent from the list above
-4. Consider the meaning and intent behind the words, not just exact matches
-
-MATCHING STRATEGY:
-1. Look for exact or close matches to the available intents
-2. Consider the meaning and context, not just exact words
-3. If the user wants to speak with a person/agent, look for any intent that involves speaking with someone
-4. If the user wants information about sales, look for sales-related intents
-5. If the user wants information about marketing, look for marketing-related intents
-
-CRITICAL RULES:
-1. ONLY return intent names that are in the available intents list: {intent_list}
-2. If no intent matches, return "none"
-3. If it's just a greeting, return "greeting"
-4. Do NOT return "agent" or any other intent not in the list above
-
-IMPORTANT: The user said: "{user_message}"
-Think about what they really want. Are they asking to speak to a person? Do they want sales information? Do they want marketing information?
-
-Respond with ONLY the exact intent name from the list above (case-insensitive), "greeting", or "none" if no intent matches.
-
-Examples:
-- "Can I speak with Affan?" → Speak with Affan (if available, they want to talk to Affan specifically)
-- "Can I speak with someone over the phone?" → agent (if available, they want to talk to a human)
-- "Can I speak with someone, please?" → agent (if available, they want human help)
-- "Connect me to an agent" → agent (if available, they want human help)
-- "I'm looking for someone to speak" → agent (if available, they want human help)
-- "Can you connect me with someone?" → agent (if available, they want human help)
-- "Sales information, please" → sales (if available)
-- "Can I get the marketing information?" → marketing (if available)
-- "Hello there" → greeting
-- "I need help with billing" → agent (if available, they want human help)
-"""
-
-        logger.info(
-            f"INTENT_DETECTION: Analyzing message '{user_message}' for intents: {intent_list}")
-        logger.info(
-            f"INTENT_DETECTION: Available intents mapping: {
-                list(
-            intent_mapping.keys())}")
-        print(f"🔍 INTENT DETECTION: Available intents: {intent_list}")
-        print(f"🔍 INTENT DETECTION: User message: '{user_message}'")
-
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=50,
-            temperature=0.0
-        )
+        if result:
+            if result.get("type") == "greeting":
+                logger.info(f"INTENT_DETECTION: ✅ Greeting detected")
+                return result
+            else:
+                intent_name = result.get("intent")
+                if intent_name in intent_mapping:
+                    logger.info(f"INTENT_DETECTION: ✅ Intent found: '{intent_name}'")
+                    print(f"✅ INTENT MATCHED: '{intent_name}'")
+                    return intent_mapping[intent_name]
         
-        detected_intent = response.choices[0].message.content.strip()
-        logger.info(f"INTENT_DETECTION: LLM response: '{detected_intent}'")
-        print(f"🔍 INTENT DETECTION: LLM returned: '{detected_intent}'")
-        
-        # Handle special "greeting" response
-        if detected_intent == "greeting":
-            logger.info(f"INTENT_DETECTION: ✅ Greeting detected")
-            return {"type": "greeting", "intent": "greeting"}
-        
-        # Find matching intent
-        for intent_name, intent_data in intent_mapping.items():
-            if detected_intent.lower() == intent_name.lower():
-                logger.info(
-                    f"INTENT_DETECTION: ✅ Intent found: '{intent_name}'")
-                print(
-                    f"✅ INTENT MATCHED: '{detected_intent}' -> '{intent_name}'")
-                return intent_data
-        
-        logger.info(
-            f"INTENT_DETECTION: ❌ No intent found, trying fallback strategy")
-        print(
-            f"❌ INTENT NOT FOUND: '{detected_intent}' not in {
-                list(
-            intent_mapping.keys())}")
-
-        # Fallback strategy: Use keyword matching
-        user_lower = user_message.lower()
-
-        # Look for agent/person related keywords
-        agent_keywords = [
-            "speak with",
-            "talk to",
-            "connect me",
-            "agent",
-            "human",
-            "person",
-            "someone",
-            "representative"]
-        if any(keyword in user_lower for keyword in agent_keywords):
-            # Find any intent that might be related to speaking with someone
-            for intent_name, intent_data in intent_mapping.items():
-                if "speak" in intent_name.lower() or "talk" in intent_name.lower(
-                ) or "connect" in intent_name.lower():
-                    logger.info(
-                        f"INTENT_DETECTION: 🔄 Fallback matched '{intent_name}' for agent request")
-                    print(
-                        f"🔄 FALLBACK MATCH: '{intent_name}' for agent request")
-                    return intent_data
-
-        # Look for sales keywords
-        sales_keywords = [
-            "sales",
-            "pricing",
-            "cost",
-            "price",
-            "buy",
-            "purchase"]
-        if any(keyword in user_lower for keyword in sales_keywords):
-            for intent_name, intent_data in intent_mapping.items():
-                if "sales" in intent_name.lower():
-                    logger.info(
-                        f"INTENT_DETECTION: 🔄 Fallback matched '{intent_name}' for sales request")
-                    print(
-                        f"🔄 FALLBACK MATCH: '{intent_name}' for sales request")
-                    return intent_data
-
-        # Look for marketing keywords
-        marketing_keywords = [
-            "marketing",
-            "campaign",
-            "advertising",
-            "promotion"]
-        if any(keyword in user_lower for keyword in marketing_keywords):
-            for intent_name, intent_data in intent_mapping.items():
-                if "marketing" in intent_name.lower():
-                    logger.info(
-                        f"INTENT_DETECTION: 🔄 Fallback matched '{intent_name}' for marketing request")
-                    print(
-                        f"🔄 FALLBACK MATCH: '{intent_name}' for marketing request")
-                    return intent_data
-
-        logger.info(
-            f"INTENT_DETECTION: ❌ No fallback match found, will use FAQ bot")
+        logger.info(f"INTENT_DETECTION: ❌ No intent found, will use FAQ bot")
         return None
             
     except Exception as e:
@@ -1191,6 +705,14 @@ def generate_truly_unique_room_name(
         return f"alive5_{intent_prefix}user_{timestamp}_{unique_id[:8]}"
 
 
+# =============================================================================
+# API ENDPOINTS
+# =============================================================================
+
+# =============================================================================
+# BASIC ENDPOINTS
+# =============================================================================
+
 @app.get("/")
 def read_root():
     return {
@@ -1212,6 +734,10 @@ def health_check():
         "timestamp": time.time()
     }
 
+
+# =============================================================================
+# CONNECTION AND SESSION MANAGEMENT ENDPOINTS
+# =============================================================================
 
 @app.get("/api/connection_details")
 def get_connection_details():
@@ -1510,6 +1036,10 @@ def initiate_transfer(room_name: str, department: str = "sales"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =============================================================================
+# TRANSCRIPT PROCESSING ENDPOINTS
+# =============================================================================
+
 @app.post('/api/process_transcript')
 async def process_transcript(request: TranscriptRequest):
     """Process transcript and return intent detection results"""
@@ -1569,6 +1099,10 @@ async def process_transcript(request: TranscriptRequest):
 
 # Alive5 API Integration Endpoints
 
+
+# =============================================================================
+# ALIVE5 API INTEGRATION ENDPOINTS
+# =============================================================================
 
 @app.post("/api/alive5/generate-template")
 async def generate_template(request: GenerateTemplateRequest):
@@ -1684,6 +1218,10 @@ async def initialize_bot_template():
     # Removed mock template: always fetch from Alive5 API per client
     # requirement
 
+
+# =============================================================================
+# TEMPLATE MANAGEMENT FUNCTIONS
+# =============================================================================
 
 async def initialize_bot_template_with_config(
         botchain_name: str, org_name: str):
@@ -1802,6 +1340,10 @@ def clear_all_flow_states():
         f"🧹 CLEARED ALL FLOW STATES - {len(flow_states)} states remaining")
 
 
+# =============================================================================
+# CORE FLOW PROCESSING FUNCTIONS
+# =============================================================================
+
 def get_next_flow_step(current_flow_state: FlowState,
                        user_response: str = None) -> Optional[Dict[str, Any]]:
     """Get the next step in the current flow - fully dynamic"""
@@ -1868,30 +1410,16 @@ def get_next_flow_step(current_flow_state: FlowState,
             f"FLOW_NAVIGATION: Checking answers: {
                 list(
             current_step_data['answers'].keys())}")
-        # Helper: normalize numeric phrases (e.g., "two" -> 2)
-
-        def _extract_normalized_quantity(text: str) -> Optional[int]:
-            try:
-                import re
-                words_to_num = {
-                    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-                    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-                    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
-                    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
-                    "nineteen": 19, "twenty": 20
-                }
-                t = text.lower()
-                m = re.search(r"\b(\d{1,3})\b", t)
-                if m:
-                    return int(m.group(1))
-                for w, v in words_to_num.items():
-                    if f" {w} " in f" {t} ":
-                        return v
-            except Exception:
-                pass
-            return None
-
-        normalized_qty = _extract_normalized_quantity(user_response)
+        # Use centralized LLM utility for number extraction
+        # This replaces the old deterministic parser with our centralized LLM approach
+        # Benefits: Better accuracy, handles natural language, consistent with rest of system
+        question_text = current_step_data.get("text", "")
+        llm_result = extract_answer_with_llm(question_text, user_response)
+        
+        # Extract normalized quantity from LLM result
+        normalized_qty = None
+        if llm_result.get("status") == "extracted" and llm_result.get("kind") == "number":
+            normalized_qty = llm_result.get("value")
         # Find matching answer - more flexible matching
         for answer_key, answer_data in current_step_data["answers"].items():
             logger.info(
@@ -1909,6 +1437,13 @@ def get_next_flow_step(current_flow_state: FlowState,
                         match = int(
                             low.strip()) <= normalized_qty <= int(
                             high.strip())
+                    elif "more than" in ak.lower():
+                        # Handle "More than 21" patterns
+                        import re
+                        more_than_match = re.search(r"more than (\d+)", ak.lower())
+                        if more_than_match:
+                            threshold = int(more_than_match.group(1))
+                            match = normalized_qty > threshold
                 except Exception:
                     match = False
 
@@ -2891,9 +2426,9 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
 
             # Handle question steps (existing logic)
             elif step_type == "question":
-            # Use gated LLM approach for robust answer extraction
-                interp = await gated_llm_extract_answer(current_step_data.get("text", ""), user_message or "")
-            logger.info(f"GATED_LLM_EXTRACT: {interp}")
+            # Use LLM for robust answer extraction
+                interp = extract_answer_with_llm(current_step_data.get("text", ""), user_message or "")
+            logger.info(f"LLM_ANSWER_EXTRACTOR: {interp}")
 
             # Extra yes/no fallback for special-needs/SSO style questions
             qtxt = (current_step_data.get("text") or "").lower()
@@ -3269,59 +2804,6 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     "FAQ_ANSWER_INTERPRETER: User response in FAQ step, routing to FAQ bot")
                 return await get_faq_response(user_message, flow_state=flow_state)
 
-                # ... existing code ...
-    
-    # Check for intent shift even when in a flow using LLM
-    # print_flow_status(room_name, flow_state, "CHECKING FOR INTENT SHIFT", f"Current flow: {flow_state.current_flow}")
-    # matching_intent = await detect_flow_intent_with_llm(user_message)
-    # if matching_intent and matching_intent["flow_key"] != flow_state.current_flow:
-    #     # User shifted to a different intent - start new flow and auto-transition to its first actionable step
-    #     old_flow = flow_state.current_flow
-    #     logger.info(f"FLOW_MANAGEMENT: LLM detected intent shift from {flow_state.current_flow} to {matching_intent['flow_key']}")
-    #     flow_state.current_flow = matching_intent["flow_key"]
-    #     flow_state.user_responses = {}  # Reset user responses for new flow
-
-    #     # Set to intent node first
-    #     intent_node = matching_intent["flow_data"]
-    #     flow_state.current_step = intent_node["name"]
-    #     flow_state.flow_data = intent_node
-
-    #     print_flow_status(room_name, flow_state, "🔄 INTENT SHIFT DETECTED",
-    # f"From: {old_flow} → To: {matching_intent['flow_key']} | Intent:
-    # {matching_intent['intent']}")
-
-    #     # If the intent has a next_flow (e.g., a question), auto-transition to it (same behavior as initial detection)
-    #     next_flow = intent_node.get("next_flow")
-    #     if next_flow:
-    #         flow_state.current_step = next_flow.get("name")
-    #         flow_state.flow_data = next_flow
-
-    #         print_flow_status(room_name, flow_state, "🔄 AUTO-TRANSITION",
-    # f"From intent to: {next_flow.get('type')} - '{next_flow.get('text',
-    # '')}'")
-
-    #         response_text = next_flow.get("text", "")
-    #         add_agent_response_to_history(flow_state, response_text)
-
-    #         return {
-    #             "type": "flow_started",
-    #             "flow_name": matching_intent["intent"],
-    #             "response": response_text,
-    #             "next_step": next_flow.get("next_flow")
-    #         }
-    #     else:
-    #         # No next_flow on intent node; reply with the intent text
-    #         response_text = intent_node.get("text", "")
-    #         if not response_text or response_text == "N/A":
-    #             response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
-    #         add_agent_response_to_history(flow_state, response_text)
-    #         return {
-    #             "type": "flow_started",
-    #             "flow_name": matching_intent["intent"],
-    #             "response": response_text,
-    #             "next_step": None
-    #         }
-
     print_flow_status(
         room_name,
         flow_state,
@@ -3418,6 +2900,10 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     print(f"❌ FALLBACK TO FAQ: No intent found for '{user_message}'")
     return await get_faq_response(user_message, flow_state=flow_state)
 
+
+# =============================================================================
+# FAQ AND RESPONSE FUNCTIONS
+# =============================================================================
 
 async def get_faq_response(user_message: str, bot_id: str = None,
                            flow_state: FlowState = None) -> Dict[str, Any]:
@@ -3701,8 +3187,11 @@ async def evaluate_condition_bot(
             "condition_result": {"error": str(e)}
         }
 
-# New Flow-based Processing Endpoint
 
+
+# =============================================================================
+# FLOW MANAGEMENT ENDPOINTS
+# =============================================================================
 
 @app.post("/api/process_flow_message")
 async def process_flow_message_endpoint(request: ProcessFlowMessageRequest):
@@ -4161,6 +3650,10 @@ def get_voice_name_from_id(voice_id: str) -> str:
     return fallback_voices.get(voice_id, f'Voice ({voice_id[:8]}...)')
 
 
+# =============================================================================
+# VOICE MANAGEMENT ENDPOINTS
+# =============================================================================
+
 @app.post("/api/update_voice_cache")
 async def update_voice_cache_endpoint():
     """Update the voice cache with latest Cartesia voices"""
@@ -4259,6 +3752,10 @@ async def change_voice(request: dict):
                 "message": f"Failed to change voice: {str(e)}"}
 
 
+# =============================================================================
+# DEBUG AND TESTING ENDPOINTS
+# =============================================================================
+
 @app.get("/api/flow_debug/{room_name}")
 def get_flow_debug(room_name: str):
     """Get detailed flow debug information for a specific room"""
@@ -4300,6 +3797,10 @@ async def test_intent_detection(request: Dict[str, Any]):
 
 # No automatic template loading on startup - templates loaded on demand
 
+
+# =============================================================================
+# APPLICATION LIFECYCLE EVENTS
+# =============================================================================
 
 @app.on_event("startup")
 async def startup_event():
