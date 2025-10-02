@@ -1834,6 +1834,51 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     def auto_save_flow_state():
         save_flow_state_to_file(room_name, flow_state)
     
+    # GLOBAL FAREWELL DETECTION - Check this FIRST before any other processing
+    um_low = (user_message or "").lower().strip()
+    farewell_markers = [
+        "bye", "goodbye", "that is all", "that's all", "thats all", "thanks, bye", "thank you, bye", "end call", "hang up", "we are done", "we're done", "okay, bye", "ok bye", "okay that's all", "ok that's all", "i think that's all", "that's all goodbye",
+        "alright, thanks, bye", "alright thanks bye", "alright. thanks. bye", "alright thanks bye", "thanks, bye", "thanks bye",
+        "that's all for now", "that's all for today", "i'm done", "i'm finished", "we're finished", "we're all set",
+        "have a good day", "have a great day", "take care", "see you later", "talk to you later", "see you soon", "seea"
+    ]
+    
+    # Check for farewell patterns (more flexible matching)
+    is_farewell = False
+    for marker in farewell_markers:
+        if marker in um_low:
+            is_farewell = True
+            break
+    
+    # Additional pattern matching for common farewell phrases
+    if not is_farewell:
+        farewell_patterns = [
+            r".*thanks.*bye.*",  # "thanks bye", "alright thanks bye", etc.
+            r".*bye.*thanks.*",  # "bye thanks", "bye and thanks", etc.
+            r".*that's all.*",   # "that's all", "that's all for now", etc.
+            r".*we're done.*",   # "we're done", "we're all done", etc.
+            r".*i'm done.*",     # "i'm done", "i'm all done", etc.
+            r".*have a good.*",  # "have a good day", "have a great day", etc.
+            r".*take care.*",    # "take care", "take care now", etc.
+        ]
+        
+        import re
+        for pattern in farewell_patterns:
+            if re.search(pattern, um_low):
+                is_farewell = True
+                break
+    
+    if is_farewell:
+        response_text = "Thanks for calling Alive5. Have a great day! Goodbye!"
+        add_agent_response_to_history(flow_state, response_text)
+        auto_save_flow_state()
+        logger.info(f"FLOW_MANAGEMENT: Global farewell detected → conversation_end (message: '{user_message}')")
+        return {
+            "type": "conversation_end",
+            "response": response_text,
+            "flow_state": flow_state
+        }
+    
     # Define escalation phrases and helper function here
     # Note: Removed "speak with" from generic escalation to allow specific
     # intents like "Speak with Affan"
@@ -2178,21 +2223,6 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     else:
         logger.info("🧠 ORCHESTRATOR: Not available, using legacy flow logic")
     
-    # Global farewell detection to gracefully end calls regardless of step type
-    um_low = (user_message or "").lower().strip()
-    farewell_markers = [
-        "bye", "goodbye", "that is all", "that's all", "thats all", "thanks, bye", "thank you, bye", "end call", "hang up", "we are done", "we're done", "okay, bye", "ok bye", "okay that's all", "ok that's all", "i think that's all", "that's all goodbye"
-    ]
-    if any(m in um_low for m in farewell_markers):
-        response_text = "Thanks for calling Alive5. Have a great day! Goodbye!"
-        add_agent_response_to_history(flow_state, response_text)
-        logger.info(
-            "FLOW_MANAGEMENT: Global farewell detected → conversation_end")
-        return {
-            "type": "conversation_end",
-            "response": response_text,
-            "flow_state": flow_state
-        }
 
     # If no current flow, try to find matching intent using LLM
     if not flow_state.current_flow:
@@ -2964,7 +2994,7 @@ async def get_faq_response(user_message: str, bot_id: str = None,
             if not result or not result.get(
                     "data") or not result["data"].get("answer"):
                 print(f"⚠️ FAQ BOT RESPONSE: No valid answer received from API")
-                error_response = "I'm sorry, I'm having trouble processing your request. Let me connect you to a human agent."
+                error_response = "I'm sorry, I couldn't fetch information from Alive5 regarding that. Let me connect you to a human agent who can help you right away."
                 if flow_state:
                     add_agent_response_to_history(flow_state, error_response)
                 return {
@@ -2976,6 +3006,21 @@ async def get_faq_response(user_message: str, bot_id: str = None,
             
             answer = result["data"]["answer"]
             print(f"✅ FAQ BOT RESPONSE: {answer[:100]}...")
+            
+            # Check if FAQ bot is under training or returns generic error
+            if ("under training" in answer.lower() or 
+                "not available" in answer.lower() or 
+                "contact the support team" in answer.lower()):
+                print(f"⚠️ FAQ BOT: Under training/not available, using natural fallback")
+                natural_response = "I'm sorry, I couldn't fetch information from Alive5 regarding that. Let me connect you to a human agent who can help you right away."
+                if flow_state:
+                    add_agent_response_to_history(flow_state, natural_response)
+                return {
+                    "type": "fallback",
+                    "response": natural_response,
+                    "urls": [],
+                    "bot_id": bot_id
+                }
             
             # Add agent response to conversation history if flow_state is
             # provided
@@ -2992,7 +3037,7 @@ async def get_faq_response(user_message: str, bot_id: str = None,
         logger.error(f"FLOW_MANAGEMENT: FAQ bot error: {e!r}")
         print(f"❌ FAQ BOT ERROR: {e!r}")
         # Add error response to conversation history if flow_state is provided
-        error_response = "I'm sorry, I'm having trouble processing your request. Let me connect you to a human agent."
+        error_response = "I'm sorry, I couldn't fetch information from Alive5 regarding that. Let me connect you to a human agent who can help you right away."
         if flow_state:
             add_agent_response_to_history(flow_state, error_response)
         

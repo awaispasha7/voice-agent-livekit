@@ -344,7 +344,7 @@ Respond as if you're a helpful human assistant having a natural conversation. Ke
     except Exception as e:
         logger.error(f"🎭 CONVERSATIONAL AI: Error generating response: {e}")
         # Fallback to a natural-sounding response
-        return "I'm here to help! What would you like to know?"
+        return "What would you like to know?"
 
 
 async def generate_conversational_response_with_flow_progression(user_message: str, context: Dict[str, Any], flow_state, room_name: str) -> Dict[str, Any]:
@@ -417,7 +417,7 @@ async def generate_conversational_response_with_flow_progression(user_message: s
     except Exception as e:
         logger.error(f"🎭 CONVERSATIONAL AI: Error in flow progression: {e}")
         return {
-            "response": "I'm here to help! What would you like to know?",
+            "response": "What would you like to know?",
             "flow_state": flow_state,
             "flow_progressed": False
         }
@@ -1077,7 +1077,7 @@ Analyze this context and decide the best action. Return ONLY valid JSON (no mark
         return OrchestratorDecision(
             action=OrchestratorAction.HANDLE_CONVERSATIONALLY,
             reasoning="Failed to parse LLM response, using safe fallback",
-            response="I'm here to help! Could you please rephrase that?",
+            response="Could you please rephrase that?",
             confidence=0.5
         )
         

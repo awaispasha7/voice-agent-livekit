@@ -1,0 +1,17 @@
+{
+  "collected_info": {},
+  "preferences": [],
+  "refused_fields": [],
+  "skipped_fields": [],
+  "objectives": [
+    "get_sales_info",
+    "get_marketing_info",
+    "Explore user interests or provide general information",
+    "provide_service_information"
+  ],
+  "conversation_summary": "",
+  "first_seen": 1759432849.6466925,
+  "last_updated": 1759432849.6466925,
+  "interaction_count": 1,
+  "saved_at": 1759432851.8874466
+}

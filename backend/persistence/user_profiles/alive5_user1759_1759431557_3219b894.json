@@ -1,0 +1,17 @@
+{
+  "collected_info": {},
+  "preferences": [],
+  "refused_fields": [],
+  "skipped_fields": [],
+  "objectives": [
+    "Clarify what information the user is trying to obtain",
+    "get_sales_info",
+    "get_marketing_info",
+    "None"
+  ],
+  "conversation_summary": "",
+  "first_seen": 1759431868.6286368,
+  "last_updated": 1759431868.628637,
+  "interaction_count": 1,
+  "saved_at": 1759431869.9275649
+}

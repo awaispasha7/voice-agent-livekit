@@ -1,0 +1,97 @@
+{
+  "room_name": "alive5_user1759_1759432638_2d36cd25",
+  "log_type": "orchestrator_decision",
+  "timestamp": "2025-10-02T19:18:05.733100",
+  "data": {
+    "user_message": "Okay. So tell me about the marketing.",
+    "decision": {
+      "action": "execute_flow",
+      "reasoning": "User is expressing a new intent to learn about marketing, which aligns with the available marketing flow.",
+      "flow_to_execute": "marketing",
+      "confidence": 0.95
+    },
+    "profile_state": {
+      "collected_info": {},
+      "preferences": [],
+      "refused_fields": [],
+      "skipped_fields": [],
+      "objectives": [
+        "get_sales_info",
+        "get_marketing_info"
+      ],
+      "conversation_summary": "",
+      "first_seen": 1759432683.4591687,
+      "last_updated": 1759432683.459169,
+      "interaction_count": 1
+    },
+    "flow_state": {
+      "current_flow": "Flow_2",
+      "current_step": "message_923c1e69-3e7d-4c56-954b-ed880e96dee0",
+      "flow_key": "Flow_1",
+      "flow_data": {
+        "type": "message",
+        "text": "Thankyou! Someone will be connecting shortly with you!",
+        "name": "message_923c1e69-3e7d-4c56-954b-ed880e96dee0",
+        "next_flow": null
+      },
+      "user_responses": {
+        "greeting_a64c9233-b9bf-4e30-9edc-46bac61de650": "Hi. Can I, uh, can you tell me more about the sales?",
+        "question_9db1297f-61b8-43a8-bb63-999139199e59": "I'm not comfortable giving my name right now.",
+        "question_50a9a8c7-bab7-43fb-ae21-a07fd788ecdb": "Yeah. It's afun4321@gmail.com.",
+        "message_923c1e69-3e7d-4c56-954b-ed880e96dee0": "Okay. So tell me about the marketing."
+      },
+      "conversation_history": [
+        {
+          "role": "system",
+          "content": "Flow-based voice assistant for Alive5 Support",
+          "timestamp": "2025-10-02T19:18:02.487143"
+        },
+        {
+          "role": "assistant",
+          "content": "Welcome to the voice one line! How can I help you today?",
+          "timestamp": "2025-10-02T19:18:02.487165"
+        },
+        {
+          "role": "user",
+          "content": "Hi. Can I, uh, can you tell me more about the sales?",
+          "timestamp": "2025-10-02T19:18:02.487171"
+        },
+        {
+          "role": "assistant",
+          "content": "May I have your name?",
+          "timestamp": "2025-10-02T19:18:02.487176"
+        },
+        {
+          "role": "user",
+          "content": "I'm not comfortable giving my name right now.",
+          "timestamp": "2025-10-02T19:18:02.487182"
+        },
+        {
+          "role": "assistant",
+          "content": "May I have your email?",
+          "timestamp": "2025-10-02T19:18:02.487187"
+        },
+        {
+          "role": "user",
+          "content": "Yeah. It's afun4321@gmail.com.",
+          "timestamp": "2025-10-02T19:18:02.487193"
+        },
+        {
+          "role": "assistant",
+          "content": "Thankyou! Someone will be connecting shortly with you!",
+          "timestamp": "2025-10-02T19:18:02.487199"
+        },
+        {
+          "role": "user",
+          "content": "Okay. So tell me about the marketing.",
+          "timestamp": "2025-10-02T19:18:02.488000"
+        }
+      ],
+      "pending_step": null,
+      "pending_expected_kind": null,
+      "pending_asked_at": null,
+      "pending_reask_count": 0,
+      "deferred_intent": null
+    }
+  }
+}

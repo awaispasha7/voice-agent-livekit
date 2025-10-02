@@ -143,6 +143,30 @@ switch ($deployChoice) {
 
 Write-Host "File synchronization completed!" -ForegroundColor Green
 
+# Download persistence data from server to local directory
+Write-Host "Downloading persistence data from server..." -ForegroundColor Cyan
+try {
+    # Create local persistence directories if they don't exist
+    if (-not (Test-Path "backend/persistence")) {
+        New-Item -ItemType Directory -Path "backend/persistence" -Force | Out-Null
+    }
+    if (-not (Test-Path "backend/persistence/flow_states")) {
+        New-Item -ItemType Directory -Path "backend/persistence/flow_states" -Force | Out-Null
+    }
+    if (-not (Test-Path "backend/persistence/user_profiles")) {
+        New-Item -ItemType Directory -Path "backend/persistence/user_profiles" -Force | Out-Null
+    }
+    if (-not (Test-Path "backend/persistence/debug_logs")) {
+        New-Item -ItemType Directory -Path "backend/persistence/debug_logs" -Force | Out-Null
+    }
+    
+    # Download persistence data
+    scp -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 -r ubuntu@18.210.238.67:/home/ubuntu/alive5-voice-agent/backend/persistence/* backend/persistence/ 2>$null
+    Write-Host "Persistence data downloaded successfully" -ForegroundColor Green
+} catch {
+    Write-Host "Warning: Could not download persistence data (server may not have data yet)" -ForegroundColor Yellow
+}
+
 # Virtual environment setup (only for full_with_venv option)
 if ($deployChoice -eq "full_with_venv") {
     Write-Host "Setting up virtual environment and packages..." -ForegroundColor Cyan

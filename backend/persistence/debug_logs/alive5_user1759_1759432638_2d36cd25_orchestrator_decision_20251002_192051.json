@@ -1,0 +1,107 @@
+{
+  "room_name": "alive5_user1759_1759432638_2d36cd25",
+  "log_type": "orchestrator_decision",
+  "timestamp": "2025-10-02T19:20:51.887996",
+  "data": {
+    "user_message": "What is a live file?",
+    "decision": {
+      "action": "use_faq",
+      "reasoning": "The user is asking for information about 'live file', which seems to be a knowledge-based question that can be answered by the FAQ Bot.",
+      "flow_to_execute": null,
+      "confidence": 0.95
+    },
+    "profile_state": {
+      "collected_info": {},
+      "preferences": [],
+      "refused_fields": [],
+      "skipped_fields": [],
+      "objectives": [
+        "get_sales_info",
+        "get_marketing_info",
+        "Explore user interests or provide general information",
+        "provide_service_information"
+      ],
+      "conversation_summary": "",
+      "first_seen": 1759432849.6466925,
+      "last_updated": 1759432849.6466925,
+      "interaction_count": 1
+    },
+    "flow_state": {
+      "current_flow": "Flow_3",
+      "current_step": "message_b94ac11f-7da9-4493-9d88-8c0b3e5c6afa",
+      "flow_key": "Flow_1",
+      "flow_data": {
+        "type": "message",
+        "text": "We will let you know shortly. Thanks!",
+        "name": "message_b94ac11f-7da9-4493-9d88-8c0b3e5c6afa",
+        "next_flow": null
+      },
+      "user_responses": {
+        "greeting_a64c9233-b9bf-4e30-9edc-46bac61de650": "Hi. Can I, uh, can you tell me more about the sales?",
+        "question_9db1297f-61b8-43a8-bb63-999139199e59": "I'm not comfortable giving my name right now.",
+        "question_50a9a8c7-bab7-43fb-ae21-a07fd788ecdb": "Yeah. It's afun4321@gmail.com.",
+        "message_923c1e69-3e7d-4c56-954b-ed880e96dee0": "Okay. So tell me about the marketing.",
+        "question_60a8ad34-ef07-435a-b68a-513c679efe85": "Twenty five.",
+        "question_b72ea68e-229f-40ca-a2e6-fca41a37ca98": "I'm not sure right now.",
+        "message_b94ac11f-7da9-4493-9d88-8c0b3e5c6afa": "What is a live file?"
+      },
+      "conversation_history": [
+        {
+          "role": "assistant",
+          "content": "Looks like you are running more than 21 Campaigns. That's alot! How much budget do you want to spend on each campaign?",
+          "timestamp": "2025-10-02T19:20:48.903546"
+        },
+        {
+          "role": "user",
+          "content": "I'm not sure right now.",
+          "timestamp": "2025-10-02T19:20:48.903549"
+        },
+        {
+          "role": "assistant",
+          "content": "We will let you know shortly. Thanks!",
+          "timestamp": "2025-10-02T19:20:48.903553"
+        },
+        {
+          "role": "user",
+          "content": "Okay. So, uh, what else can I know?",
+          "timestamp": "2025-10-02T19:20:48.903556"
+        },
+        {
+          "role": "assistant",
+          "content": "Absolutely, I can help with that! There\u2019s a lot you can explore. For starters, we could dive into some sales strategies or discuss marketing tactics that might benefit your campaigns. Is there a specific area you\u2019re most interested in right now, or would you like me to give you a quick overview of both?",
+          "timestamp": "2025-10-02T19:20:48.903560"
+        },
+        {
+          "role": "user",
+          "content": "Uh, can you tell me about the your services?",
+          "timestamp": "2025-10-02T19:20:48.903563"
+        },
+        {
+          "role": "assistant",
+          "content": "Sorry, I didn't catch that. Absolutely, I can help with that! There\u2019s a lot you can explore. For starters, we could dive into some sales strategies or discuss marketing tactics that might benefit your campaigns. Is there a specific area you\u2019re most interested in right now, or would you like me to give you a quick overview of both?",
+          "timestamp": "2025-10-02T19:20:48.903567"
+        },
+        {
+          "role": "user",
+          "content": "Can you tell me about your services, please?",
+          "timestamp": "2025-10-02T19:20:48.903570"
+        },
+        {
+          "role": "assistant",
+          "content": "Sorry, I didn't catch that. Absolutely, I can help with that! There\u2019s a lot you can explore. For starters, we could dive into some sales strategies or discuss marketing tactics that might benefit your campaigns. Is there a specific area you\u2019re most interested in right now, or would you like me to give you a quick overview of both?",
+          "timestamp": "2025-10-02T19:20:48.903574"
+        },
+        {
+          "role": "user",
+          "content": "What is a live file?",
+          "timestamp": "2025-10-02T19:20:48.903576"
+        }
+      ],
+      "pending_step": null,
+      "pending_expected_kind": null,
+      "pending_asked_at": null,
+      "pending_reask_count": 0,
+      "deferred_intent": null
+    }
+  }
+}

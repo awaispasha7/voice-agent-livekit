@@ -302,16 +302,16 @@ class FlowBasedLLM(llm.LLM):
                             logger.info(f"🔧 Agent handoff response: '{response_text}'")
                             return {"text": response_text, "type": "agent_handoff"}
                     
-                    # Fallback to generic response
-                    logger.warning("🔧 No valid flow result found, using fallback")
-                    return {"text": "I'm here to help! How can I assist you today?", "type": "fallback"}
+                    # No valid flow result - let orchestrator handle this naturally
+                    logger.warning("🔧 No valid flow result found, routing to orchestrator")
+                    return {"text": None, "type": "orchestrator_needed"}
                 else:
                     logger.error(f"❌ Backend error: {response.status_code} - {response.text}")
-                    return {"text": "I'm here to help! How can I assist you today?", "type": "fallback"}
+                    return {"text": None, "type": "orchestrator_needed"}
                     
         except Exception as e:
             logger.error(f"❌ Error calling backend: {e}", exc_info=True)
-            return {"text": "I'm here to help! How can I assist you today?", "type": "fallback"}
+            return {"text": None, "type": "orchestrator_needed"}
     
     async def process_through_backend(self, user_message: str, conversation_history: list) -> str:
         """Process user message through backend flow system"""
@@ -775,6 +775,16 @@ class FlowBasedAssistant(Agent):
                     )
             except Exception as _e:
                 logger.warning(f"Failed to publish intent update: {_e}")
+
+            # Handle orchestrator_needed by routing back to backend
+            if rtype == "orchestrator_needed":
+                logger.info("🎤 Orchestrator needed - routing user message to backend orchestrator")
+                # Route the user message back to backend for orchestrator handling
+                async with self._backend_call_lock:
+                    orchestrator_response = await self.custom_llm._call_backend_async(user_text, conversation_history)
+                response_text = orchestrator_response.get("text", "")
+                rtype = orchestrator_response.get("type", "")
+                logger.info(f"🎤 Orchestrator returned: type={rtype} text='{response_text}'")
 
             # Clarify when not understood - but don't intercept simple greetings
             if rtype in ("error", "fallback") and self._last_question_text:
