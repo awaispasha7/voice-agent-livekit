@@ -12,6 +12,7 @@ CURRENT FUNCTIONS:
 - detect_uncertainty_with_llm: Detect if user is expressing uncertainty or inability to answer
 - extract_user_data_with_llm: Extract comprehensive user information from natural language
 - generate_conversational_response: Generate natural, human-sounding conversational responses
+- generate_conversational_response_with_flow_progression: Handle refusals and progress flows intelligently
 - make_orchestrator_decision: Make intelligent orchestration decisions using GPT-4
 """
 
@@ -283,7 +284,7 @@ Generate a natural, conversational response that feels like talking to a helpful
         # Build context-aware prompt
         context_info = ""
         if context.get('refusal_context'):
-            context_info = "\n**SPECIAL CONTEXT: User is refusing to provide information**\n- Be understanding and respectful\n- Offer alternatives or ways to continue\n- Don't pressure them"
+            context_info = "\n**SPECIAL CONTEXT: User may be refusing to provide information**\n- Be understanding and respectful\n- Acknowledge their choice without judgment\n- Offer alternatives or ways to continue\n- Don't pressure them or make them feel bad\n- Move forward naturally to the next question or topic\n- If in a flow, acknowledge the refusal and ask the next question"
         elif context.get('uncertainty_context'):
             context_info = "\n**SPECIAL CONTEXT: User is uncertain or doesn't know**\n- Be reassuring and supportive\n- Offer help or alternatives\n- Make it easy for them to continue"
         
@@ -311,6 +312,19 @@ Generate a natural, human-like response that:
 4. Shows genuine interest in helping
 5. Handles the current context appropriately
 
+**IMPORTANT FOR REFUSALS:**
+If the user is refusing to provide information (like their name), acknowledge their choice respectfully and then ask the next question in the flow. For example:
+- "No problem at all! I completely understand. May I have your email address instead?"
+- "That's totally fine! No worries at all. What's your email address?"
+- "I completely understand. Let's move on to the next question. What's your email address?"
+
+**FLOW PROGRESSION FOR REFUSALS:**
+When handling refusals in an active flow:
+1. Acknowledge the refusal respectfully
+2. Move to the next question in the flow naturally
+3. Don't make the user feel bad about their choice
+4. Keep the conversation flowing smoothly
+
 Respond as if you're a helpful human assistant having a natural conversation. Keep it concise but warm."""
 
         response = client.chat.completions.create(
@@ -331,6 +345,82 @@ Respond as if you're a helpful human assistant having a natural conversation. Ke
         logger.error(f"🎭 CONVERSATIONAL AI: Error generating response: {e}")
         # Fallback to a natural-sounding response
         return "I'm here to help! What would you like to know?"
+
+
+async def generate_conversational_response_with_flow_progression(user_message: str, context: Dict[str, Any], flow_state, room_name: str) -> Dict[str, Any]:
+    """
+    Generate a conversational response and handle flow progression for refusals.
+    
+    This function combines conversational response generation with intelligent
+    flow progression when users refuse to provide information.
+    
+    Args:
+        user_message: The user's message
+        context: Full conversation context
+        flow_state: Current flow state
+        room_name: Room name for flow progression
+        
+    Returns:
+        Dict with response and updated flow state
+    """
+    try:
+        # Generate the conversational response
+        response = await generate_conversational_response(user_message, context)
+        
+        # Check if we're in a flow and should progress after refusal
+        # Detect refusal patterns in the user message
+        refusal_patterns = [
+            "i don't want to", "i prefer not", "not comfortable", "rather not",
+            "can't give", "won't give", "don't want to give", "not giving",
+            "prefer not to", "not comfortable giving", "rather not give"
+        ]
+        
+        user_lower = user_message.lower()
+        is_refusal = any(pattern in user_lower for pattern in refusal_patterns)
+        
+        if (flow_state.current_flow and flow_state.current_step and 
+            (context.get('refusal_context', False) or is_refusal)):
+            
+            # Import here to avoid circular dependency
+            from backend.main_dynamic import get_next_flow_step, auto_save_flow_state
+            
+            try:
+                # Try to get the next step in the flow
+                next_step = get_next_flow_step(flow_state, user_message, room_name)
+                if next_step and next_step.get("step_data"):
+                    logger.info("🎭 CONVERSATIONAL AI: Progressing flow after refusal")
+                    
+                    # Update flow state to next step
+                    flow_state.current_step = next_step["step_name"]
+                    flow_state.flow_data = next_step["step_data"]
+                    auto_save_flow_state()
+                    
+                    # Get the next question
+                    next_question = next_step["step_data"].get("text", "")
+                    if next_question:
+                        # Combine the refusal response with the next question
+                        combined_response = f"{response} {next_question}"
+                        return {
+                            "response": combined_response,
+                            "flow_state": flow_state,
+                            "flow_progressed": True
+                        }
+            except Exception as e:
+                logger.warning(f"🎭 CONVERSATIONAL AI: Could not progress flow after refusal: {e}")
+        
+        return {
+            "response": response,
+            "flow_state": flow_state,
+            "flow_progressed": False
+        }
+        
+    except Exception as e:
+        logger.error(f"🎭 CONVERSATIONAL AI: Error in flow progression: {e}")
+        return {
+            "response": "I'm here to help! What would you like to know?",
+            "flow_state": flow_state,
+            "flow_progressed": False
+        }
 
 
 async def detect_intent_with_llm(user_message: str, intent_mapping: Dict[str, str]) -> Optional[Dict[str, Any]]:
@@ -775,13 +865,14 @@ a natural, human-like conversation experience.
 - BUT: If user is already in a flow and responding to a question, continue the current flow instead
 
 **Handle Conversationally when:**
-- User refuses: "I don't want to", "No thanks", "Skip that"
+- User refuses to provide information: "I don't want to give my name", "I prefer not to", "Not comfortable sharing"
 - User uncertain: "I'm not sure", "I don't know", "Maybe"
 - User navigating: "Go back", "What did you ask?", "Can you repeat?"
 - Small talk or clarifications
 - Context questions
 - Natural greetings: "Hi", "Hello", "Hi there"
 - Flow responses: When user is answering a question in an active flow
+- **CRITICAL**: When user refuses information in a flow, acknowledge respectfully and continue to next question
 
 **INTENT vs RESPONSE DISTINCTION (CRITICAL):**
 - "What's the marketing info?" → INTENT REQUEST (execute_flow)
@@ -830,6 +921,23 @@ User: "I'd rather not share my name"
 Current Question: "May I have your name?"
 → {{"action": "handle_conversationally", "reasoning": "User refusing to provide name", "skip_fields": ["name"], "profile_updates": {{"prefers_privacy": true}}, "confidence": 0.98}}
 
+📌 **Example 3b: Refusal Handling (Enhanced)**
+User: "I prefer not giving it right now"
+Current Question: "May I have your name?"
+→ {{"action": "handle_conversationally", "reasoning": "User refusing to provide name, should acknowledge and move to next question", "skip_fields": ["name"], "profile_updates": {{"prefers_privacy": true}}, "confidence": 0.98}}
+
+📌 **Example 3c: Refusal Handling (Current Scenario)**
+User: "Not comfortable giving my name"
+Current Question: "May I have your name?"
+Current Flow: "sales" (in progress)
+→ {{"action": "handle_conversationally", "reasoning": "User refusing to provide name, acknowledge respectfully and continue with next question", "skip_fields": ["name"], "profile_updates": {{"prefers_privacy": true}}, "confidence": 0.98}}
+
+📌 **Example 3d: Refusal Handling (Flow Continuation)**
+User: "I prefer not giving it right now"
+Current Question: "May I have your name?"
+Current Flow: "sales" (in progress)
+→ {{"action": "handle_conversationally", "reasoning": "User refusing to provide name, should acknowledge and move to next question in flow", "skip_fields": ["name"], "profile_updates": {{"prefers_privacy": true}}, "confidence": 0.98}}
+
 📌 **Example 4: Uncertainty**
 User: "I'm not sure how many campaigns"
 Current Question: "How many campaigns are you running?"
@@ -872,7 +980,9 @@ Current Question: "Do you want to continue?"
 4. BE NATURAL - avoid robotic responses
 5. If uncertain, prefer handle_conversationally over forcing a flow
 6. CONSIDER CURRENT FLOW STATE - prioritize flow continuation when user is responding to questions
-7. DISTINGUISH INTENT REQUESTS from FLOW RESPONSES - this is critical for natural conversation"""
+7. DISTINGUISH INTENT REQUESTS from FLOW RESPONSES - this is critical for natural conversation
+8. **REFUSAL DETECTION**: Look for phrases like "I don't want to", "I prefer not", "Not comfortable", "Rather not", "Can't give", "Won't provide" - these indicate refusals
+9. **REFUSAL HANDLING**: When user refuses information in a flow, use handle_conversationally to acknowledge and continue to next question"""
 
         # Build user prompt with full context
         user_prompt = f"""**CURRENT CONTEXT:**

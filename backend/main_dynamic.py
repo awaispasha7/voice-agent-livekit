@@ -1375,6 +1375,9 @@ def get_next_flow_step(current_flow_state: FlowState,
                     "step_name": answer_data["name"]
                 }
     
+    # Let the orchestrator handle all user responses intelligently
+    # No hardcoded refusal detection - let LLM decide
+    
     # Check for next_flow
     if current_step_data.get("next_flow"):
         next_flow_name = current_step_data['next_flow'].get('name')
@@ -1724,23 +1727,34 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             elif decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY:
                 logger.info("🧠 ORCHESTRATOR: Handling conversationally")
                 
-                # Generate dynamic, natural conversational response
-                from backend.llm_utils import generate_conversational_response
+                # Generate dynamic, natural conversational response with flow progression
+                from backend.llm_utils import generate_conversational_response_with_flow_progression
                 conversational_context = {
                     "user_message": user_message,
                     "conversation_history": flow_state.conversation_history,
                     "current_flow": flow_state.current_flow,
                     "current_step": flow_state.current_step,
                     "profile": user_profile.to_dict() if user_profile else {}
+                    # Let LLM determine if this is a refusal based on the message content
                 }
                 
-                dynamic_response = await generate_conversational_response(user_message, conversational_context)
-                add_agent_response_to_history(flow_state, dynamic_response)
+                result = await generate_conversational_response_with_flow_progression(
+                    user_message, conversational_context, flow_state, room_name
+                )
+                
+                dynamic_response = result["response"]
+                updated_flow_state = result["flow_state"]
+                flow_progressed = result.get("flow_progressed", False)
+                
+                add_agent_response_to_history(updated_flow_state, dynamic_response)
+                
+                if flow_progressed:
+                    logger.info("🧠 ORCHESTRATOR: Flow progressed after conversational handling")
                 
                 return {
                     "type": "conversational_response",
                     "response": dynamic_response,
-                    "flow_state": flow_state
+                    "flow_state": updated_flow_state
                 }
                     
             elif decision.action == OrchestratorAction.HANDLE_REFUSAL:
