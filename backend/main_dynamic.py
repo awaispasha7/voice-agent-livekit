@@ -1396,13 +1396,18 @@ def get_next_flow_step(current_flow_state: FlowState,
     
     # Check for next_flow
     if current_step_data.get("next_flow"):
-        logger.info(
-            f"FLOW_NAVIGATION: ✅ Found next_flow: {
-                current_step_data['next_flow'].get('name')}")
+        next_flow_name = current_step_data['next_flow'].get('name')
+        logger.info(f"FLOW_NAVIGATION: ✅ Found next_flow: {next_flow_name}")
+        
+        # Special handling for "N/A" next_flow - this means transition to orchestrator
+        if next_flow_name == "N/A" or next_flow_name is None:
+            logger.info("FLOW_NAVIGATION: Next flow is 'N/A' - transitioning to orchestrator for intent detection")
+            return None  # Return None to let orchestrator handle it
+        
         return {
             "type": "next_step",
             "step_data": current_step_data["next_flow"],
-            "step_name": current_step_data["next_flow"].get("name")
+            "step_name": next_flow_name
         }
     
     logger.info("FLOW_NAVIGATION: ❌ No next step found")
@@ -1637,14 +1642,26 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             if next_step.get("response"):
                 add_agent_response_to_history(flow_state, next_step["response"])
             
+            # Map the response type to what the worker expects
+            response_type = next_step.get("type", "flow_response")
+            if response_type == "next_step":
+                response_type = "flow_response"  # Worker expects "flow_response" not "next_step"
+            
             return {
-                "type": next_step.get("type", "flow_response"),
+                "type": response_type,
                 "response": next_step.get("response", ""),
                 "next_step": next_step.get("next_step"),
                 "flow_state": flow_state
             }
         else:
-            logger.info("🔄 FLOW PROGRESSION: No flow progression found, falling back to orchestrator")
+            logger.info("🔄 FLOW PROGRESSION: No flow progression found, transitioning to orchestrator for intent detection")
+            # Clear the current flow state to allow fresh intent detection
+            if flow_state.current_flow == "Flow_1":  # This is the greeting flow
+                logger.info("🔄 FLOW PROGRESSION: Clearing greeting flow state for fresh intent detection")
+                flow_state.current_flow = None
+                flow_state.current_step = None
+                flow_state.flow_data = None
+                auto_save_flow_state()
     else:
         logger.info("🔄 FLOW PROGRESSION: No active flow, using orchestrator for routing")
 

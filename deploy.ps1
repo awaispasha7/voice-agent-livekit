@@ -1,11 +1,8 @@
-# Smart deployment script with interactive deployment choice and intelligent change tracking
+# Smart deployment script with interactive deployment choice
 Write-Host "Alive5 Voice Agent - Interactive Smart Deployment" -ForegroundColor Green
 Write-Host "===============================================" -ForegroundColor Green
 Write-Host "Server: 18.210.238.67" -ForegroundColor Yellow
 Write-Host "User: ubuntu" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "Features: Intelligent change tracking using file hashes and timestamps" -ForegroundColor Cyan
-Write-Host "Only uploads files that have actually changed since last deployment" -ForegroundColor White
 Write-Host ""
 
 # Ask user what they want to deploy
@@ -48,155 +45,36 @@ icacls alive5-voice-ai-agent.pem /inheritance:r | Out-Null
 icacls alive5-voice-ai-agent.pem /grant:r "$($env:USERNAME):(R)" | Out-Null
 Write-Host "SSH key permissions set" -ForegroundColor Green
 
-# Initialize change tracking
-Write-Host "Initializing change tracking..." -ForegroundColor Cyan
-$changeLogFile = "deploy-changes.log"
-$lastDeployFile = "last-deploy.json"
-
-# Function to get file hash for change detection
-function Get-FileHash {
-    param($FilePath)
-    if (Test-Path $FilePath) {
-        $fileInfo = Get-Item $FilePath
-        return @{
-            Path = $FilePath
-            LastWriteTime = $fileInfo.LastWriteTime
-            Size = $fileInfo.Length
-            Hash = (Get-FileHash $FilePath -Algorithm MD5).Hash
-        }
-    }
-    return $null
-}
-
-# Function to load last deployment state
-function Get-LastDeployState {
-    if (Test-Path $lastDeployFile) {
-        try {
-            $content = Get-Content $lastDeployFile -Raw
-            return $content | ConvertFrom-Json
-        } catch {
-            Write-Host "Could not load last deployment state, starting fresh" -ForegroundColor Yellow
-        }
-    }
-    return @{}
-}
-
-# Function to save deployment state
-function Save-DeployState {
-    param($State)
-    $State | ConvertTo-Json -Depth 10 | Set-Content $lastDeployFile
-}
-
-# Load previous state
-$lastState = Get-LastDeployState
-$currentState = @{}
-$changedFiles = @()
+# Simple deployment without change tracking for speed
 
 # Ensure server directory exists
 Write-Host "Ensuring server directory exists..." -ForegroundColor Cyan
 ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "mkdir -p /home/ubuntu/alive5-voice-agent"
 
-# Function to sync directory with smart change tracking
+# Function to sync directory (fast, no change tracking)
 function Sync-Directory {
     param($LocalPath, $RemotePath, $Description)
     
     Write-Host "Syncing $Description..." -ForegroundColor Cyan
     
     if (Test-Path $LocalPath) {
-        # Get all files in directory
-        $files = Get-ChildItem -Path $LocalPath -Recurse -File | Where-Object {
-            $_.Name -notmatch '(__pycache__|\.pyc|\.git|node_modules|\.env)$'
-        }
-        
-        $filesToUpload = @()
-        $totalFiles = $files.Count
-        $changedCount = 0
-        
-        Write-Host "  Checking $totalFiles files for changes..." -ForegroundColor Cyan
-        
-        foreach ($file in $files) {
-            $relativePath = $file.FullName.Substring((Resolve-Path $LocalPath).Path.Length + 1)
-            $fileKey = $relativePath.Replace('\', '/')
-            
-            # Get current file state
-            $currentFileState = Get-FileHash $file.FullName
-            $currentState[$fileKey] = $currentFileState
-            
-            # Check if file has changed
-            $hasChanged = $true
-            if ($lastState.ContainsKey($fileKey)) {
-                $lastFileState = $lastState[$fileKey]
-                if ($lastFileState.Hash -eq $currentFileState.Hash -and 
-                    $lastFileState.Size -eq $currentFileState.Size) {
-                    $hasChanged = $false
-                }
-            }
-            
-            if ($hasChanged) {
-                $filesToUpload += $file
-                $changedCount++
-                $changedFiles += $fileKey
-                Write-Host "    CHANGED: $fileKey" -ForegroundColor Yellow
-            }
-        }
-        
-        if ($changedCount -eq 0) {
-            Write-Host "  No changes detected in $Description" -ForegroundColor Green
-        } else {
-            Write-Host "  Found $changedCount changed files out of $totalFiles total" -ForegroundColor Yellow
-            
-            # Upload only changed files
-            foreach ($file in $filesToUpload) {
-                $relativePath = $file.FullName.Substring((Resolve-Path $LocalPath).Path.Length + 1)
-                $remoteFilePath = "$RemotePath/$relativePath".Replace('\', '/')
-                $remoteDir = Split-Path $remoteFilePath -Parent
-                
-                # Ensure remote directory exists
-                ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "mkdir -p '$remoteDir'"
-                
-                # Upload file
-                scp -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 $file.FullName ubuntu@18.210.238.67:$remoteFilePath
-            }
-            
-            Write-Host "$Description synced ($changedCount files uploaded)" -ForegroundColor Green
-        }
+        # Copy directory recursively, overwriting existing files
+        scp -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 -r $LocalPath ubuntu@18.210.238.67:$RemotePath
+        Write-Host "$Description synced" -ForegroundColor Green
     } else {
         Write-Host "$Description not found locally, skipping..." -ForegroundColor Yellow
     }
 }
 
-# Function to sync file with smart change tracking
+# Function to sync file (fast, no change tracking)
 function Sync-File {
     param($LocalPath, $RemotePath, $Description)
     
     Write-Host "Syncing $Description..." -ForegroundColor Cyan
     
     if (Test-Path $LocalPath) {
-        $fileName = Split-Path $LocalPath -Leaf
-        $fileKey = $fileName
-        
-        # Get current file state
-        $currentFileState = Get-FileHash $LocalPath
-        $currentState[$fileKey] = $currentFileState
-        
-        # Check if file has changed
-        $hasChanged = $true
-        if ($lastState.ContainsKey($fileKey)) {
-            $lastFileState = $lastState[$fileKey]
-            if ($lastFileState.Hash -eq $currentFileState.Hash -and 
-                $lastFileState.Size -eq $currentFileState.Size) {
-                $hasChanged = $false
-            }
-        }
-        
-        if ($hasChanged) {
-            Write-Host "  File changed, uploading..." -ForegroundColor Yellow
-            scp -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 $LocalPath ubuntu@18.210.238.67:$RemotePath
-            $changedFiles += $fileKey
-            Write-Host "$Description synced (file changed)" -ForegroundColor Green
-        } else {
-            Write-Host "  No changes detected in $Description" -ForegroundColor Green
-        }
+        scp -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 $LocalPath ubuntu@18.210.238.67:$RemotePath
+        Write-Host "$Description synced" -ForegroundColor Green
     } else {
         Write-Host "$Description not found locally, skipping..." -ForegroundColor Yellow
     }
@@ -264,24 +142,6 @@ switch ($deployChoice) {
 }
 
 Write-Host "File synchronization completed!" -ForegroundColor Green
-
-# Save deployment state for next run
-Write-Host "Saving deployment state..." -ForegroundColor Cyan
-Save-DeployState $currentState
-
-# Log changes
-if ($changedFiles.Count -gt 0) {
-    $changeLog = "Deployment at $(Get-Date):`n"
-    $changeLog += "Changed files:`n"
-    foreach ($file in $changedFiles) {
-        $changeLog += "  - $file`n"
-    }
-    $changeLog += "`n"
-    Add-Content $changeLogFile $changeLog
-    Write-Host "Deployment log updated: $($changedFiles.Count) files changed" -ForegroundColor Green
-} else {
-    Write-Host "No files changed in this deployment" -ForegroundColor Green
-}
 
 # Virtual environment setup (only for full_with_venv option)
 if ($deployChoice -eq "full_with_venv") {
@@ -418,13 +278,5 @@ Write-Host "  - Configuration files (requirements.txt, .env, README.md)" -Foregr
 Write-Host ""
 Write-Host "=== DEPLOYMENT SUMMARY ===" -ForegroundColor Cyan
 Write-Host "Deployment Choice: $deployChoice" -ForegroundColor White
-Write-Host "Files Changed: $($changedFiles.Count)" -ForegroundColor White
-if ($changedFiles.Count -gt 0) {
-    Write-Host "Changed Files:" -ForegroundColor Yellow
-    foreach ($file in $changedFiles) {
-        Write-Host "  - $file" -ForegroundColor White
-    }
-}
-Write-Host "State Saved: $lastDeployFile" -ForegroundColor White
-Write-Host "Change Log: $changeLogFile" -ForegroundColor White
+Write-Host "Status: Completed Successfully" -ForegroundColor Green
 Write-Host "=========================" -ForegroundColor Cyan
