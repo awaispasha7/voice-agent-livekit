@@ -404,15 +404,24 @@ def create_orchestrator_from_template(bot_template: Dict) -> ConversationalOrche
     """
     flows = {}
     
-    if bot_template and "bots" in bot_template:
-        for bot in bot_template["bots"]:
-            bot_type = bot.get("type")
-            bot_name = bot.get("name", bot.get("text", "unknown"))
-            flows[bot_name] = {
-                "type": bot_type,
-                "name": bot_name,
-                "data": bot
-            }
+    # Extract flows from template's "data" structure
+    if bot_template and "data" in bot_template:
+        template_data = bot_template["data"]
+        
+        for flow_key, flow_data in template_data.items():
+            if isinstance(flow_data, dict):
+                flow_type = flow_data.get("type")
+                flow_text = flow_data.get("text", "")
+                
+                # Only include intent_bot types as flows (greeting is handled separately)
+                if flow_type == "intent_bot":
+                    flows[flow_text] = {
+                        "type": flow_type,
+                        "name": flow_text,
+                        "key": flow_key,
+                        "data": flow_data
+                    }
+                    logger.info(f"🧠 ORCHESTRATOR: Found flow - {flow_text} ({flow_type})")
     
     orchestrator = ConversationalOrchestrator(
         available_flows=flows,

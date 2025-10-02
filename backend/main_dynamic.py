@@ -2699,6 +2699,62 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 f"FLOW_MANAGEMENT: Current step is not a question (type: {
                     current_step_data.get('type') if current_step_data else 'None'}), checking for intent shift or answers branch")
 
+            # Handle "N/A" or None type steps (greeting flow completion edge case)
+            if not current_step_data or current_step_data.get('type') is None or current_step_data.get('name') == 'N/A':
+                logger.info("FLOW_MANAGEMENT: Detected N/A or None type step - checking for intent before routing")
+                
+                # Check if user is expressing an intent that should trigger a flow
+                if message_analysis.get("intent_detected") and message_analysis.get("intent_detected") != "none":
+                    detected_intent = message_analysis.get("intent_detected")
+                    logger.info(f"FLOW_MANAGEMENT: Intent detected in N/A step: '{detected_intent}' - attempting flow transition")
+                    
+                    # Try to find and execute the detected intent flow
+                    matching_intent = await detect_flow_intent_with_llm(user_message)
+                    if matching_intent and matching_intent.get("flow_key"):
+                        logger.info(f"FLOW_MANAGEMENT: Intent confirmed: '{matching_intent['intent']}' -> '{matching_intent['flow_key']}' - transitioning to flow")
+                        
+                        # Execute the intent flow (same logic as in main intent detection)
+                        flow_state.current_flow = matching_intent["flow_key"]
+                        flow_state.current_step = matching_intent["flow_data"]["name"]
+                        flow_state.flow_data = matching_intent["flow_data"]
+                        auto_save_flow_state()
+                        
+                        # Check if this intent has a next_flow and automatically transition to it
+                        next_flow = matching_intent["flow_data"].get("next_flow")
+                        if next_flow:
+                            logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
+                            flow_state.current_step = next_flow.get("name")
+                            flow_state.flow_data = next_flow
+                            auto_save_flow_state()
+                            
+                            response_text = next_flow.get("text", "")
+                            add_agent_response_to_history(flow_state, response_text)
+                            
+                            return {
+                                "type": "flow_started",
+                                "flow_name": matching_intent["intent"],
+                                "response": response_text,
+                                "next_step": next_flow.get("next_flow")
+                            }
+                        else:
+                            # No next_flow, use intent response
+                            response_text = matching_intent["flow_data"].get("text", "")
+                            if not response_text or response_text == "N/A":
+                                response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+                            
+                            add_agent_response_to_history(flow_state, response_text)
+                            
+                            return {
+                                "type": "flow_started",
+                                "flow_name": matching_intent["intent"],
+                                "response": response_text,
+                                "next_step": matching_intent["flow_data"].get("next_flow")
+                            }
+                
+                # No intent detected or confirmed - route to conversational handling
+                logger.info("FLOW_MANAGEMENT: No intent detected in N/A step - routing to conversational handling")
+                return await get_faq_response(user_message, flow_state=flow_state)
+
             # If current step is a message with a next_flow of type 'faq', auto-transition so that
             # subsequent user utterances evaluate the FAQ node's answers.
             if current_step_data and current_step_data.get(
