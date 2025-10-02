@@ -4,11 +4,15 @@ LLM Utilities - Centralized LLM API calls for the voice agent system
 This module contains all LLM-related functions to make the codebase more maintainable
 and easier to fine-tune. All OpenAI API calls are centralized here.
 
-Functions:
+CURRENT FUNCTIONS:
 - analyze_transcription_quality: Check if transcription is complete and meaningful
 - extract_answer_with_llm: Extract structured answers from user responses
-- analyze_message_with_smart_processor: Smart contextual analysis of user messages
+- match_answer_with_llm: Match user responses to predefined answer options using LLM
 - detect_intent_with_llm: Detect user intent from available options
+- detect_uncertainty_with_llm: Detect if user is expressing uncertainty or inability to answer
+- extract_user_data_with_llm: Extract comprehensive user information from natural language
+- generate_conversational_response: Generate natural, human-sounding conversational responses
+- make_orchestrator_decision: Make intelligent orchestration decisions using GPT-4
 """
 
 import os
@@ -203,105 +207,130 @@ Respond with JSON only."""
         }
 
 
-async def analyze_message_with_smart_processor(user_message: str, context_info: str, intents_list: str) -> Dict[str, Any]:
+# analyze_message_with_smart_processor function removed - functionality integrated into Orchestrator
+
+
+async def generate_conversational_response(user_message: str, context: Dict[str, Any]) -> str:
     """
-    Analyze user message with smart contextual understanding.
+    Generate a natural, human-sounding conversational response.
+    
+    This is the key to making the orchestrator truly dynamic - instead of
+    pre-generating responses in the decision phase, we generate them here
+    with full conversation context.
     
     Args:
-        user_message: The user's message to analyze
-        context_info: Context about current flow state
-        intents_list: Available intents for the system
+        user_message: The user's message
+        context: Full conversation context including history, flow state, profile
         
     Returns:
-        Dict with intent_detected, message_type, confidence, action, reasoning
+        Natural, conversational response
     """
     try:
         client = get_openai_client()
         
-        prompt = f"""You are a smart conversation analyzer. Analyze the user's message and determine the best response strategy.
+        # Build rich context for response generation
+        conversation_history = context.get('conversation_history', [])
+        current_flow = context.get('current_flow', 'None')
+        current_step = context.get('current_step', 'None')
+        user_profile = context.get('profile', {})
+        
+        # Create conversation context
+        history_text = ""
+        if conversation_history:
+            history_text = "\n".join([
+                f"{msg.get('role', 'unknown')}: {msg.get('content', '')}" 
+                for msg in conversation_history[-6:]  # Last 6 messages for context
+            ])
+        
+        system = """You are a natural, human-like conversational AI assistant for Alive5. Your job is to generate natural, engaging responses that feel like talking to a real person.
 
+**YOUR PERSONALITY:**
+- Warm, friendly, and professional
+- Natural and conversational (not robotic)
+- Helpful and understanding
+- Adapts to the user's communication style
+- Shows genuine interest in helping
+
+**RESPONSE GUIDELINES:**
+1. **Be Natural**: Use natural language, contractions, and human-like expressions
+2. **Be Contextual**: Reference the conversation history and current situation
+3. **Be Engaging**: Ask follow-up questions, show interest, be conversational
+4. **Be Helpful**: Guide the user toward their goals
+5. **Be Adaptive**: Match the user's tone and communication style
+
+**CONVERSATION FLOW:**
+- If user is greeting: Respond warmly and ask how you can help
+- If user is answering a question: Acknowledge their response and continue naturally
+- If user is uncertain: Be reassuring and offer alternatives
+- If user is refusing something: Respect their choice and offer alternatives
+- If user is asking for clarification: Provide clear, helpful explanations
+
+**EXAMPLES OF GOOD RESPONSES:**
+- "Hi there! Great to meet you. What brings you here today?"
+- "That's a great choice! I can definitely help you with that."
+- "No worries at all! We can skip that for now and move on to the next question."
+- "I totally understand. Let me help you with something else instead."
+- "That's a good question! Let me explain that for you."
+
+**AVOID:**
+- Robotic, formal language
+- Generic responses like "I understand" or "Thank you"
+- Overly long explanations
+- Repeating the same phrases
+
+Generate a natural, conversational response that feels like talking to a helpful human assistant."""
+
+        # Build context-aware prompt
+        context_info = ""
+        if context.get('refusal_context'):
+            context_info = "\n**SPECIAL CONTEXT: User is refusing to provide information**\n- Be understanding and respectful\n- Offer alternatives or ways to continue\n- Don't pressure them"
+        elif context.get('uncertainty_context'):
+            context_info = "\n**SPECIAL CONTEXT: User is uncertain or doesn't know**\n- Be reassuring and supportive\n- Offer help or alternatives\n- Make it easy for them to continue"
+        
+        user_prompt = f"""**CONVERSATION CONTEXT:**
+
+**Current Flow State:**
+- Flow: {current_flow}
+- Step: {current_step}
+
+**User Profile:**
+- Collected Info: {user_profile.get('collected_info', {})}
+- Objectives: {user_profile.get('objectives', [])}
+
+**Recent Conversation:**
+{history_text}
+
+**Current User Message:** "{user_message}"
 {context_info}
 
-USER MESSAGE: "{user_message}"
+**YOUR TASK:**
+Generate a natural, human-like response that:
+1. Acknowledges what the user said
+2. Feels conversational and engaging
+3. Moves the conversation forward naturally
+4. Shows genuine interest in helping
+5. Handles the current context appropriately
 
-AVAILABLE INTENTS: {intents_list}
-
-ANALYSIS TASKS:
-1. INTENT DETECTION: Does this message indicate a clear intent from the available list?
-2. CONTEXT UNDERSTANDING: Is this a response to a question, filler/stuttering, simple greeting, or a new topic?
-3. RESPONSE STRATEGY: What should the agent do next?
-
-CRITICAL CONTEXT RULES:
-- If user is already in a flow (Flow_1, Flow_2, Flow_3, etc.) and responding to a question, treat as "question_response" with "continue_flow"
-- If user mentions menu items (pasta, biryani, qorma, fried rice) while in menu flow, treat as "question_response" with intent_detected="none"
-- If user is answering a question about their choice, treat as "question_response" with "continue_flow" and intent_detected="none"
-- INTENT DETECTION vs RESPONSE DISTINCTION:
-  * "What's in the menu?" → intent_detected="menu" (requesting menu information)
-  * "I'll take biryani" → intent_detected="none" (selecting from menu)
-  * "Give me pasta" → intent_detected="none" (selecting from menu)
-  * "Can I see the menu?" → intent_detected="menu" (requesting menu information)
-- Only treat as "new_topic" if user is clearly starting a completely different conversation
-- Simple greetings like "Hi", "Hi there", "Hello" should be treated as natural conversation flow, not filtered out. Let the flow continue naturally.
-
-RESPONSE FORMAT (JSON):
-{{
-    "intent_detected": "intent_name|none",
-    "message_type": "intent_request|question_response|filler|unclear|new_topic|greeting",
-    "confidence": "high|medium|low",
-    "action": "continue_flow|switch_intent|ask_clarification|ignore|respond_naturally",
-    "reasoning": "brief explanation of the analysis"
-}}
-
-EXAMPLES:
-- "Yeah, I'm looking for someone to help" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Clear request for human help"}}
-- "Yeah" → {{"intent_detected": "none", "message_type": "question_response", "confidence": "medium", "action": "continue_flow", "reasoning": "Simple affirmation to current question"}}
-- "What's in the menu?" → {{"intent_detected": "menu", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "User is requesting menu information"}}
-- "Can I see the menu?" → {{"intent_detected": "menu", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "User is requesting menu information"}}
-- "Pasta" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is selecting menu item, continue with order flow"}}
-- "I'll take the biryani" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is making menu selection, continue with order flow"}}
-- "Give me pasta" (while in menu flow) → {{"intent_detected": "none", "message_type": "question_response", "confidence": "high", "action": "continue_flow", "reasoning": "User is selecting menu item, continue with order flow"}}
-- "Hi" → {{"intent_detected": "none", "message_type": "greeting", "confidence": "high", "action": "continue_flow", "reasoning": "Simple greeting, let flow continue naturally"}}
-- "Hi there" → {{"intent_detected": "none", "message_type": "greeting", "confidence": "high", "action": "continue_flow", "reasoning": "Simple greeting, let flow continue naturally"}}
-- "Uh, I, uh, I was asking" → {{"intent_detected": "none", "message_type": "filler", "confidence": "high", "action": "ignore", "reasoning": "Stuttering/filler, not meaningful content"}}
-- "Can I speak with someone?" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Direct request for human agent"}}
-- "Can I speak with someone over the phone?" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Clear request to speak with human agent"}}
-- "Connect me to an agent" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Direct request for agent connection"}}
-- "I'm looking for someone to speak" → {{"intent_detected": "agent", "message_type": "intent_request", "confidence": "high", "action": "switch_intent", "reasoning": "Request to speak with someone"}}
-
-Respond with ONLY the JSON object, no other text."""
+Respond as if you're a helpful human assistant having a natural conversation. Keep it concise but warm."""
 
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
-            temperature=0.1
+            model="gpt-4o-mini",  # Using GPT-4o-mini for faster, natural responses
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,  # Higher temperature for more natural, varied responses
+            max_tokens=150  # Keep responses concise but natural
         )
         
         response_text = response.choices[0].message.content.strip()
-        logger.info(f"🧠 SMART PROCESSOR: LLM response: {response_text}")
+        logger.info(f"🎭 CONVERSATIONAL AI: Generated response: {response_text}")
+        return response_text
         
-        try:
-            result = json.loads(response_text)
-            return result
-        except json.JSONDecodeError:
-            logger.warning(f"🧠 SMART PROCESSOR: Invalid JSON response: {response_text}")
-            return {
-                "intent_detected": "none",
-                "message_type": "unclear",
-                "confidence": "low",
-                "action": "ask_clarification",
-                "reasoning": "Invalid LLM response"
-            }
-            
     except Exception as e:
-        logger.error(f"🧠 SMART PROCESSOR: Error analyzing message: {e}")
-        return {
-            "intent_detected": "none",
-            "message_type": "unclear",
-            "confidence": "low",
-            "action": "ask_clarification",
-            "reasoning": f"Error: {str(e)}"
-        }
+        logger.error(f"🎭 CONVERSATIONAL AI: Error generating response: {e}")
+        # Fallback to a natural-sounding response
+        return "I'm here to help! What would you like to know?"
 
 
 async def detect_intent_with_llm(user_message: str, intent_mapping: Dict[str, str]) -> Optional[Dict[str, Any]]:
@@ -697,12 +726,18 @@ async def make_orchestrator_decision(context: Dict[str, Any]) -> Any:
     try:
         client = get_openai_client()
         
-        # Build comprehensive system prompt
+        # Build comprehensive system prompt with smart processor insights
         system = """You are an intelligent conversation orchestrator for Alive5, a company that provides AI-powered solutions.
 
 **YOUR ROLE:**
 You sit above all conversation systems and make intelligent routing decisions to provide
 a natural, human-like conversation experience.
+
+**CRITICAL CONTEXT AWARENESS:**
+- ALWAYS consider the current flow state when making decisions
+- If user is in an active flow and responding to a question, prioritize flow continuation
+- If user is expressing a new intent while in a flow, handle the intent transition gracefully
+- Distinguish between INTENT REQUESTS vs FLOW RESPONSES
 
 **YOUR CAPABILITIES:**
 
@@ -724,8 +759,9 @@ a natural, human-like conversation experience.
    - Uncertainty ("I'm not sure", "I don't know")
    - Context questions ("What were we talking about?")
    - Navigation ("Can we go back?", "Skip this")
+   - Natural greetings and responses
 
-**DECISION CRITERIA:**
+**ENHANCED DECISION CRITERIA:**
 
 **Route to FAQ Bot when:**
 - User asks about Alive5: products, features, pricing, company info
@@ -733,9 +769,10 @@ a natural, human-like conversation experience.
 - Any knowledge-base answerable question
 
 **Execute Flow when:**
-- User expresses intent: "I want sales info", "Tell me about marketing", "Speak with manager"
+- User expresses NEW intent: "I want sales info", "Tell me about marketing", "Speak with manager"
 - Clear objective that maps to a structured flow
 - User ready to provide information
+- BUT: If user is already in a flow and responding to a question, continue the current flow instead
 
 **Handle Conversationally when:**
 - User refuses: "I don't want to", "No thanks", "Skip that"
@@ -743,6 +780,16 @@ a natural, human-like conversation experience.
 - User navigating: "Go back", "What did you ask?", "Can you repeat?"
 - Small talk or clarifications
 - Context questions
+- Natural greetings: "Hi", "Hello", "Hi there"
+- Flow responses: When user is answering a question in an active flow
+
+**INTENT vs RESPONSE DISTINCTION (CRITICAL):**
+- "What's the marketing info?" → INTENT REQUEST (execute_flow)
+- "I'll take the biryani" (while in menu flow) → FLOW RESPONSE (handle_conversationally)
+- "Can I see the menu?" → INTENT REQUEST (execute_flow)
+- "Pasta" (while in menu flow) → FLOW RESPONSE (handle_conversationally)
+- "Hi there" → NATURAL GREETING (handle_conversationally)
+- "Yeah" (responding to question) → FLOW RESPONSE (handle_conversationally)
 
 **INTELLIGENT BEHAVIORS (CRITICAL):**
 
@@ -757,13 +804,14 @@ a natural, human-like conversation experience.
 {{
     "action": "use_faq | execute_flow | handle_conversationally | handle_refusal | handle_uncertainty",
     "reasoning": "Why this action? (1-2 sentences)",
-    "response": "What to say to user (if handle_conversationally)",
     "flow_to_execute": "sales | marketing | speak_with_person | null",
     "skip_fields": ["field_name"],
     "profile_updates": {{"key": "value"}},
     "next_objective": "What user wants to accomplish",
     "confidence": 0.95
 }}
+
+**IMPORTANT:** Do NOT include a "response" field. The conversational AI will generate natural responses dynamically based on your decision.
 
 **EXAMPLES:**
 
@@ -780,29 +828,51 @@ Profile: {{}}
 📌 **Example 3: Refusal Handling**
 User: "I'd rather not share my name"
 Current Question: "May I have your name?"
-→ {{"action": "handle_conversationally", "reasoning": "User refusing to provide name", "response": "That's perfectly fine! We can continue without it.", "skip_fields": ["name"], "profile_updates": {{"prefers_privacy": true}}, "confidence": 0.98}}
+→ {{"action": "handle_conversationally", "reasoning": "User refusing to provide name", "skip_fields": ["name"], "profile_updates": {{"prefers_privacy": true}}, "confidence": 0.98}}
 
 📌 **Example 4: Uncertainty**
 User: "I'm not sure how many campaigns"
 Current Question: "How many campaigns are you running?"
-→ {{"action": "handle_conversationally", "reasoning": "User uncertain about answer", "response": "That's okay! If you don't have an exact number, a rough estimate works too. Or we can move on to the next question.", "confidence": 0.92}}
+→ {{"action": "handle_conversationally", "reasoning": "User uncertain about answer", "confidence": 0.92}}
 
 📌 **Example 5: Smart Resume (Already Collected)**
 User: "What's my budget?"
 Profile: {{"collected_info": {{"budget": "5000"}}}}
-→ {{"action": "handle_conversationally", "reasoning": "User asking about already provided info", "response": "You mentioned your budget is $5000. Would you like to update that?", "confidence": 0.95}}
+→ {{"action": "handle_conversationally", "reasoning": "User asking about already provided info", "confidence": 0.95}}
 
 📌 **Example 6: Context Switch**
 User: "Actually, tell me about your pricing first"
 Current Flow: "marketing" (in middle of questions)
 → {{"action": "use_faq", "reasoning": "User wants to learn about pricing before continuing", "confidence": 0.90, "metadata": {{"resume_flow_after": "marketing"}}}}
 
+📌 **Example 7: Natural Greeting (Enhanced)**
+User: "Hi there"
+Current Flow: "Flow_1" (greeting flow)
+→ {{"action": "handle_conversationally", "reasoning": "Natural greeting response, let flow continue naturally", "confidence": 0.95}}
+
+📌 **Example 8: Flow Response vs Intent Request**
+User: "I'll take the biryani"
+Current Flow: "menu" (asking for food choice)
+→ {{"action": "handle_conversationally", "reasoning": "User is selecting from menu, continue with order flow", "confidence": 0.98}}
+
+📌 **Example 9: Intent Request While in Flow**
+User: "Can I get marketing information?"
+Current Flow: "sales" (in middle of sales questions)
+→ {{"action": "execute_flow", "reasoning": "User expressing new intent for marketing info", "flow_to_execute": "marketing", "confidence": 0.95}}
+
+📌 **Example 10: Simple Affirmation**
+User: "Yeah"
+Current Question: "Do you want to continue?"
+→ {{"action": "handle_conversationally", "reasoning": "Simple affirmation to current question", "confidence": 0.90}}
+
 **CRITICAL RULES:**
 1. ALWAYS check profile.collected_info before deciding to execute flow
 2. ALWAYS respect profile.refused_fields
 3. ALWAYS provide reasoning
 4. BE NATURAL - avoid robotic responses
-5. If uncertain, prefer handle_conversationally over forcing a flow"""
+5. If uncertain, prefer handle_conversationally over forcing a flow
+6. CONSIDER CURRENT FLOW STATE - prioritize flow continuation when user is responding to questions
+7. DISTINGUISH INTENT REQUESTS from FLOW RESPONSES - this is critical for natural conversation"""
 
         # Build user prompt with full context
         user_prompt = f"""**CURRENT CONTEXT:**

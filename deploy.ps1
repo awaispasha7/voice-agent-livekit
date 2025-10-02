@@ -215,10 +215,10 @@ WantedBy=multi-user.target
 echo $backendService | ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo tee /etc/systemd/system/alive5-backend.service > /dev/null"
 echo $workerService | ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo tee /etc/systemd/system/alive5-worker.service > /dev/null"
 
-# Start services based on deployment choice
-Write-Host "Starting services based on deployment..." -ForegroundColor Cyan
+# Restart services based on deployment choice
+Write-Host "Restarting services based on deployment..." -ForegroundColor Cyan
 
-$servicesToStart = switch ($deployChoice) {
+$servicesToRestart = switch ($deployChoice) {
     "backend" { "alive5-backend" }
     "worker" { "alive5-worker" }
     "backend_worker" { "alive5-backend alive5-worker" }
@@ -226,15 +226,15 @@ $servicesToStart = switch ($deployChoice) {
     "full_with_venv" { "alive5-backend alive5-worker" }
 }
 
-Write-Host "Starting services: $servicesToStart" -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl daemon-reload && sudo systemctl enable $servicesToStart && sudo systemctl start $servicesToStart"
+Write-Host "Restarting services: $servicesToRestart" -ForegroundColor Cyan
+ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl daemon-reload && sudo systemctl enable $servicesToRestart && sudo systemctl restart $servicesToRestart"
 
 # Wait and check
-Write-Host "Waiting for services to start..." -ForegroundColor Cyan
+Write-Host "Waiting for services to restart..." -ForegroundColor Cyan
 Start-Sleep -Seconds 15
 
 Write-Host "Checking service status..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl status $servicesToStart --no-pager -l"
+ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl status $servicesToRestart --no-pager -l"
 
 # Verify files on server
 Write-Host "Verifying files on server..." -ForegroundColor Cyan

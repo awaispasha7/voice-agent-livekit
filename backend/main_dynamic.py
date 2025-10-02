@@ -29,7 +29,6 @@ from pydantic import BaseModel, Field
 from backend.llm_utils import (
     analyze_transcription_quality,
     extract_answer_with_llm,
-    analyze_message_with_smart_processor,
     detect_intent_with_llm,
     match_answer_with_llm,
     detect_uncertainty_with_llm
@@ -557,62 +556,8 @@ async def is_ambiguous_transcription(user_text: str) -> bool:
 
 
 # =============================================================================
-# SMART MESSAGE PROCESSING AND UTILITY FUNCTIONS
+# UTILITY FUNCTIONS (Smart Processor functionality now integrated into Orchestrator)
 # =============================================================================
-
-async def smart_message_processor(
-        user_message: str, current_flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
-    """
-    Smart LLM processor that analyzes every user message to determine:
-    - Intent detection
-    - Context understanding
-    - Appropriate response strategy
-    - Whether to continue current flow or switch
-    """
-    try:
-        # Get current flow context
-        current_flow = current_flow_context.get("current_flow") if current_flow_context else None
-        current_step = current_flow_context.get("current_step") if current_flow_context else None
-        current_step_type = current_flow_context.get("current_step_type") if current_flow_context else None
-
-        # Create context-aware prompt
-        context_info = ""
-        if current_flow and current_step:
-            context_info = f"""
-CURRENT CONVERSATION CONTEXT:
-- Current Flow: {current_flow}
-- Current Step: {current_step}
-- Step Type: {current_step_type}
-- User is responding to a question or in a conversation flow
-"""
-
-        # Get available intents dynamically from bot template
-        available_intents = []
-        if bot_template and bot_template.get("data"):
-            for flow_key, flow_data in bot_template["data"].items():
-                if flow_data.get("type") == "intent_bot":
-                    intent_name = flow_data.get("text", flow_key)  # Use text field for intent name
-                    available_intents.append(intent_name)
-
-        intents_list = ", ".join(available_intents) if available_intents else "none available"
-
-        logger.info(f"🧠 SMART PROCESSOR: Analyzing message: '{user_message}'")
-
-        # Use centralized LLM utility for smart message analysis
-        analysis = await analyze_message_with_smart_processor(user_message, context_info, intents_list)
-        
-        logger.info(f"🧠 SMART PROCESSOR: Analysis result: {analysis}")
-        return analysis
-
-    except Exception as e:
-        logger.error(f"🧠 SMART PROCESSOR: Error: {e}")
-        return {
-            "intent_detected": "none",
-            "message_type": "unclear",
-            "confidence": "low",
-            "action": "ask_clarification",
-            "reasoning": f"Error in processing: {e}"
-        }
 
 
 async def detect_flow_intent_with_llm(
@@ -1780,49 +1725,79 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     
             elif decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY:
                 logger.info("🧠 ORCHESTRATOR: Handling conversationally")
-                if decision.response:
-                    add_agent_response_to_history(flow_state, decision.response)
-                    return {
-                        "type": "conversational_response",
-                        "response": decision.response,
-                        "flow_state": flow_state
-                    }
-                else:
-                    # Fall back to FAQ for conversational responses
-                    return await get_faq_response(user_message, flow_state=flow_state)
+                
+                # Generate dynamic, natural conversational response
+                from backend.llm_utils import generate_conversational_response
+                conversational_context = {
+                    "user_message": user_message,
+                    "conversation_history": flow_state.conversation_history,
+                    "current_flow": flow_state.current_flow,
+                    "current_step": flow_state.current_step,
+                    "profile": user_profile.dict() if user_profile else {}
+                }
+                
+                dynamic_response = await generate_conversational_response(user_message, conversational_context)
+                add_agent_response_to_history(flow_state, dynamic_response)
+                
+                return {
+                    "type": "conversational_response",
+                    "response": dynamic_response,
+                    "flow_state": flow_state
+                }
                     
             elif decision.action == OrchestratorAction.HANDLE_REFUSAL:
                 logger.info("🧠 ORCHESTRATOR: Handling refusal gracefully")
-                if decision.response:
-                    add_agent_response_to_history(flow_state, decision.response)
-                    # Update user profile with refused fields
-                    if decision.skip_fields:
-                        user_profile.add_refused_fields(decision.skip_fields)
-                    if decision.profile_updates:
-                        user_profile.update_profile(decision.profile_updates)
-                    conversational_orchestrator.save_user_profile(room_name, user_profile)
-                    
-                    return {
-                        "type": "refusal_handled",
-                        "response": decision.response,
-                        "flow_state": flow_state
-                    }
-                else:
-                    # Fall back to FAQ
-                    return await get_faq_response(user_message, flow_state=flow_state)
+                
+                # Update user profile with refused fields
+                if decision.skip_fields:
+                    user_profile.add_refused_fields(decision.skip_fields)
+                if decision.profile_updates:
+                    user_profile.update_profile(decision.profile_updates)
+                conversational_orchestrator.save_user_profile(room_name, user_profile)
+                
+                # Generate dynamic response for refusal
+                from backend.llm_utils import generate_conversational_response
+                conversational_context = {
+                    "user_message": user_message,
+                    "conversation_history": flow_state.conversation_history,
+                    "current_flow": flow_state.current_flow,
+                    "current_step": flow_state.current_step,
+                    "profile": user_profile.dict() if user_profile else {},
+                    "refusal_context": True,
+                    "skipped_fields": decision.skip_fields or []
+                }
+                
+                dynamic_response = await generate_conversational_response(user_message, conversational_context)
+                add_agent_response_to_history(flow_state, dynamic_response)
+                
+                return {
+                    "type": "refusal_handled",
+                    "response": dynamic_response,
+                    "flow_state": flow_state
+                }
                     
             elif decision.action == OrchestratorAction.HANDLE_UNCERTAINTY:
                 logger.info("🧠 ORCHESTRATOR: Handling uncertainty")
-                if decision.response:
-                    add_agent_response_to_history(flow_state, decision.response)
-                    return {
-                        "type": "uncertainty_handled",
-                        "response": decision.response,
-                        "flow_state": flow_state
-                    }
-                else:
-                    # Fall back to FAQ
-                    return await get_faq_response(user_message, flow_state=flow_state)
+                
+                # Generate dynamic response for uncertainty
+                from backend.llm_utils import generate_conversational_response
+                conversational_context = {
+                    "user_message": user_message,
+                    "conversation_history": flow_state.conversation_history,
+                    "current_flow": flow_state.current_flow,
+                    "current_step": flow_state.current_step,
+                    "profile": user_profile.dict() if user_profile else {},
+                    "uncertainty_context": True
+                }
+                
+                dynamic_response = await generate_conversational_response(user_message, conversational_context)
+                add_agent_response_to_history(flow_state, dynamic_response)
+                
+                return {
+                    "type": "uncertainty_handled",
+                    "response": dynamic_response,
+                    "flow_state": flow_state
+                }
             
             # If we get here, orchestrator didn't provide a clear action, continue with legacy logic
             logger.info("🧠 ORCHESTRATOR: No clear action, continuing with legacy flow logic")
@@ -2057,35 +2032,8 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             flow_state.current_flow}, Step: {
             flow_state.current_step}")
 
-    current_flow_context = {
-        "current_flow": flow_state.current_flow,
-        "current_step": flow_state.current_step,
-        "current_step_type": flow_state.flow_data.get("type") if flow_state.flow_data else None
-    }
-
-    # Process message with smart LLM analyzer
-    try:
-        message_analysis = await smart_message_processor(user_message, current_flow_context)
-        logger.info(f"🧠 SMART ANALYSIS: {message_analysis}")
-    except Exception as e:
-        logger.error(
-            f"🧠 SMART PROCESSOR: Error in smart message processor: {e}")
-        message_analysis = {
-            "intent_detected": "none",
-            "message_type": "unclear",
-            "confidence": "low",
-            "action": "continue_flow",
-            "reasoning": f"Error in smart processor: {e}"
-        }
-
-    # Handle based on analysis
-    if message_analysis.get("action") == "ignore":
-        logger.info(f"🧠 IGNORING MESSAGE: {message_analysis.get('reasoning')}")
-        return {
-            "type": "ignored",
-            "response": "",
-            "flow_state": flow_state
-        }
+    # 🧠 ORCHESTRATOR: Use intelligent contextual analysis for all decisions
+    # (Smart Processor functionality now integrated into Orchestrator)
 
     # If we're already in a flow, check if this is a response to a question or
     # greeting
@@ -2131,40 +2079,13 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 # But don't detect greeting intents when we're already in a
                 # greeting flow
                 
-                # 🧠 SMART PROCESSOR + INTENT DETECTION HYBRID: Best of both worlds
-                if (message_analysis.get("action") == "continue_flow" and 
-                    message_analysis.get("confidence") == "high" and
-                    message_analysis.get("message_type") == "question_response"):
-                    # Smart Processor says continue current flow - check if it's a menu selection
-                    if (message_analysis.get("intent_detected") == "none" or 
-                        message_analysis.get("intent_detected") is None):
-                        # No intent detected, continue current flow
-                        logger.info(f"🧠 SMART PROCESSOR: Continuing current flow - no intent detected")
-                        print(f"🧠 SMART PROCESSOR: Continuing current flow - no intent detected")
-                        matching_intent = None
-                    else:
-                        # Smart Processor detected an intent - use specialized Intent Detection for accuracy
-                        detected_intent = message_analysis.get("intent_detected")
-                        logger.info(f"🧠 SMART PROCESSOR: Detected potential intent '{detected_intent}' - validating with specialized Intent Detection")
-                        print(f"🧠 SMART PROCESSOR: Detected potential intent '{detected_intent}' - validating with specialized Intent Detection")
-                        
-                        # Use specialized Intent Detection for accurate classification
-                        try:
-                            matching_intent = await detect_flow_intent_with_llm(user_message)
-                            print(f"🎯 INTENT DETECTION: Specialized result: {matching_intent}")
-                        except Exception as e:
-                            logger.error(f"🎯 INTENT DETECTION: Error in specialized intent detection: {e}")
-                            matching_intent = None
-                else:
-                    # Smart Processor suggests intent detection or is uncertain - use specialized Intent Detection
-                    print(f"🎯 GREETING FLOW: Calling specialized intent detection for: '{user_message}'")
-                    try:
-                        matching_intent = await detect_flow_intent_with_llm(user_message)
-                        print(f"🎯 GREETING FLOW: Intent detection result: {matching_intent}")
-                    except Exception as e:
-                        logger.error(f"🎯 GREETING FLOW: Error in intent detection: {e}")
-                        print(f"🎯 GREETING FLOW: Error in intent detection: {e}")
-                        matching_intent = None
+                # 🎯 INTENT DETECTION: Check if user is expressing a new intent
+                try:
+                    matching_intent = await detect_flow_intent_with_llm(user_message)
+                    logger.info(f"🎯 INTENT DETECTION: Result: {matching_intent}")
+                except Exception as e:
+                    logger.error(f"🎯 INTENT DETECTION: Error in intent detection: {e}")
+                    matching_intent = None
                 if matching_intent and matching_intent.get(
                         "type") != "greeting":
                     logger.info(
@@ -2855,52 +2776,47 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 logger.info("FLOW_MANAGEMENT: Detected N/A or None type step - checking for intent before routing")
                 
                 # Check if user is expressing an intent that should trigger a flow
-                if message_analysis.get("intent_detected") and message_analysis.get("intent_detected") != "none":
-                    detected_intent = message_analysis.get("intent_detected")
-                    logger.info(f"FLOW_MANAGEMENT: Intent detected in N/A step: '{detected_intent}' - attempting flow transition")
+                matching_intent = await detect_flow_intent_with_llm(user_message)
+                if matching_intent and matching_intent.get("flow_key"):
+                    logger.info(f"FLOW_MANAGEMENT: Intent detected in N/A step: '{matching_intent['intent']}' -> '{matching_intent['flow_key']}' - transitioning to flow")
                     
-                    # Try to find and execute the detected intent flow
-                    matching_intent = await detect_flow_intent_with_llm(user_message)
-                    if matching_intent and matching_intent.get("flow_key"):
-                        logger.info(f"FLOW_MANAGEMENT: Intent confirmed: '{matching_intent['intent']}' -> '{matching_intent['flow_key']}' - transitioning to flow")
-                        
-                        # Execute the intent flow (same logic as in main intent detection)
-                        flow_state.current_flow = matching_intent["flow_key"]
-                        flow_state.current_step = matching_intent["flow_data"]["name"]
-                        flow_state.flow_data = matching_intent["flow_data"]
+                    # Execute the intent flow (same logic as in main intent detection)
+                    flow_state.current_flow = matching_intent["flow_key"]
+                    flow_state.current_step = matching_intent["flow_data"]["name"]
+                    flow_state.flow_data = matching_intent["flow_data"]
+                    auto_save_flow_state()
+                    
+                    # Check if this intent has a next_flow and automatically transition to it
+                    next_flow = matching_intent["flow_data"].get("next_flow")
+                    if next_flow:
+                        logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
+                        flow_state.current_step = next_flow.get("name")
+                        flow_state.flow_data = next_flow
                         auto_save_flow_state()
                         
-                        # Check if this intent has a next_flow and automatically transition to it
-                        next_flow = matching_intent["flow_data"].get("next_flow")
-                        if next_flow:
-                            logger.info(f"FLOW_MANAGEMENT: Intent has next_flow, transitioning to: {next_flow.get('name')}")
-                            flow_state.current_step = next_flow.get("name")
-                            flow_state.flow_data = next_flow
-                            auto_save_flow_state()
-                            
-                            response_text = next_flow.get("text", "")
-                            add_agent_response_to_history(flow_state, response_text)
-                            
-                            return {
-                                "type": "flow_started",
-                                "flow_name": matching_intent["intent"],
-                                "response": response_text,
-                                "next_step": next_flow.get("next_flow")
-                            }
-                        else:
-                            # No next_flow, use intent response
-                            response_text = matching_intent["flow_data"].get("text", "")
-                            if not response_text or response_text == "N/A":
-                                response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
-                            
-                            add_agent_response_to_history(flow_state, response_text)
-                            
-                            return {
-                                "type": "flow_started",
-                                "flow_name": matching_intent["intent"],
-                                "response": response_text,
-                                "next_step": matching_intent["flow_data"].get("next_flow")
-                            }
+                        response_text = next_flow.get("text", "")
+                        add_agent_response_to_history(flow_state, response_text)
+                        
+                        return {
+                            "type": "flow_started",
+                            "flow_name": matching_intent["intent"],
+                            "response": response_text,
+                            "next_step": next_flow.get("next_flow")
+                        }
+                    else:
+                        # No next_flow, use intent response
+                        response_text = matching_intent["flow_data"].get("text", "")
+                        if not response_text or response_text == "N/A":
+                            response_text = f"I understand you want to know about {matching_intent['intent']}. How can I help you with that?"
+                        
+                        add_agent_response_to_history(flow_state, response_text)
+                        
+                        return {
+                            "type": "flow_started",
+                            "flow_name": matching_intent["intent"],
+                            "response": response_text,
+                            "next_step": matching_intent["flow_data"].get("next_flow")
+                        }
                 
                 # No intent detected or confirmed - route to conversational handling
                 logger.info("FLOW_MANAGEMENT: No intent detected in N/A step - routing to conversational handling")
@@ -3084,35 +3000,16 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         f"Current flow: {
             flow_state.current_flow}")
     
-    # 🧠 SMART PROCESSOR + INTENT DETECTION HYBRID: Best of both worlds
-    if (message_analysis.get("action") == "continue_flow" and 
-        message_analysis.get("confidence") == "high" and
-        message_analysis.get("message_type") == "question_response"):
-        # Smart Processor says continue current flow - check if it's a menu selection
-        if (message_analysis.get("intent_detected") == "none" or 
-            message_analysis.get("intent_detected") is None):
-            # No intent detected, continue current flow
-            logger.info(f"🧠 SMART PROCESSOR: Continuing current flow - no intent detected")
-            print(f"🧠 SMART PROCESSOR: Continuing current flow - no intent detected")
-            matching_intent = None
-        else:
-            # Smart Processor detected an intent - use specialized Intent Detection for accuracy
-            detected_intent = message_analysis.get("intent_detected")
-            logger.info(f"🧠 SMART PROCESSOR: Detected potential intent '{detected_intent}' - validating with specialized Intent Detection")
-            print(f"🧠 SMART PROCESSOR: Detected potential intent '{detected_intent}' - validating with specialized Intent Detection")
-            
-            # Use specialized Intent Detection for accurate classification
-            matching_intent = await detect_flow_intent_with_llm(user_message)
+    # 🎯 INTENT DETECTION: Check if user is expressing a new intent
+    matching_intent = await detect_flow_intent_with_llm(user_message)
 
-        # Only shift if intent has a real flow_key (ignore greetings/none)
-        if matching_intent and matching_intent.get(
-                "flow_key") and matching_intent.get("type") != "greeting":
-            if matching_intent["flow_key"] != flow_state.current_flow:
-                old_flow = flow_state.current_flow
-                logger.info(
-                    f"FLOW_MANAGEMENT: LLM detected intent shift from {flow_state.current_flow} to {matching_intent['flow_key']}")
-                flow_state.current_flow = matching_intent["flow_key"]
-                flow_state.user_responses = {}
+    # Only shift if intent has a real flow_key (ignore greetings/none)
+    if matching_intent and matching_intent.get("flow_key") and matching_intent.get("type") != "greeting":
+        if matching_intent["flow_key"] != flow_state.current_flow:
+            old_flow = flow_state.current_flow
+            logger.info(f"FLOW_MANAGEMENT: LLM detected intent shift from {flow_state.current_flow} to {matching_intent['flow_key']}")
+            flow_state.current_flow = matching_intent["flow_key"]
+            flow_state.user_responses = {}
 
         intent_node = matching_intent["flow_data"]
         flow_state.current_step = intent_node["name"]
