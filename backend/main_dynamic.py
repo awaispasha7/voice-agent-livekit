@@ -1378,8 +1378,8 @@ def get_next_flow_step(current_flow_state: FlowState,
     # Let the orchestrator handle all user responses intelligently
     # No hardcoded refusal detection - let LLM decide
     
-    # Check for next_flow
-    if current_step_data.get("next_flow"):
+    # Check for next_flow (only if no answers were matched)
+    if current_step_data.get("next_flow") and not user_response:
         next_flow_name = current_step_data['next_flow'].get('name')
         logger.info(f"FLOW_NAVIGATION: ✅ Found next_flow: {next_flow_name}")
         
@@ -1616,25 +1616,58 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         if next_step:
             logger.info(f"🔄 FLOW PROGRESSION: Successfully progressed flow - {next_step.get('type', 'unknown')}")
             
-            # Update flow state with the next step
-            if next_step.get("next_step"):
-                flow_state.current_step = next_step["next_step"].get("name", flow_state.current_step)
-                flow_state.flow_data = next_step["next_step"]
-                auto_save_flow_state()
+            # Handle different types of flow progression
+            if next_step.get("type") == "next_step":
+                # Update flow state to the next step
+                step_data = next_step.get("step_data")
+                if step_data:
+                    flow_state.current_step = step_data.get("name", flow_state.current_step)
+                    flow_state.flow_data = step_data
+                    auto_save_flow_state()
+                    
+                    # Get the response text from the next step
+                    response_text = step_data.get("text", "")
+                    
+                    # Check if we have answer data with a message to speak first
+                    answer_data = next_step.get("answer_data")
+                    if answer_data and answer_data.get("text"):
+                        # Combine the answer message with the next question
+                        combined_response = f"{answer_data['text']} {response_text}"
+                        add_agent_response_to_history(flow_state, combined_response)
+                        return {
+                            "type": "flow_response",
+                            "response": combined_response,
+                            "next_step": step_data,
+                            "flow_state": flow_state
+                        }
+                    else:
+                        # Just the next question
+                        add_agent_response_to_history(flow_state, response_text)
+                        return {
+                            "type": "flow_response",
+                            "response": response_text,
+                            "next_step": step_data,
+                            "flow_state": flow_state
+                        }
             
-            # Add response to conversation history
-            if next_step.get("response"):
-                add_agent_response_to_history(flow_state, next_step["response"])
+            elif next_step.get("type") == "answer_response":
+                # Handle answer response (end of flow or final message)
+                step_data = next_step.get("step_data")
+                if step_data:
+                    response_text = step_data.get("text", "")
+                    add_agent_response_to_history(flow_state, response_text)
+                    return {
+                        "type": "flow_response",
+                        "response": response_text,
+                        "next_step": None,
+                        "flow_state": flow_state
+                    }
             
-            # Map the response type to what the worker expects
-            response_type = next_step.get("type", "flow_response")
-            if response_type == "next_step":
-                response_type = "flow_response"  # Worker expects "flow_response" not "next_step"
-            
+            # Fallback for other types
             return {
-                "type": response_type,
+                "type": "flow_response",
                 "response": next_step.get("response", ""),
-                "next_step": next_step.get("next_step"),
+                "next_step": next_step.get("step_data"),
                 "flow_state": flow_state
             }
         else:
