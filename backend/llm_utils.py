@@ -557,6 +557,127 @@ Is the user expressing uncertainty or inability to answer? Return only "uncertai
 # ORCHESTRATOR LLM FUNCTIONS
 # ============================================================================
 
+def extract_user_data_with_llm(user_message: str) -> Dict[str, Any]:
+    """
+    Extract comprehensive user information from natural language using LLM.
+    
+    This replaces hardcoded regex patterns with intelligent LLM-based extraction
+    that can understand context and extract various types of user information.
+    
+    Args:
+        user_message: The user's message to analyze
+        
+    Returns:
+        Dict with extracted user information (name, email, phone, company, etc.)
+    """
+    try:
+        client = get_openai_client()
+        
+        system = """You are an expert at extracting user information from natural language conversations.
+
+Your job is to identify and extract any personal or business information mentioned by the user.
+
+EXTRACTION TARGETS:
+1. **Personal Information:**
+   - Name: "My name is John", "I'm Sarah", "Call me Mike"
+   - Email: "john@example.com", "reach me at sarah@company.org"
+   - Phone: "(555) 123-4567", "call me at 555-987-6543", "+1-800-555-0123"
+   - Location: "I'm from New York", "ZIP code 10001", "I live in California"
+
+2. **Business Information:**
+   - Company: "I work at Microsoft", "My company is Acme Corp", "We are Google"
+   - Role/Title: "I'm a marketing manager", "I work as a software engineer"
+   - Website: "www.acme.com", "our site is company.org"
+   - Industry: "We're in healthcare", "I'm in the tech industry"
+
+3. **Quantitative Information:**
+   - Budget: "$50,000", "our budget is 25k", "we have 10k to spend"
+   - Quantities: "25 campaigns", "we have 100 employees", "50 customers"
+   - Percentages: "25% increase", "we're at 80% capacity"
+   - Timeframes: "ASAP", "urgent", "this week", "next month"
+
+4. **Preferences/Needs:**
+   - Requirements: "I need help with", "I want to", "I'm looking for"
+   - Preferences: "I prefer", "I would like", "we need"
+
+EXTRACTION RULES:
+1. Extract ONLY information explicitly mentioned or clearly implied
+2. Clean up extracted values (remove filler words, standardize format)
+3. For names, extract first name only unless full name is clearly stated
+4. For phone numbers, preserve original format but ensure it's valid
+5. For companies, extract the main company name (first 2-3 words max)
+6. For roles, extract the main job title (first 2-3 words max)
+7. For budgets, include currency symbol if mentioned
+8. For quantities, include the unit if mentioned
+9. Be conservative - only extract what you're confident about
+
+Return ONLY a JSON object with extracted information. Use these exact keys:
+- name: First name only
+- email: Email address
+- phone: Phone number (any format)
+- company: Company name
+- role: Job title/role
+- website: Website URL
+- zip_code: ZIP/postal code
+- budget: Budget amount with currency
+- quantity: Number with unit (e.g., "25 campaigns")
+- percentage: Percentage value
+- timeline: Time-related urgency/timeline
+- preference: What they need/want
+
+Only include keys for information that was actually found. If no information is found, return an empty object {}.
+
+EXAMPLES:
+Input: "Hi, my name is John Smith and I work at Microsoft as a software engineer"
+Output: {"name": "John", "company": "Microsoft", "role": "Software Engineer"}
+
+Input: "You can reach me at john@example.com or call (555) 123-4567"
+Output: {"email": "john@example.com", "phone": "(555) 123-4567"}
+
+Input: "Our budget is $50,000 and we have 25 campaigns running"
+Output: {"budget": "$50,000", "quantity": "25 campaigns"}
+
+Input: "I need this done ASAP for our company Acme Corp"
+Output: {"company": "Acme Corp", "timeline": "ASAP"}
+
+Input: "Hello there, how are you?"
+Output: {}"""
+
+        user_prompt = f"""Extract user information from this message:
+
+"{user_message}"
+
+Analyze the message and extract any personal, business, or quantitative information mentioned. Be precise and only extract information that is clearly stated or strongly implied.
+
+Respond with JSON only."""
+
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.1,  # Low temperature for consistent extraction
+            max_tokens=300
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        logger.info(f"🔍 USER DATA EXTRACTION: LLM response: {response_text}")
+        
+        try:
+            result = json.loads(response_text)
+            logger.info(f"🔍 USER DATA EXTRACTION: Extracted data: {result}")
+            return result
+        except json.JSONDecodeError as e:
+            logger.error(f"🔍 USER DATA EXTRACTION: JSON decode error: {e}")
+            logger.error(f"🔍 USER DATA EXTRACTION: Raw response: {response_text}")
+            return {}
+            
+    except Exception as e:
+        logger.error(f"🔍 USER DATA EXTRACTION: Error using LLM: {e}")
+        return {}
+
+
 async def make_orchestrator_decision(context: Dict[str, Any]) -> Any:
     """
     Make an intelligent orchestration decision using LLM.

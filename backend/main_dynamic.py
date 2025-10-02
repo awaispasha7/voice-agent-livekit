@@ -668,34 +668,6 @@ async def detect_flow_intent_with_llm(
         return None
 
 
-def extract_user_data(message: str) -> Dict[str, Any]:
-    """Extract user information from message"""
-    extracted_data = {}
-    
-    # Extract email
-    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-    emails = re.findall(email_pattern, message)
-    if emails:
-        extracted_data['email'] = emails[0]
-        
-    # Extract phone numbers
-    phone_pattern = r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'
-    phones = re.findall(phone_pattern, message)
-    if phones:
-        extracted_data['phone'] = phones[0]
-        
-    # Extract names (simple pattern)
-    name_indicators = ['my name is', "i'm", 'this is', 'name:', 'i am']
-    for indicator in name_indicators:
-        if indicator in message.lower():
-            parts = message.lower().split(indicator)
-            if len(parts) > 1:
-                potential_name = parts[1].strip().split()[0]
-                if len(potential_name) > 1 and potential_name.isalpha():
-                    extracted_data['name'] = potential_name.title()
-            break
-    
-    return extracted_data
 
 
 def generate_truly_unique_room_name(
@@ -1067,11 +1039,11 @@ async def process_transcript(request: TranscriptRequest):
         logger.info(
             f"TRANSCRIPT_PROCESSING: Room {room_name}, Message: '{transcript}'")
         
-        # Legacy intent detection removed; keep only user data extraction
+        # Legacy intent detection removed; user data extraction now handled in process_flow_message
         detected_intent = None
-        user_data = extract_user_data(transcript)
+        user_data = {}  # No longer extracting here - handled in main flow processing
         
-        # Update session if we have one
+        # Update session if we have one (minimal updates only)
         if room_name in active_sessions:
             session = active_sessions[room_name]
             
@@ -1082,11 +1054,8 @@ async def process_transcript(request: TranscriptRequest):
                 logger.info(
                     f"INTENT_UPDATE: Session {room_name} intent updated to '{detected_intent}'")
             
-            # Update user data
-            if user_data:
-                session["user_data"].update(user_data)
-                logger.info(
-                    f"USER_DATA_UPDATE: Session {room_name} data updated: {user_data}")
+            # Note: User data extraction and profile updates now handled in process_flow_message
+            # to avoid duplicate processing and ensure orchestrator profile consistency
             
             session["last_updated"] = time.time()
         
@@ -1366,7 +1335,7 @@ def clear_all_flow_states():
 # =============================================================================
 
 def get_next_flow_step(current_flow_state: FlowState,
-                       user_response: str = None) -> Optional[Dict[str, Any]]:
+                       user_response: str = None, room_name: str = None) -> Optional[Dict[str, Any]]:
     """Get the next step in the current flow - fully dynamic"""
     logger.info(
         f"FLOW_NAVIGATION: Getting next step for flow {
@@ -1398,6 +1367,28 @@ def get_next_flow_step(current_flow_state: FlowState,
         logger.info(
             f"FLOW_NAVIGATION: Stored user response for step {
                 current_flow_state.current_step}")
+        
+        # Update orchestrator profile with flow response
+        if conversational_orchestrator:
+            try:
+                # Extract structured data if possible
+                extracted_value = None
+                if current_step_data.get("type") == "question":
+                    # Try to extract structured data using LLM
+                    from backend.llm_utils import extract_answer_with_llm
+                    try:
+                        extracted_value = extract_answer_with_llm(user_response)
+                    except:
+                        pass  # Fall back to raw response
+                
+                conversational_orchestrator.update_profile_from_flow_response(
+                    room_name=room_name or "unknown_room",
+                    step_name=current_flow_state.current_step,
+                    user_response=user_response,
+                    extracted_value=extracted_value
+                )
+            except Exception as e:
+                logger.warning(f"🧠 ORCHESTRATOR: Failed to update profile from flow response: {e}")
     
     # Navigate through the flow
     current_step_data = flow_data
@@ -1688,23 +1679,33 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             logger.info("🧠 ORCHESTRATOR: Processing message with intelligent routing")
             
             # Create user profile from flow state
-            user_profile = conversational_orchestrator.get_user_profile(room_name)
+            user_profile = conversational_orchestrator.get_or_create_profile(room_name)
             
-            # Build context for orchestrator decision
-            context = {
-                "user_message": user_message,
-                "profile": user_profile.to_dict(),
-                "conversation_history": flow_state.conversation_history[-5:],  # Last 5 messages
-                "current_flow": flow_state.current_flow,
-                "current_step": flow_state.current_step,
-                "current_question": flow_state.flow_data.get("text") if flow_state.flow_data else None,
-                "expected_answers": list(flow_state.flow_data.get("answers", {}).keys()) if flow_state.flow_data and flow_state.flow_data.get("answers") else None,
-                "faq_available": True,
-                "available_flows": list(conversational_orchestrator.available_flows.keys())
-            }
+            # Extract user data from message and update orchestrator profile
+            from backend.llm_utils import extract_user_data_with_llm
+            extracted_user_data = extract_user_data_with_llm(user_message)
+            if extracted_user_data:
+                logger.info(f"🧠 ORCHESTRATOR: Extracted user data: {extracted_user_data}")
+                for key, value in extracted_user_data.items():
+                    user_profile.add_collected_info(key, value)
+                
+                # Also update session data for consistency
+                if room_name in active_sessions:
+                    session = active_sessions[room_name]
+                    if "user_data" not in session:
+                        session["user_data"] = {}
+                    session["user_data"].update(extracted_user_data)
+                    session["last_updated"] = time.time()
+                    logger.info(f"🧠 ORCHESTRATOR: Updated session data for {room_name}: {extracted_user_data}")
             
             # Get intelligent decision from orchestrator
-            decision = await conversational_orchestrator.process_message(context)
+            decision = await conversational_orchestrator.process_message(
+                user_message=user_message,
+                room_name=room_name,
+                conversation_history=flow_state.conversation_history[-5:],  # Last 5 messages
+                current_flow_state=flow_state.dict() if flow_state else None,
+                current_step_data=flow_state.flow_data if flow_state else None
+            )
             
             logger.info(f"🧠 ORCHESTRATOR: Decision - {decision.action} (confidence: {decision.confidence})")
             logger.info(f"🧠 ORCHESTRATOR: Reasoning - {decision.reasoning}")
@@ -2396,7 +2397,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
 
                 # Process the user response and move to next step using
                 # get_next_flow_step
-                next_step = get_next_flow_step(flow_state, user_message)
+                next_step = get_next_flow_step(flow_state, user_message, room_name)
                 if next_step:
                     logger.info(
                         f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
@@ -2717,7 +2718,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 }
 
             # Process the user response and move to next step
-            next_step = get_next_flow_step(flow_state, user_message)
+            next_step = get_next_flow_step(flow_state, user_message, room_name)
             if next_step:
                 logger.info(f"FLOW_MANAGEMENT: ✅ Next step found: {next_step}")
                 
