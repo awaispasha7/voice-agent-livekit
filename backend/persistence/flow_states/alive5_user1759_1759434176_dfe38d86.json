@@ -1,0 +1,74 @@
+{
+  "current_flow": "Flow_2",
+  "current_step": "message_923c1e69-3e7d-4c56-954b-ed880e96dee0",
+  "flow_data": {
+    "type": "message",
+    "text": "Thankyou! Someone will be connecting shortly with you!",
+    "name": "message_923c1e69-3e7d-4c56-954b-ed880e96dee0",
+    "next_flow": null
+  },
+  "flow_key": "Flow_1",
+  "conversation_history": [
+    {
+      "role": "assistant",
+      "content": "Welcome to the voice one line! How can I help you today?",
+      "timestamp": "2025-10-02T19:43:45.778229"
+    },
+    {
+      "role": "user",
+      "content": "Hi there. Can I know about sales?",
+      "timestamp": "2025-10-02T19:43:45.778233"
+    },
+    {
+      "role": "assistant",
+      "content": "May I have your name?",
+      "timestamp": "2025-10-02T19:43:45.778237"
+    },
+    {
+      "role": "user",
+      "content": "No. I don't wanna give my name.",
+      "timestamp": "2025-10-02T19:43:45.778240"
+    },
+    {
+      "role": "assistant",
+      "content": "May I have your email?",
+      "timestamp": "2025-10-02T19:43:45.778244"
+    },
+    {
+      "role": "user",
+      "content": "Why do you need that?",
+      "timestamp": "2025-10-02T19:43:45.778247"
+    },
+    {
+      "role": "assistant",
+      "content": "Thankyou! Someone will be connecting shortly with you!",
+      "timestamp": "2025-10-02T19:43:45.778251"
+    },
+    {
+      "role": "user",
+      "content": "Can you tell me about the live five?",
+      "timestamp": "2025-10-02T19:43:45.778253"
+    },
+    {
+      "role": "assistant",
+      "content": "Based on the search results, I believe you're asking about \"Alive5\" (not \"live five\"). Alive5 is a customer communication platform that offers several features including:\n\n- Live Chat services\n- SMS messaging\n- Chatbots\n- Facebook Messenger integration\n- QR Codes\n- CRM functionality\n\nAlive5 helps businesses build trust and deepen relationships with customers. They offer services such as tailored solutions (defining KPIs, setting up scripts, customer journeys, and call to actions), team training, and brand activation through QR codes, chat links, and SMS outreach. To use Alive5's SMS features, 10DLC compliance is required, which takes 24-72 hours to process and may require website changes. There's a one-time registration fee of $20 and a monthly fee of $2 (higher for Pro Plus and Premium plans).\n\nAlive5 offers enterprise-level features including SSO (Single Sign On), and compliance with SOC2, GDPR, CCPA, and PCI standards. They also provide a 60-day money-back guarantee (excluding 10DLC and SMS/MMS credit usage fees).\n\nThe company has a connection to Comcast, as the Alive5 team participated in the 2018 Comcast/NBC Universal LIFT Labs program powered by Techstars, which led to collaboration with Comcast Business.",
+      "timestamp": "2025-10-02T19:44:01.152507"
+    },
+    {
+      "role": "assistant",
+      "content": "Thanks for calling Alive5. Have a great day! Goodbye!",
+      "timestamp": "2025-10-02T19:44:28.447424"
+    }
+  ],
+  "user_responses": {
+    "greeting_a64c9233-b9bf-4e30-9edc-46bac61de650": "Hi there. Can I know about sales?",
+    "question_9db1297f-61b8-43a8-bb63-999139199e59": "No. I don't wanna give my name.",
+    "question_50a9a8c7-bab7-43fb-ae21-a07fd788ecdb": "Why do you need that?",
+    "message_923c1e69-3e7d-4c56-954b-ed880e96dee0": "Can you tell me about the live five?"
+  },
+  "pending_step": null,
+  "pending_expected_kind": null,
+  "pending_asked_at": null,
+  "pending_reask_count": 0,
+  "saved_at": 1759434268.447465
+}

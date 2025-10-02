@@ -1,0 +1,58 @@
+{
+  "room_name": "alive5_user1759_1759434176_dfe38d86",
+  "log_type": "orchestrator_decision",
+  "timestamp": "2025-10-02T19:43:14.765694",
+  "data": {
+    "user_message": "Hi there. Can I know about sales?",
+    "decision": {
+      "action": "execute_flow",
+      "reasoning": "User has expressed a clear intent to know about sales, which maps to a structured flow.",
+      "flow_to_execute": "sales",
+      "confidence": 0.95
+    },
+    "profile_state": {
+      "collected_info": {},
+      "preferences": [],
+      "refused_fields": [],
+      "skipped_fields": [],
+      "objectives": [
+        "get_sales_info"
+      ],
+      "conversation_summary": "",
+      "first_seen": 1759434191.68317,
+      "last_updated": 1759434191.6831703,
+      "interaction_count": 1
+    },
+    "flow_state": {
+      "current_flow": null,
+      "current_step": null,
+      "flow_key": "Flow_1",
+      "flow_data": null,
+      "user_responses": {
+        "greeting_a64c9233-b9bf-4e30-9edc-46bac61de650": "Hi there. Can I know about sales?"
+      },
+      "conversation_history": [
+        {
+          "role": "system",
+          "content": "Flow-based voice assistant for Alive5 Support",
+          "timestamp": "2025-10-02T19:43:11.450746"
+        },
+        {
+          "role": "assistant",
+          "content": "Welcome to the voice one line! How can I help you today?",
+          "timestamp": "2025-10-02T19:43:11.450765"
+        },
+        {
+          "role": "user",
+          "content": "Hi there. Can I know about sales?",
+          "timestamp": "2025-10-02T19:43:11.450768"
+        }
+      ],
+      "pending_step": null,
+      "pending_expected_kind": null,
+      "pending_asked_at": null,
+      "pending_reask_count": 0,
+      "deferred_intent": null
+    }
+  }
+}

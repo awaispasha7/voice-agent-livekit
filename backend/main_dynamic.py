@@ -1646,7 +1646,10 @@ def get_next_flow_step(current_flow_state: FlowState,
             logger.info("FLOW_NAVIGATION: Next flow is 'N/A' - transitioning to orchestrator for intent detection")
             return None  # Return None to let orchestrator handle it
         
-        # If this is a question without answers, or user provided a response, progress to next step
+        # Let the orchestrator handle all user responses intelligently
+        # No hardcoded refusal detection - let LLM decide
+            
+        # If this is a question without answers, or user provided a non-refusal response, progress to next step
         if not current_step_data.get("answers") or user_response:
             return {
                 "type": "next_step",
@@ -2102,61 +2105,83 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             elif decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY:
                 logger.info("🧠 ORCHESTRATOR: Handling conversationally")
                 
-                # Check if we're in a flow and should progress after refusal
+                # Check if we're in a flow and should handle this conversationally
                 if flow_state.current_flow and flow_state.current_step:
-                    # Try to progress the flow first
-                    next_step = get_next_flow_step(flow_state, user_message, room_name)
-                    if next_step and next_step.get("type") == "next_step":
-                        logger.info("🧠 ORCHESTRATOR: Progressing flow after conversational handling")
+                    # Let the LLM decide if this is a refusal and handle it appropriately
+                    # The LLM will generate a natural response and we'll check if we should progress the flow
+                    
+                    # Generate a natural conversational response first
+                    from backend.llm_utils import generate_conversational_response
+                    conversational_context = {
+                        "user_message": user_message,
+                        "conversation_history": flow_state.conversation_history,
+                        "current_flow": flow_state.current_flow,
+                        "current_step": flow_state.current_step,
+                        "profile": user_profile.to_dict() if user_profile else {},
+                        "refusal_context": decision.skip_fields is not None,  # If skip_fields is set, it's likely a refusal
+                        "skipped_fields": decision.skip_fields or []
+                    }
+                    
+                    natural_response = await generate_conversational_response(user_message, conversational_context)
+                    
+                    # Check if we should progress the flow after this response
+                    # This will be determined by the LLM's decision in the orchestrator
+                    if decision.skip_fields or "refusal" in str(decision.reasoning).lower():
+                        logger.info("🧠 ORCHESTRATOR: LLM determined this is a refusal - progressing flow gracefully")
                         
-                        # Update flow state to the next step
-                        step_data = next_step.get("step_data")
-                        if step_data:
-                            flow_state.current_step = step_data.get("name", flow_state.current_step)
-                            flow_state.flow_data = step_data
-                            auto_save_flow_state()
+                        # Get the current step data to find the next step
+                        current_step_data = flow_state.flow_data
+                        if current_step_data and current_step_data.get("next_flow"):
+                            next_flow_data = current_step_data["next_flow"]
+                            next_step_name = next_flow_data.get("name")
                             
-                            # Get the response text from the next step
-                            response_text = step_data.get("text", "")
-                            
-                            # Generate a conversational response for the refusal
-                            from backend.llm_utils import generate_conversational_response
-                            conversational_context = {
-                                "user_message": user_message,
-                                "conversation_history": flow_state.conversation_history,
-                                "current_flow": flow_state.current_flow,
-                                "current_step": flow_state.current_step,
-                                "profile": user_profile.to_dict() if user_profile else {},
-                                "refusal_context": True
-                            }
-                            
-                            refusal_response = await generate_conversational_response(user_message, conversational_context)
-                            
-                            # Combine the refusal response with the next question
-                            combined_response = f"{refusal_response} {response_text}"
-                            add_agent_response_to_history(flow_state, combined_response)
-                            return {
-                                "type": "flow_response",
-                                "response": combined_response,
-                                "next_step": step_data,
-                                "flow_state": flow_state
-                            }
+                            if next_step_name and next_step_name != "N/A":
+                                # Update flow state to the next step
+                                flow_state.current_step = next_step_name
+                                flow_state.flow_data = next_flow_data
+                                auto_save_flow_state()
+                                
+                                # Get the next question text
+                                next_question = next_flow_data.get("text", "")
+                                
+                                # Combine the natural response with the next question
+                                if next_question:
+                                    combined_response = f"{natural_response} {next_question}"
+                                else:
+                                    combined_response = natural_response
+                                
+                                add_agent_response_to_history(flow_state, combined_response)
+                                return {
+                                    "type": "flow_response",
+                                    "response": combined_response,
+                                    "next_step": next_flow_data.get("next_flow") if next_flow_data else None,
+                                    "flow_state": flow_state
+                                }
+                    
+                    # If not progressing flow, just return the natural response
+                    add_agent_response_to_history(flow_state, natural_response)
+                    return {
+                        "type": "conversational_response",
+                        "response": natural_response,
+                        "flow_state": flow_state
+                    }
                 
-                # Generate dynamic, natural conversational response
+                # For non-refusal conversational handling, generate a natural response
                 from backend.llm_utils import generate_conversational_response
                 conversational_context = {
                     "user_message": user_message,
                     "conversation_history": flow_state.conversation_history,
                     "current_flow": flow_state.current_flow,
                     "current_step": flow_state.current_step,
-                    "profile": user_profile.to_dict() if user_profile else {}
+                    "profile": user_profile.to_dict() if user_profile else {},
+                    "refusal_context": False
                 }
                 
-                response = await generate_conversational_response(user_message, conversational_context)
-                add_agent_response_to_history(flow_state, response)
+                natural_response = await generate_conversational_response(user_message, conversational_context)
+                add_agent_response_to_history(flow_state, natural_response)
                 return {
                     "type": "conversational_response",
-                    "response": response,
+                    "response": natural_response,
                     "flow_state": flow_state
                 }
                     

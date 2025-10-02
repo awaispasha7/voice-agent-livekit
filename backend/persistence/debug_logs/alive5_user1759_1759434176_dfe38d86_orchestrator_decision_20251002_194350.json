@@ -1,0 +1,97 @@
+{
+  "room_name": "alive5_user1759_1759434176_dfe38d86",
+  "log_type": "orchestrator_decision",
+  "timestamp": "2025-10-02T19:43:50.226176",
+  "data": {
+    "user_message": "Can you tell me about the live five?",
+    "decision": {
+      "action": "use_faq",
+      "reasoning": "The user is asking for information about 'live five', which seems to be a request for company information about Alive5. This is best handled by the FAQ Bot.",
+      "flow_to_execute": null,
+      "confidence": 0.98
+    },
+    "profile_state": {
+      "collected_info": {},
+      "preferences": [],
+      "refused_fields": [],
+      "skipped_fields": [],
+      "objectives": [
+        "get_sales_info",
+        "provide_company_info"
+      ],
+      "conversation_summary": "",
+      "first_seen": 1759434225.9914906,
+      "last_updated": 1759434225.9914908,
+      "interaction_count": 1
+    },
+    "flow_state": {
+      "current_flow": "Flow_2",
+      "current_step": "message_923c1e69-3e7d-4c56-954b-ed880e96dee0",
+      "flow_key": "Flow_1",
+      "flow_data": {
+        "type": "message",
+        "text": "Thankyou! Someone will be connecting shortly with you!",
+        "name": "message_923c1e69-3e7d-4c56-954b-ed880e96dee0",
+        "next_flow": null
+      },
+      "user_responses": {
+        "greeting_a64c9233-b9bf-4e30-9edc-46bac61de650": "Hi there. Can I know about sales?",
+        "question_9db1297f-61b8-43a8-bb63-999139199e59": "No. I don't wanna give my name.",
+        "question_50a9a8c7-bab7-43fb-ae21-a07fd788ecdb": "Why do you need that?",
+        "message_923c1e69-3e7d-4c56-954b-ed880e96dee0": "Can you tell me about the live five?"
+      },
+      "conversation_history": [
+        {
+          "role": "system",
+          "content": "Flow-based voice assistant for Alive5 Support",
+          "timestamp": "2025-10-02T19:43:45.778212"
+        },
+        {
+          "role": "assistant",
+          "content": "Welcome to the voice one line! How can I help you today?",
+          "timestamp": "2025-10-02T19:43:45.778229"
+        },
+        {
+          "role": "user",
+          "content": "Hi there. Can I know about sales?",
+          "timestamp": "2025-10-02T19:43:45.778233"
+        },
+        {
+          "role": "assistant",
+          "content": "May I have your name?",
+          "timestamp": "2025-10-02T19:43:45.778237"
+        },
+        {
+          "role": "user",
+          "content": "No. I don't wanna give my name.",
+          "timestamp": "2025-10-02T19:43:45.778240"
+        },
+        {
+          "role": "assistant",
+          "content": "May I have your email?",
+          "timestamp": "2025-10-02T19:43:45.778244"
+        },
+        {
+          "role": "user",
+          "content": "Why do you need that?",
+          "timestamp": "2025-10-02T19:43:45.778247"
+        },
+        {
+          "role": "assistant",
+          "content": "Thankyou! Someone will be connecting shortly with you!",
+          "timestamp": "2025-10-02T19:43:45.778251"
+        },
+        {
+          "role": "user",
+          "content": "Can you tell me about the live five?",
+          "timestamp": "2025-10-02T19:43:45.778253"
+        }
+      ],
+      "pending_step": null,
+      "pending_expected_kind": null,
+      "pending_asked_at": null,
+      "pending_reask_count": 0,
+      "deferred_intent": null
+    }
+  }
+}
