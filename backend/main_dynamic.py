@@ -1322,27 +1322,8 @@ def get_next_flow_step(current_flow_state: FlowState,
         logger.info(
             f"FLOW_NAVIGATION: Found current step data: {current_step_data}")
         
-        # Update orchestrator profile with flow response (after current_step_data is defined)
-        if conversational_orchestrator:
-            try:
-                # Extract structured data if possible
-                extracted_value = None
-                if current_step_data.get("type") == "question":
-                    # Try to extract structured data using LLM
-                    from backend.llm_utils import extract_answer_with_llm
-                    try:
-                        extracted_value = extract_answer_with_llm(user_response)
-                    except:
-                        pass  # Fall back to raw response
-                
-                conversational_orchestrator.update_profile_from_flow_response(
-                    room_name=room_name or "unknown_room",
-                    step_name=current_flow_state.current_step,
-                    user_response=user_response,
-                    extracted_value=extracted_value
-                )
-            except Exception as e:
-                logger.warning(f"🧠 ORCHESTRATOR: Failed to update profile from flow response: {e}")
+        # Note: Orchestrator profile updates are handled in process_flow_message
+        # to avoid duplicate processing and ensure proper context
     
     if not current_step_data:
         logger.info("FLOW_NAVIGATION: ❌ Current step data not found")
@@ -1750,7 +1731,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     "conversation_history": flow_state.conversation_history,
                     "current_flow": flow_state.current_flow,
                     "current_step": flow_state.current_step,
-                    "profile": user_profile.dict() if user_profile else {}
+                    "profile": user_profile.to_dict() if user_profile else {}
                 }
                 
                 dynamic_response = await generate_conversational_response(user_message, conversational_context)
@@ -1779,7 +1760,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     "conversation_history": flow_state.conversation_history,
                     "current_flow": flow_state.current_flow,
                     "current_step": flow_state.current_step,
-                    "profile": user_profile.dict() if user_profile else {},
+                    "profile": user_profile.to_dict() if user_profile else {},
                     "refusal_context": True,
                     "skipped_fields": decision.skip_fields or []
                 }
@@ -1803,7 +1784,7 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                     "conversation_history": flow_state.conversation_history,
                     "current_flow": flow_state.current_flow,
                     "current_step": flow_state.current_step,
-                    "profile": user_profile.dict() if user_profile else {},
+                    "profile": user_profile.to_dict() if user_profile else {},
                     "uncertainty_context": True
                 }
                 
