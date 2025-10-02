@@ -19,6 +19,8 @@ This backend provides the core functionality for the LiveKit-based voice agent s
 - **🔄 Smart Flow Management**: Context-aware intent detection and flow progression
 - **🎤 Voice Integration**: Cartesia TTS with real-time voice switching and caching
 - **📊 User Profile Management**: Comprehensive user data extraction and profile tracking
+- **💾 Local Persistence**: User profiles and flow states saved to JSON files for debugging
+- **🐛 Debug System**: Comprehensive logging and API endpoints for testing and analysis
 - **🚀 Production Ready**: Clean, maintainable code with no redundant systems
 
 ## 🤖 LLM Utilities (`llm_utils.py`)
@@ -83,9 +85,11 @@ The system uses a hybrid approach combining:
 
 ### Flow State Management
 
-- **Persistent Storage**: Flow states saved to `flow_states/` directory
+- **Persistent Storage**: Flow states saved to `persistence/flow_states/` directory
 - **Session Tracking**: Each room maintains its own flow state
 - **Recovery**: Automatic flow state restoration on reconnection
+- **User Profile Persistence**: User data extracted by orchestrator saved to `persistence/user_profiles/`
+- **Debug Logging**: Comprehensive logs saved to `persistence/debug_logs/` for analysis
 
 ## 🚀 Current System Features
 
@@ -143,6 +147,11 @@ The system uses a hybrid approach combining:
 ### Flow Processing
 - `POST /api/process_flow_message` - Process user messages through flows
 
+### Debug & Testing
+- `GET /api/debug/rooms` - List all rooms with saved data
+- `GET /api/debug/room/{room_name}` - Get debug data for specific room
+- `DELETE /api/debug/room/{room_name}` - Clear debug data for specific room
+
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -194,6 +203,58 @@ python worker/main_flow_based.py
 - **Simplified Architecture**: Direct function calls, no wrappers
 - **Clean APIs**: Optimized function signatures
 - **Reduced Complexity**: Easier maintenance and debugging
+
+## 💾 Local Persistence System
+
+### Overview
+The system automatically saves conversation data to JSON files for debugging, testing, and analysis:
+
+```
+backend/persistence/
+├── flow_states/          # Flow state JSON files
+├── user_profiles/        # User profile JSON files  
+└── debug_logs/          # Debug logs for analysis
+```
+
+### User Profile Persistence
+- **Automatic Saving**: User profiles saved after every orchestrator decision
+- **Data Extracted**: Name, email, phone, company, role, budget, preferences, refused fields, objectives
+- **Context Preservation**: Profiles persist across conversations for 24 hours
+- **Smart Loading**: Existing profiles loaded and merged with new data
+
+### Flow State Persistence
+- **Enhanced Structure**: Organized in dedicated directory
+- **Complete State**: Current flow, step, conversation history, user responses
+- **Automatic Cleanup**: Old files (>24 hours) automatically removed
+
+### Debug Logging
+- **Orchestrator Decisions**: Every decision with reasoning and confidence
+- **User Data Extraction**: What data was extracted from each message
+- **Flow Progression**: How flows are progressing and why
+- **Timestamped Logs**: Easy to track conversation flow
+
+### Debug API Endpoints
+
+#### View Room Data
+```bash
+GET /api/debug/room/{room_name}
+```
+Returns:
+- Flow state (current flow, step, conversation history)
+- User profile (collected info, preferences, refused fields)
+- Debug logs (last 10 logs with timestamps)
+
+#### List All Rooms
+```bash
+GET /api/debug/rooms
+```
+Returns all rooms with saved data
+
+#### Clear Room Data
+```bash
+DELETE /api/debug/room/{room_name}
+```
+Clears all debug data for a specific room
 
 ## 🔍 Logging
 

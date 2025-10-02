@@ -38,17 +38,22 @@ The Conversational Orchestrator is an intelligent layer designed to transform yo
 - ✅ Orchestrator initializes successfully
 - ✅ Intent detection after greeting (N/A step fix)
 - ✅ Basic FAQ and flow functionality
+- ✅ User profile persistence and loading
+- ✅ Debug logging and API endpoints
+- ✅ Flow progression with refusal handling
 
 ### **What Doesn't Work Yet:**
-- ❌ Intelligent conversation routing
-- ❌ User profile-based decisions
-- ❌ Refusal handling
-- ❌ Conversation memory
+- ❌ Full intelligent conversation routing (partially working)
+- ❌ Complete user profile-based decisions (basic functionality working)
+- ❌ Advanced refusal handling (basic functionality working)
+- ❌ Full conversation memory (basic persistence working)
 
 ### **Current Behavior:**
 - After greeting: Users can say "I want sales info" → Routes to sales flow ✅
-- General questions: "What does Alive5 do?" → FAQ (but not intelligently routed) ⚠️
-- Refusals: "I don't want to share that" → Still asks again ❌
+- General questions: "What does Alive5 do?" → FAQ (intelligently routed) ✅
+- Refusals: "I don't want to share that" → Acknowledges and continues flow ✅
+- User data extraction: Automatically extracts and saves user information ✅
+- Flow progression: Properly handles refusals and moves to next questions ✅
 
 ---
 
@@ -319,6 +324,88 @@ The orchestrator uses GPT-4 with:
 - **Temperature**: 0.3 (more consistent decisions)
 - **Max Tokens**: 500 (detailed reasoning)
 - **Context Window**: Last 10 messages
+
+---
+
+## 💾 **Local Persistence & Debug System**
+
+### **Automatic Data Saving**
+The orchestrator automatically saves conversation data to JSON files for debugging and testing:
+
+```
+backend/persistence/
+├── user_profiles/        # User profile data extracted by orchestrator
+├── flow_states/          # Current conversation flow state
+└── debug_logs/          # Orchestrator decisions and reasoning
+```
+
+### **User Profile Persistence**
+- **Automatic Saving**: Profiles saved after every orchestrator decision
+- **Data Extracted**: Name, email, phone, company, role, budget, preferences, refused fields, objectives
+- **Context Preservation**: Profiles persist across conversations for 24 hours
+- **Smart Loading**: Existing profiles loaded and merged with new data
+
+### **Debug API Endpoints**
+
+#### View Room Data
+```bash
+GET /api/debug/room/{room_name}
+```
+Returns:
+- Flow state (current flow, step, conversation history)
+- User profile (collected info, preferences, refused fields)
+- Debug logs (last 10 logs with timestamps)
+
+#### List All Rooms
+```bash
+GET /api/debug/rooms
+```
+Returns all rooms with saved data
+
+#### Clear Room Data
+```bash
+DELETE /api/debug/room/{room_name}
+```
+Clears all debug data for a specific room
+
+### **What You Can Debug**
+- **User Data Extraction**: See what information was extracted from user messages
+- **Orchestrator Decisions**: Understand why the system made specific routing decisions
+- **Flow Progression**: Track how conversations flow through different steps
+- **Refusal Handling**: See how the system handles user refusals and preferences
+- **Context Preservation**: Verify that conversation context is maintained
+
+### **Example Debug Data**
+
+#### User Profile Example:
+```json
+{
+  "collected_info": {
+    "name": "John",
+    "company": "Acme Corp",
+    "role": "Marketing Manager"
+  },
+  "refused_fields": ["phone"],
+  "objectives": ["get_sales_info"],
+  "preferences": ["prefers_privacy"],
+  "interaction_count": 5
+}
+```
+
+#### Debug Log Example:
+```json
+{
+  "log_type": "orchestrator_decision",
+  "data": {
+    "user_message": "I'm not comfortable giving my name",
+    "decision": {
+      "action": "handle_conversationally",
+      "reasoning": "User refusing to provide name, acknowledge and move to next question",
+      "confidence": 0.98
+    }
+  }
+}
+```
 
 ---
 

@@ -49,6 +49,22 @@ from backend.conversational_orchestrator import (
 current_dir = Path(__file__).parent
 
 # =============================================================================
+# PERSISTENCE CONFIGURATION
+# =============================================================================
+
+# Create persistence directories
+PERSISTENCE_DIR = current_dir / "persistence"
+FLOW_STATES_DIR = PERSISTENCE_DIR / "flow_states"
+USER_PROFILES_DIR = PERSISTENCE_DIR / "user_profiles"
+DEBUG_LOGS_DIR = PERSISTENCE_DIR / "debug_logs"
+
+# Ensure directories exist
+PERSISTENCE_DIR.mkdir(exist_ok=True)
+FLOW_STATES_DIR.mkdir(exist_ok=True)
+USER_PROFILES_DIR.mkdir(exist_ok=True)
+DEBUG_LOGS_DIR.mkdir(exist_ok=True)
+
+# =============================================================================
 # VOICE CACHING UTILITIES
 # =============================================================================
 VOICE_CACHE_FILE = current_dir / "cached_voices.json"
@@ -362,7 +378,136 @@ class FlowResponse(BaseModel):
     current_flow_state: Optional[FlowState] = None
     conversation_history: Optional[List[Dict[str, str]]] = None
 
-# Local file-based persistence functions
+# =============================================================================
+# USER PROFILE PERSISTENCE FUNCTIONS
+# =============================================================================
+
+def save_user_profile_to_file(room_name: str, user_profile) -> bool:
+    """Save user profile to local JSON file for debugging and testing"""
+    try:
+        # Sanitize room name for filename
+        safe_room_name = "".join(
+            c for c in room_name if c.isalnum() or c in ('-', '_')).rstrip()
+        file_path = USER_PROFILES_DIR / f"{safe_room_name}.json"
+        
+        # Convert UserProfile to dict
+        profile_data = {
+            "collected_info": user_profile.collected_info,
+            "preferences": user_profile.preferences,
+            "refused_fields": user_profile.refused_fields,
+            "skipped_fields": user_profile.skipped_fields,
+            "objectives": user_profile.objectives,
+            "conversation_summary": user_profile.conversation_summary,
+            "first_seen": user_profile.first_seen,
+            "last_updated": user_profile.last_updated,
+            "interaction_count": user_profile.interaction_count,
+            "saved_at": time.time()
+        }
+        
+        with open(file_path, 'w') as f:
+            json.dump(profile_data, f, indent=2)
+        
+        logger.info(f"👤 USER PROFILE: Saved profile for room {room_name} to {file_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"👤 USER PROFILE: Error saving profile: {e}")
+        return False
+
+
+def load_user_profile_from_file(room_name: str):
+    """Load user profile from local JSON file"""
+    try:
+        # Sanitize room name for filename
+        safe_room_name = "".join(
+            c for c in room_name if c.isalnum() or c in ('-', '_')).rstrip()
+        file_path = USER_PROFILES_DIR / f"{safe_room_name}.json"
+        
+        if not file_path.exists():
+            logger.info(f"👤 USER PROFILE: No profile file found for room {room_name}")
+            return None
+        
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        
+        # Check if file is too old (older than 24 hours)
+        saved_at = data.get("saved_at", 0)
+        if time.time() - saved_at > 24 * 60 * 60:  # 24 hours
+            logger.info(f"👤 USER PROFILE: Profile for room {room_name} is too old, ignoring")
+            file_path.unlink()  # Clean up old file
+            return None
+        
+        # Import here to avoid circular dependency
+        from backend.conversational_orchestrator import UserProfile
+        
+        user_profile = UserProfile(
+            collected_info=data.get("collected_info", {}),
+            preferences=data.get("preferences", []),
+            refused_fields=data.get("refused_fields", []),
+            skipped_fields=data.get("skipped_fields", []),
+            objectives=data.get("objectives", []),
+            conversation_summary=data.get("conversation_summary", ""),
+            first_seen=data.get("first_seen", time.time()),
+            last_updated=data.get("last_updated", time.time()),
+            interaction_count=data.get("interaction_count", 0)
+        )
+        
+        logger.info(f"👤 USER PROFILE: Loaded profile for room {room_name} from {file_path}")
+        return user_profile
+        
+    except Exception as e:
+        logger.error(f"👤 USER PROFILE: Error loading profile: {e}")
+        return None
+
+
+def delete_user_profile_from_file(room_name: str) -> bool:
+    """Delete user profile from local JSON file"""
+    try:
+        safe_room_name = "".join(
+            c for c in room_name if c.isalnum() or c in ('-', '_')).rstrip()
+        file_path = USER_PROFILES_DIR / f"{safe_room_name}.json"
+        
+        if file_path.exists():
+            file_path.unlink()
+            logger.info(f"👤 USER PROFILE: Deleted profile file for room {room_name}")
+            return True
+        return False
+        
+    except Exception as e:
+        logger.error(f"👤 USER PROFILE: Error deleting profile: {e}")
+        return False
+
+
+# =============================================================================
+# DEBUG LOGGING FUNCTIONS
+# =============================================================================
+
+def save_debug_log(room_name: str, log_type: str, data: Dict[str, Any]) -> bool:
+    """Save debug information to JSON file for testing and analysis"""
+    try:
+        # Sanitize room name for filename
+        safe_room_name = "".join(
+            c for c in room_name if c.isalnum() or c in ('-', '_')).rstrip()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = DEBUG_LOGS_DIR / f"{safe_room_name}_{log_type}_{timestamp}.json"
+        
+        # Add metadata
+        debug_data = {
+            "room_name": room_name,
+            "log_type": log_type,
+            "timestamp": datetime.now().isoformat(),
+            "data": data
+        }
+        
+        with open(file_path, 'w') as f:
+            json.dump(debug_data, f, indent=2)
+        
+        logger.info(f"🐛 DEBUG LOG: Saved {log_type} log for room {room_name} to {file_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"🐛 DEBUG LOG: Error saving debug log: {e}")
+        return False
 
 
 # =============================================================================
@@ -376,7 +521,7 @@ def save_flow_state_to_file(room_name: str, flow_state: FlowState) -> bool:
         safe_room_name = "".join(
             c for c in room_name if c.isalnum() or c in (
                 '-', '_')).rstrip()
-        file_path = os.path.join(PERSISTENCE_DIR, f"{safe_room_name}.json")
+        file_path = FLOW_STATES_DIR / f"{safe_room_name}.json"
         
         # Convert FlowState to dict
         data = {
@@ -412,9 +557,9 @@ def load_flow_state_from_file(room_name: str) -> Optional[FlowState]:
         safe_room_name = "".join(
             c for c in room_name if c.isalnum() or c in (
                 '-', '_')).rstrip()
-        file_path = os.path.join(PERSISTENCE_DIR, f"{safe_room_name}.json")
+        file_path = FLOW_STATES_DIR / f"{safe_room_name}.json"
         
-        if not os.path.exists(file_path):
+        if not file_path.exists():
             logger.info(
                 f"PERSISTENCE: No flow state file found for room {room_name}")
             return None
@@ -427,7 +572,7 @@ def load_flow_state_from_file(room_name: str) -> Optional[FlowState]:
         if time.time() - saved_at > 24 * 60 * 60:  # 24 hours
             logger.info(
                 f"PERSISTENCE: Flow state for room {room_name} is too old, ignoring")
-            os.remove(file_path)  # Clean up old file
+            file_path.unlink()  # Clean up old file
             return None
         
         flow_state = FlowState(
@@ -459,10 +604,10 @@ def delete_flow_state_from_file(room_name: str) -> bool:
         safe_room_name = "".join(
             c for c in room_name if c.isalnum() or c in (
                 '-', '_')).rstrip()
-        file_path = os.path.join(PERSISTENCE_DIR, f"{safe_room_name}.json")
+        file_path = FLOW_STATES_DIR / f"{safe_room_name}.json"
         
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if file_path.exists():
+            file_path.unlink()
             logger.info(
                 f"PERSISTENCE: Deleted flow state file for room {room_name}")
         else:
@@ -662,6 +807,119 @@ def health_check():
         "active_sessions": len(active_sessions),
         "timestamp": time.time()
     }
+
+
+@app.get("/api/debug/room/{room_name}")
+async def get_room_debug_data(room_name: str):
+    """Get debug data for a specific room (flow state, user profile, debug logs)"""
+    try:
+        # Load flow state
+        flow_state = load_flow_state_from_file(room_name)
+        
+        # Load user profile
+        user_profile = load_user_profile_from_file(room_name)
+        
+        # Get debug logs for this room
+        debug_logs = []
+        if DEBUG_LOGS_DIR.exists():
+            for log_file in DEBUG_LOGS_DIR.glob(f"{room_name}_*.json"):
+                try:
+                    with open(log_file, 'r') as f:
+                        log_data = json.load(f)
+                        debug_logs.append({
+                            "file": log_file.name,
+                            "timestamp": log_data.get("timestamp"),
+                            "log_type": log_data.get("log_type"),
+                            "data": log_data.get("data")
+                        })
+                except Exception as e:
+                    logger.error(f"Error reading debug log {log_file}: {e}")
+        
+        # Sort debug logs by timestamp (newest first)
+        debug_logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        
+        return {
+            "room_name": room_name,
+            "flow_state": flow_state.dict() if flow_state else None,
+            "user_profile": user_profile.to_dict() if user_profile else None,
+            "debug_logs": debug_logs[:10],  # Last 10 logs
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting debug data for room {room_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/debug/rooms")
+async def list_all_rooms():
+    """List all rooms with saved data"""
+    try:
+        rooms = set()
+        
+        # Get rooms from flow states
+        if FLOW_STATES_DIR.exists():
+            for file in FLOW_STATES_DIR.glob("*.json"):
+                room_name = file.stem
+                rooms.add(room_name)
+        
+        # Get rooms from user profiles
+        if USER_PROFILES_DIR.exists():
+            for file in USER_PROFILES_DIR.glob("*.json"):
+                room_name = file.stem
+                rooms.add(room_name)
+        
+        # Get rooms from debug logs
+        if DEBUG_LOGS_DIR.exists():
+            for file in DEBUG_LOGS_DIR.glob("*.json"):
+                # Extract room name from filename (format: roomname_logtype_timestamp.json)
+                parts = file.stem.split("_")
+                if len(parts) >= 1:
+                    room_name = parts[0]
+                    rooms.add(room_name)
+        
+        return {
+            "rooms": sorted(list(rooms)),
+            "total_rooms": len(rooms),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing rooms: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/debug/room/{room_name}")
+async def clear_room_debug_data(room_name: str):
+    """Clear all debug data for a specific room"""
+    try:
+        # Delete flow state
+        flow_deleted = delete_flow_state_from_file(room_name)
+        
+        # Delete user profile
+        profile_deleted = delete_user_profile_from_file(room_name)
+        
+        # Delete debug logs
+        logs_deleted = 0
+        if DEBUG_LOGS_DIR.exists():
+            for log_file in DEBUG_LOGS_DIR.glob(f"{room_name}_*.json"):
+                try:
+                    log_file.unlink()
+                    logs_deleted += 1
+                except Exception as e:
+                    logger.error(f"Error deleting debug log {log_file}: {e}")
+        
+        return {
+            "room_name": room_name,
+            "flow_state_deleted": flow_deleted,
+            "user_profile_deleted": profile_deleted,
+            "debug_logs_deleted": logs_deleted,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error clearing debug data for room {room_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================
@@ -1378,8 +1636,8 @@ def get_next_flow_step(current_flow_state: FlowState,
     # Let the orchestrator handle all user responses intelligently
     # No hardcoded refusal detection - let LLM decide
     
-    # Check for next_flow (only if no answers were matched)
-    if current_step_data.get("next_flow") and not user_response:
+    # Check for next_flow (for questions without answers or when user provides any response)
+    if current_step_data.get("next_flow"):
         next_flow_name = current_step_data['next_flow'].get('name')
         logger.info(f"FLOW_NAVIGATION: ✅ Found next_flow: {next_flow_name}")
         
@@ -1388,11 +1646,13 @@ def get_next_flow_step(current_flow_state: FlowState,
             logger.info("FLOW_NAVIGATION: Next flow is 'N/A' - transitioning to orchestrator for intent detection")
             return None  # Return None to let orchestrator handle it
         
-        return {
-            "type": "next_step",
-            "step_data": current_step_data["next_flow"],
-            "step_name": next_flow_name
-        }
+        # If this is a question without answers, or user provided a response, progress to next step
+        if not current_step_data.get("answers") or user_response:
+            return {
+                "type": "next_step",
+                "step_data": current_step_data["next_flow"],
+                "step_name": next_flow_name
+            }
     
     logger.info("FLOW_NAVIGATION: ❌ No next step found")
     return None
@@ -1687,8 +1947,22 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
         try:
             logger.info("🧠 ORCHESTRATOR: Processing message with intelligent routing")
             
-            # Create user profile from flow state
+            # Create or load user profile from flow state
             user_profile = conversational_orchestrator.get_or_create_profile(room_name)
+            
+            # Try to load existing profile from file for persistence
+            existing_profile = load_user_profile_from_file(room_name)
+            if existing_profile:
+                logger.info(f"👤 USER PROFILE: Loaded existing profile for {room_name}")
+                # Merge existing profile data
+                for key, value in existing_profile.collected_info.items():
+                    user_profile.add_collected_info(key, value)
+                for field in existing_profile.refused_fields:
+                    user_profile.add_refused_field(field)
+                for field in existing_profile.skipped_fields:
+                    user_profile.add_skipped_field(field)
+                for objective in existing_profile.objectives:
+                    user_profile.add_objective(objective)
             
             # Extract user data from message and update orchestrator profile
             from backend.llm_utils import extract_user_data_with_llm
@@ -1697,6 +1971,13 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
                 logger.info(f"🧠 ORCHESTRATOR: Extracted user data: {extracted_user_data}")
                 for key, value in extracted_user_data.items():
                     user_profile.add_collected_info(key, value)
+                
+                # Save debug log for extracted data
+                save_debug_log(room_name, "user_data_extraction", {
+                    "user_message": user_message,
+                    "extracted_data": extracted_user_data,
+                    "profile_state": user_profile.to_dict()
+                })
                 
                 # Also update session data for consistency
                 if room_name in active_sessions:
@@ -1718,6 +1999,22 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             
             logger.info(f"🧠 ORCHESTRATOR: Decision - {decision.action} (confidence: {decision.confidence})")
             logger.info(f"🧠 ORCHESTRATOR: Reasoning - {decision.reasoning}")
+            
+            # Save user profile after processing (for persistence)
+            save_user_profile_to_file(room_name, user_profile)
+            
+            # Save debug log for orchestrator decision
+            save_debug_log(room_name, "orchestrator_decision", {
+                "user_message": user_message,
+                "decision": {
+                    "action": decision.action.value,
+                    "reasoning": decision.reasoning,
+                    "flow_to_execute": getattr(decision, 'flow_to_execute', None),
+                    "confidence": decision.confidence
+                },
+                "profile_state": user_profile.to_dict(),
+                "flow_state": flow_state.dict() if flow_state else None
+            })
             
             # Execute the orchestrator's decision
             if decision.action == OrchestratorAction.USE_FAQ:
@@ -1760,34 +2057,62 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
             elif decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY:
                 logger.info("🧠 ORCHESTRATOR: Handling conversationally")
                 
-                # Generate dynamic, natural conversational response with flow progression
-                from backend.llm_utils import generate_conversational_response_with_flow_progression
+                # Check if we're in a flow and should progress after refusal
+                if flow_state.current_flow and flow_state.current_step:
+                    # Try to progress the flow first
+                    next_step = get_next_flow_step(flow_state, user_message, room_name)
+                    if next_step and next_step.get("type") == "next_step":
+                        logger.info("🧠 ORCHESTRATOR: Progressing flow after conversational handling")
+                        
+                        # Update flow state to the next step
+                        step_data = next_step.get("step_data")
+                        if step_data:
+                            flow_state.current_step = step_data.get("name", flow_state.current_step)
+                            flow_state.flow_data = step_data
+                            auto_save_flow_state()
+                            
+                            # Get the response text from the next step
+                            response_text = step_data.get("text", "")
+                            
+                            # Generate a conversational response for the refusal
+                            from backend.llm_utils import generate_conversational_response
+                            conversational_context = {
+                                "user_message": user_message,
+                                "conversation_history": flow_state.conversation_history,
+                                "current_flow": flow_state.current_flow,
+                                "current_step": flow_state.current_step,
+                                "profile": user_profile.to_dict() if user_profile else {},
+                                "refusal_context": True
+                            }
+                            
+                            refusal_response = await generate_conversational_response(user_message, conversational_context)
+                            
+                            # Combine the refusal response with the next question
+                            combined_response = f"{refusal_response} {response_text}"
+                            add_agent_response_to_history(flow_state, combined_response)
+                            return {
+                                "type": "flow_response",
+                                "response": combined_response,
+                                "next_step": step_data,
+                                "flow_state": flow_state
+                            }
+                
+                # Generate dynamic, natural conversational response
+                from backend.llm_utils import generate_conversational_response
                 conversational_context = {
                     "user_message": user_message,
                     "conversation_history": flow_state.conversation_history,
                     "current_flow": flow_state.current_flow,
                     "current_step": flow_state.current_step,
                     "profile": user_profile.to_dict() if user_profile else {}
-                    # Let LLM determine if this is a refusal based on the message content
                 }
                 
-                result = await generate_conversational_response_with_flow_progression(
-                    user_message, conversational_context, flow_state, room_name
-                )
-                
-                dynamic_response = result["response"]
-                updated_flow_state = result["flow_state"]
-                flow_progressed = result.get("flow_progressed", False)
-                
-                add_agent_response_to_history(updated_flow_state, dynamic_response)
-                
-                if flow_progressed:
-                    logger.info("🧠 ORCHESTRATOR: Flow progressed after conversational handling")
-                
+                response = await generate_conversational_response(user_message, conversational_context)
+                add_agent_response_to_history(flow_state, response)
                 return {
                     "type": "conversational_response",
-                    "response": dynamic_response,
-                    "flow_state": updated_flow_state
+                    "response": response,
+                    "flow_state": flow_state
                 }
                     
             elif decision.action == OrchestratorAction.HANDLE_REFUSAL:

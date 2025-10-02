@@ -382,7 +382,7 @@ async def generate_conversational_response_with_flow_progression(user_message: s
             (context.get('refusal_context', False) or is_refusal)):
             
             # Import here to avoid circular dependency
-            from backend.main_dynamic import get_next_flow_step, auto_save_flow_state
+            from backend.main_dynamic import get_next_flow_step, save_flow_state_to_file
             
             try:
                 # Try to get the next step in the flow
@@ -393,7 +393,7 @@ async def generate_conversational_response_with_flow_progression(user_message: s
                     # Update flow state to next step
                     flow_state.current_step = next_step["step_name"]
                     flow_state.flow_data = next_step["step_data"]
-                    auto_save_flow_state()
+                    save_flow_state_to_file(room_name, flow_state)
                     
                     # Get the next question
                     next_question = next_step["step_data"].get("text", "")
