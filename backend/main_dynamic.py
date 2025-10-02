@@ -1682,6 +1682,126 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     if len(flow_state.conversation_history) > 10:
         flow_state.conversation_history = flow_state.conversation_history[-10:]
     
+    # 🧠 ORCHESTRATOR INTEGRATION: Use intelligent routing for all conversations
+    if conversational_orchestrator:
+        try:
+            logger.info("🧠 ORCHESTRATOR: Processing message with intelligent routing")
+            
+            # Create user profile from flow state
+            user_profile = conversational_orchestrator.get_user_profile(room_name)
+            
+            # Build context for orchestrator decision
+            context = {
+                "user_message": user_message,
+                "profile": user_profile.to_dict(),
+                "conversation_history": flow_state.conversation_history[-5:],  # Last 5 messages
+                "current_flow": flow_state.current_flow,
+                "current_step": flow_state.current_step,
+                "current_question": flow_state.flow_data.get("text") if flow_state.flow_data else None,
+                "expected_answers": list(flow_state.flow_data.get("answers", {}).keys()) if flow_state.flow_data and flow_state.flow_data.get("answers") else None,
+                "faq_available": True,
+                "available_flows": list(conversational_orchestrator.available_flows.keys())
+            }
+            
+            # Get intelligent decision from orchestrator
+            decision = await conversational_orchestrator.process_message(context)
+            
+            logger.info(f"🧠 ORCHESTRATOR: Decision - {decision.action} (confidence: {decision.confidence})")
+            logger.info(f"🧠 ORCHESTRATOR: Reasoning - {decision.reasoning}")
+            
+            # Execute the orchestrator's decision
+            if decision.action == OrchestratorAction.USE_FAQ:
+                logger.info("🧠 ORCHESTRATOR: Routing to FAQ bot")
+                return await get_faq_response(user_message, flow_state=flow_state)
+                
+            elif decision.action == OrchestratorAction.EXECUTE_FLOW:
+                logger.info(f"🧠 ORCHESTRATOR: Executing flow - {decision.flow_to_execute}")
+                # Find and execute the specified flow
+                if decision.flow_to_execute in conversational_orchestrator.available_flows:
+                    flow_data = conversational_orchestrator.available_flows[decision.flow_to_execute]
+                    flow_state.current_flow = flow_data["key"]
+                    flow_state.current_step = flow_data["data"]["name"]
+                    flow_state.flow_data = flow_data["data"]
+                    auto_save_flow_state()
+                    
+                    # Check if flow has next_flow and auto-transition
+                    next_flow = flow_data["data"].get("next_flow")
+                    if next_flow:
+                        flow_state.current_step = next_flow.get("name")
+                        flow_state.flow_data = next_flow
+                        auto_save_flow_state()
+                        response_text = next_flow.get("text", "")
+                    else:
+                        response_text = flow_data["data"].get("text", "")
+                    
+                    add_agent_response_to_history(flow_state, response_text)
+                    
+                    return {
+                        "type": "flow_started",
+                        "flow_name": decision.flow_to_execute,
+                        "response": response_text,
+                        "next_step": next_flow.get("next_flow") if next_flow else None,
+                        "flow_state": flow_state
+                    }
+                else:
+                    logger.warning(f"🧠 ORCHESTRATOR: Flow '{decision.flow_to_execute}' not found, falling back to FAQ")
+                    return await get_faq_response(user_message, flow_state=flow_state)
+                    
+            elif decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY:
+                logger.info("🧠 ORCHESTRATOR: Handling conversationally")
+                if decision.response:
+                    add_agent_response_to_history(flow_state, decision.response)
+                    return {
+                        "type": "conversational_response",
+                        "response": decision.response,
+                        "flow_state": flow_state
+                    }
+                else:
+                    # Fall back to FAQ for conversational responses
+                    return await get_faq_response(user_message, flow_state=flow_state)
+                    
+            elif decision.action == OrchestratorAction.HANDLE_REFUSAL:
+                logger.info("🧠 ORCHESTRATOR: Handling refusal gracefully")
+                if decision.response:
+                    add_agent_response_to_history(flow_state, decision.response)
+                    # Update user profile with refused fields
+                    if decision.skip_fields:
+                        user_profile.add_refused_fields(decision.skip_fields)
+                    if decision.profile_updates:
+                        user_profile.update_profile(decision.profile_updates)
+                    conversational_orchestrator.save_user_profile(room_name, user_profile)
+                    
+                    return {
+                        "type": "refusal_handled",
+                        "response": decision.response,
+                        "flow_state": flow_state
+                    }
+                else:
+                    # Fall back to FAQ
+                    return await get_faq_response(user_message, flow_state=flow_state)
+                    
+            elif decision.action == OrchestratorAction.HANDLE_UNCERTAINTY:
+                logger.info("🧠 ORCHESTRATOR: Handling uncertainty")
+                if decision.response:
+                    add_agent_response_to_history(flow_state, decision.response)
+                    return {
+                        "type": "uncertainty_handled",
+                        "response": decision.response,
+                        "flow_state": flow_state
+                    }
+                else:
+                    # Fall back to FAQ
+                    return await get_faq_response(user_message, flow_state=flow_state)
+            
+            # If we get here, orchestrator didn't provide a clear action, continue with legacy logic
+            logger.info("🧠 ORCHESTRATOR: No clear action, continuing with legacy flow logic")
+            
+        except Exception as e:
+            logger.error(f"🧠 ORCHESTRATOR: Error in orchestrator processing: {e}")
+            logger.info("🧠 ORCHESTRATOR: Falling back to legacy flow logic")
+    else:
+        logger.info("🧠 ORCHESTRATOR: Not available, using legacy flow logic")
+    
     # Global farewell detection to gracefully end calls regardless of step type
     um_low = (user_message or "").lower().strip()
     farewell_markers = [

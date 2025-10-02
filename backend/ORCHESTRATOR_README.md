@@ -2,7 +2,9 @@
 
 ## **The Intelligent Brain of Your Voice Agent**
 
-The Conversational Orchestrator is a revolutionary intelligent layer that transforms your voice agent from a rigid flow-based system into a natural, context-aware conversational AI.
+The Conversational Orchestrator is an intelligent layer designed to transform your voice agent from a rigid flow-based system into a natural, context-aware conversational AI.
+
+> **⚠️ CURRENT STATUS:** The orchestrator is **partially integrated**. See `ORCHESTRATOR_STATUS.md` for accurate current status.
 
 ---
 
@@ -16,13 +18,37 @@ The Conversational Orchestrator is a revolutionary intelligent layer that transf
 - ❌ Poor context awareness
 - ❌ Robotic, script-like conversations
 
-### **After Orchestrator:**
+### **After Orchestrator (When Fully Integrated):**
 - ✅ Intelligent routing between FAQ, flows, and conversation
 - ✅ Remembers everything about the user
 - ✅ Gracefully handles refusals and uncertainty
 - ✅ Seamlessly integrates FAQ bot with flows
 - ✅ Rich context awareness across entire conversation
 - ✅ Natural, human-like interactions
+
+> **Note:** These features require full integration into the main conversation flow.
+
+---
+
+## 📊 **Current Status**
+
+**See `ORCHESTRATOR_STATUS.md` for detailed current status.**
+
+### **What Works Now:**
+- ✅ Orchestrator initializes successfully
+- ✅ Intent detection after greeting (N/A step fix)
+- ✅ Basic FAQ and flow functionality
+
+### **What Doesn't Work Yet:**
+- ❌ Intelligent conversation routing
+- ❌ User profile-based decisions
+- ❌ Refusal handling
+- ❌ Conversation memory
+
+### **Current Behavior:**
+- After greeting: Users can say "I want sales info" → Routes to sales flow ✅
+- General questions: "What does Alive5 do?" → FAQ (but not intelligently routed) ⚠️
+- Refusals: "I don't want to share that" → Still asks again ❌
 
 ---
 
