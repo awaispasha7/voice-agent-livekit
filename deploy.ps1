@@ -1,8 +1,33 @@
-# Smart deployment script - only copy missing/changed files
-Write-Host "Alive5 Voice Agent - Smart Deployment" -ForegroundColor Green
-Write-Host "=====================================" -ForegroundColor Green
+# Smart deployment script with interactive deployment choice
+Write-Host "Alive5 Voice Agent - Interactive Smart Deployment" -ForegroundColor Green
+Write-Host "===============================================" -ForegroundColor Green
 Write-Host "Server: 18.210.238.67" -ForegroundColor Yellow
 Write-Host "User: ubuntu" -ForegroundColor Yellow
+Write-Host ""
+
+# Ask user what they want to deploy
+Write-Host "What would you like to deploy?" -ForegroundColor Cyan
+Write-Host "1. Backend only (backend/ directory)" -ForegroundColor White
+Write-Host "2. Worker only (backend/worker/ directory)" -ForegroundColor White
+Write-Host "3. Backend + Worker (backend/ directory including worker)" -ForegroundColor White
+Write-Host "4. Full directory (all files and directories)" -ForegroundColor White
+Write-Host "5. Full directory with new virtual environment and packages" -ForegroundColor White
+Write-Host ""
+
+do {
+    $choice = Read-Host "Enter your choice (1-5)"
+} while ($choice -notmatch '^[1-5]$')
+
+$deployChoice = switch ($choice) {
+    "1" { "backend" }
+    "2" { "worker" }
+    "3" { "backend_worker" }
+    "4" { "full" }
+    "5" { "full_with_venv" }
+}
+
+Write-Host ""
+Write-Host "Selected deployment: $deployChoice" -ForegroundColor Green
 Write-Host ""
 
 # Check if SSH key exists
@@ -53,44 +78,95 @@ function Sync-File {
     }
 }
 
-# Sync all necessary files and directories
-Write-Host "Syncing application files..." -ForegroundColor Cyan
+# Deploy based on user choice
+Write-Host "Starting deployment based on choice: $deployChoice" -ForegroundColor Cyan
 
-# Core application files
-Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory"
-Sync-Directory "frontend" "/home/ubuntu/alive5-voice-agent/" "Frontend directory"
-Sync-Directory "flow_states" "/home/ubuntu/alive5-voice-agent/" "Flow states directory"
-
-# Configuration files
-Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
-Sync-File "README.md" "/home/ubuntu/alive5-voice-agent/" "README file"
-Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
-
-# Optional directories (if they exist)
-Sync-Directory "docs" "/home/ubuntu/alive5-voice-agent/" "Documentation directory"
-Sync-Directory "KMS" "/home/ubuntu/alive5-voice-agent/" "KMS directory"
+switch ($deployChoice) {
+    "backend" {
+        Write-Host "Deploying Backend Only..." -ForegroundColor Cyan
+        Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory"
+        Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
+        Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
+    }
+    
+    "worker" {
+        Write-Host "Deploying Worker Only..." -ForegroundColor Cyan
+        # For worker only, we need to sync the entire backend directory since worker depends on it
+        Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory (including worker)"
+        Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
+        Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
+    }
+    
+    "backend_worker" {
+        Write-Host "Deploying Backend + Worker..." -ForegroundColor Cyan
+        Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory (including worker)"
+        Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
+        Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
+    }
+    
+    "full" {
+        Write-Host "Deploying Full Directory..." -ForegroundColor Cyan
+        # Core application files
+        Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory"
+        Sync-Directory "frontend" "/home/ubuntu/alive5-voice-agent/" "Frontend directory"
+        Sync-Directory "flow_states" "/home/ubuntu/alive5-voice-agent/" "Flow states directory"
+        
+        # Configuration files
+        Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
+        Sync-File "README.md" "/home/ubuntu/alive5-voice-agent/" "README file"
+        Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
+        
+        # Optional directories (if they exist)
+        Sync-Directory "docs" "/home/ubuntu/alive5-voice-agent/" "Documentation directory"
+        Sync-Directory "KMS" "/home/ubuntu/alive5-voice-agent/" "KMS directory"
+    }
+    
+    "full_with_venv" {
+        Write-Host "Deploying Full Directory with Virtual Environment Setup..." -ForegroundColor Cyan
+        # Core application files
+        Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory"
+        Sync-Directory "frontend" "/home/ubuntu/alive5-voice-agent/" "Frontend directory"
+        Sync-Directory "flow_states" "/home/ubuntu/alive5-voice-agent/" "Flow states directory"
+        
+        # Configuration files
+        Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
+        Sync-File "README.md" "/home/ubuntu/alive5-voice-agent/" "README file"
+        Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
+        
+        # Optional directories (if they exist)
+        Sync-Directory "docs" "/home/ubuntu/alive5-voice-agent/" "Documentation directory"
+        Sync-Directory "KMS" "/home/ubuntu/alive5-voice-agent/" "KMS directory"
+    }
+}
 
 Write-Host "File synchronization completed!" -ForegroundColor Green
 
-# Install the missing package
-Write-Host "Installing python3.12-venv package..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 ubuntu@18.210.238.67 "sudo apt install -y python3.12-venv"
-
-# Stop services
-Write-Host "Stopping services..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl stop alive5-backend alive5-worker 2>/dev/null || true"
-
-# Remove old virtual environment
-Write-Host "Removing old virtual environment..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "cd /home/ubuntu/alive5-voice-agent && rm -rf venv"
-
-# Create new virtual environment
-Write-Host "Creating new virtual environment..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 ubuntu@18.210.238.67 "cd /home/ubuntu/alive5-voice-agent && python3.12 -m venv venv"
-
-# Install packages
-Write-Host "Installing packages..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=120 ubuntu@18.210.238.67 "cd /home/ubuntu/alive5-voice-agent && venv/bin/pip install -r requirements.txt"
+# Virtual environment setup (only for full_with_venv option)
+if ($deployChoice -eq "full_with_venv") {
+    Write-Host "Setting up virtual environment and packages..." -ForegroundColor Cyan
+    
+    # Install the missing package
+    Write-Host "Installing python3.12-venv package..." -ForegroundColor Cyan
+    ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 ubuntu@18.210.238.67 "sudo apt install -y python3.12-venv"
+    
+    # Stop services
+    Write-Host "Stopping services..." -ForegroundColor Cyan
+    ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl stop alive5-backend alive5-worker 2>/dev/null || true"
+    
+    # Remove old virtual environment
+    Write-Host "Removing old virtual environment..." -ForegroundColor Cyan
+    ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "cd /home/ubuntu/alive5-voice-agent && rm -rf venv"
+    
+    # Create new virtual environment
+    Write-Host "Creating new virtual environment..." -ForegroundColor Cyan
+    ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 ubuntu@18.210.238.67 "cd /home/ubuntu/alive5-voice-agent && python3.12 -m venv venv"
+    
+    # Install packages
+    Write-Host "Installing packages..." -ForegroundColor Cyan
+    ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=120 ubuntu@18.210.238.67 "cd /home/ubuntu/alive5-voice-agent && venv/bin/pip install -r requirements.txt"
+} else {
+    Write-Host "Skipping virtual environment setup (not needed for this deployment type)" -ForegroundColor Yellow
+}
 
 # Create and install service files
 Write-Host "Creating service files..." -ForegroundColor Cyan
@@ -139,17 +215,26 @@ WantedBy=multi-user.target
 echo $backendService | ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo tee /etc/systemd/system/alive5-backend.service > /dev/null"
 echo $workerService | ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo tee /etc/systemd/system/alive5-worker.service > /dev/null"
 
-# Start services
-Write-Host "Starting services..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl daemon-reload && sudo systemctl enable alive5-backend alive5-worker && sudo systemctl start alive5-backend alive5-worker"
+# Start services based on deployment choice
+Write-Host "Starting services based on deployment..." -ForegroundColor Cyan
+
+$servicesToStart = switch ($deployChoice) {
+    "backend" { "alive5-backend" }
+    "worker" { "alive5-worker" }
+    "backend_worker" { "alive5-backend alive5-worker" }
+    "full" { "alive5-backend alive5-worker" }
+    "full_with_venv" { "alive5-backend alive5-worker" }
+}
+
+Write-Host "Starting services: $servicesToStart" -ForegroundColor Cyan
+ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl daemon-reload && sudo systemctl enable $servicesToStart && sudo systemctl start $servicesToStart"
 
 # Wait and check
 Write-Host "Waiting for services to start..." -ForegroundColor Cyan
 Start-Sleep -Seconds 15
 
 Write-Host "Checking service status..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl status alive5-backend --no-pager -l"
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl status alive5-worker --no-pager -l"
+ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl status $servicesToStart --no-pager -l"
 
 # Verify files on server
 Write-Host "Verifying files on server..." -ForegroundColor Cyan
@@ -157,5 +242,32 @@ ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "ls -
 
 Write-Host ""
 Write-Host "Smart deployment completed!" -ForegroundColor Green
+Write-Host "Deployed: $deployChoice" -ForegroundColor Cyan
 Write-Host "Backend: http://18.210.238.67" -ForegroundColor Yellow
 Write-Host "Health: http://18.210.238.67/health" -ForegroundColor Yellow
+
+# Show what was deployed
+$deployedItems = switch ($deployChoice) {
+    "backend" { "  - backend/ directory (main backend application)" }
+    "worker" { "  - backend/ directory (including worker)" }
+    "backend_worker" { "  - backend/ directory (including worker)" }
+    "full" { 
+        "  - backend/ directory (main backend application)`n" +
+        "  - frontend/ directory (web interface)`n" +
+        "  - flow_states/ directory (conversation states)`n" +
+        "  - Optional directories (docs/, KMS/)"
+    }
+    "full_with_venv" { 
+        "  - backend/ directory (main backend application)`n" +
+        "  - frontend/ directory (web interface)`n" +
+        "  - flow_states/ directory (conversation states)`n" +
+        "  - Optional directories (docs/, KMS/)`n" +
+        "  - NEW virtual environment created`n" +
+        "  - All packages installed from requirements.txt"
+    }
+}
+
+Write-Host ""
+Write-Host "This deployment included:" -ForegroundColor Yellow
+Write-Host $deployedItems -ForegroundColor Yellow
+Write-Host "  - Configuration files (requirements.txt, .env, README.md)" -ForegroundColor Yellow

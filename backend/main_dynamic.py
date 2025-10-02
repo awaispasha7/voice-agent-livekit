@@ -1673,6 +1673,36 @@ async def process_flow_message(room_name: str, user_message: str, frontend_conve
     if len(flow_state.conversation_history) > 10:
         flow_state.conversation_history = flow_state.conversation_history[-10:]
     
+    # 🔄 FLOW PROGRESSION: First check if user is answering a flow question
+    if flow_state.current_flow and flow_state.current_step:
+        logger.info(f"🔄 FLOW PROGRESSION: User is in active flow '{flow_state.current_flow}', step '{flow_state.current_step}'")
+        
+        # Try to progress the flow with user's response
+        next_step = get_next_flow_step(flow_state, user_message, room_name)
+        if next_step:
+            logger.info(f"🔄 FLOW PROGRESSION: Successfully progressed flow - {next_step.get('type', 'unknown')}")
+            
+            # Update flow state with the next step
+            if next_step.get("next_step"):
+                flow_state.current_step = next_step["next_step"].get("name", flow_state.current_step)
+                flow_state.flow_data = next_step["next_step"]
+                auto_save_flow_state()
+            
+            # Add response to conversation history
+            if next_step.get("response"):
+                add_agent_response_to_history(flow_state, next_step["response"])
+            
+            return {
+                "type": next_step.get("type", "flow_response"),
+                "response": next_step.get("response", ""),
+                "next_step": next_step.get("next_step"),
+                "flow_state": flow_state
+            }
+        else:
+            logger.info("🔄 FLOW PROGRESSION: No flow progression found, falling back to orchestrator")
+    else:
+        logger.info("🔄 FLOW PROGRESSION: No active flow, using orchestrator for routing")
+
     # 🧠 ORCHESTRATOR INTEGRATION: Use intelligent routing for all conversations
     if conversational_orchestrator:
         try:

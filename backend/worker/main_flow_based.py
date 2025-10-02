@@ -284,7 +284,7 @@ class FlowBasedLLM(llm.LLM):
                                 return {"text": fallback_prompt, "type": "clarify"}
                         
                         # Handle all flow result types
-                        if ftype in ["flow_response", "question", "message", "faq_response", "faq", "flow_started", "conversation_end", "transfer_initiated"]:
+                        if ftype in ["flow_response", "question", "message", "faq_response", "faq", "flow_started", "conversation_end", "transfer_initiated", "conversational_response", "refusal_handled", "uncertainty_handled"]:
                             if response_text and response_text.strip():
                                 logger.info(f"🔧 Flow response ({ftype}): '{response_text}'")
                                 # Bubble up flow_name for intent updates
