@@ -34,13 +34,15 @@ logger = logging.getLogger("orchestrator-backend")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://voice-agent-livekit.vercel.app",  # your frontend
-        "http://localhost:3000",
+        "https://voice-agent-livekit.vercel.app",  # ✅ add your frontend domain
+        "https://18.210.238.67.nip.io",            # optional: backend nip.io domain
+        "http://localhost:3000",                   # optional: local dev
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
@@ -165,7 +167,6 @@ async def get_faq_response(user_message: str) -> Dict[str, Any]:
 # Template Refresh
 # --------------------------------------------------------------------
 @app.post("/api/refresh_template")
-@app.post("/api/validate_and_load_template")   # alias for frontend
 async def refresh_template():
     global bot_template, conversational_orchestrator
     async with httpx.AsyncClient(timeout=15.0) as client:

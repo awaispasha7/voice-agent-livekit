@@ -11,7 +11,7 @@ class DynamicVoiceAgent {
         this.currentIntent = null;
         this.detectedUserData = {};
         this.conversationLog = [];
-        this.selectedVoice = localStorage.getItem('alive5.defaultVoice') || '7f423809-0011-4658-ba48-a411f5e516ba'; // Default voice (Ashwin - Warm Narrator)
+        this.selectedVoice = localStorage.getItem('alive5.defaultVoice') || "f114a467-c40a-4db8-964d-aaba89cd08fa"; // Default voice (Miles - Yogi)
         this.pendingVoiceChange = null;
         this.availableVoices = {}; // Will be populated from backend
         
@@ -38,7 +38,8 @@ class DynamicVoiceAgent {
                 PROCESS_FLOW_MESSAGE: '/api/process_flow_message',
                 UPDATE_SESSION: '/api/sessions/update',
                 DELETE_ROOM: '/api/rooms',
-                CHANGE_VOICE: '/api/change_voice'
+                CHANGE_VOICE: '/api/change_voice',
+                REFRESH_TEMPLATE: '/api/refresh_template'
             },
             CONNECTION: {
                 MAX_ATTEMPTS: 3,
@@ -341,7 +342,7 @@ class DynamicVoiceAgent {
             document.getElementById('joinBtn').disabled = true;
             
             // Step 1: Validate and load template
-            const templateResponse = await this.fetchWithFallback('/api/validate_and_load_template', {
+            const templateResponse = await this.fetchWithFallback(this.config.ENDPOINTS.REFRESH_TEMPLATE, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
