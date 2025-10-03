@@ -85,6 +85,7 @@ class FlowState(BaseModel):
     current_step: Optional[str] = None
     flow_data: Optional[Dict[str, Any]] = None
     conversation_history: List[Dict[str, str]] = Field(default_factory=list)
+    user_responses: Optional[Dict[str, Any]] = None
 
 flow_states: Dict[str, FlowState] = {}
 bot_template: Optional[Dict[str, Any]] = None
@@ -127,6 +128,275 @@ class VoiceChangeRequest(BaseModel):
 # --------------------------------------------------------------------
 # Core Flow Processing
 # --------------------------------------------------------------------
+
+# ===== helpers for node execution / progression =====
+
+async def execute_action_bot(action_data: Dict[str, Any], flow_state: FlowState) -> Dict[str, Any]:
+    """
+    Execute an Alive5 Action Bot node.
+    Supported minimal actions:
+      - action_type == "webhook": POST to a URL with simple payload
+      - action_type == "email"  : mock success (hook real email service here)
+      - action_type == "url"    : return "opened" info
+    Anything else → echo the node's text.
+    Returns: {"response": <text>, "action_data": {...}}
+    """
+    try:
+        action_type = (action_data.get("action_type") or "").lower()
+        action_text = action_data.get("text", "Action completed.")
+
+        if action_type == "webhook":
+            webhook_url = action_data.get("webhook_url")
+            payload = {
+                "user_message": action_text,
+                "flow_state": flow_state.dict() if flow_state else None,
+            }
+            if webhook_url:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                    r = await client.post(webhook_url, json=payload)
+                    r.raise_for_status()
+                    result = r.json() if r.headers.get("content-type","").startswith("application/json") else {"status": r.status_code}
+                return {"response": result.get("message", "Webhook executed successfully."), "action_data": result}
+
+        elif action_type == "email":
+            email_data = action_data.get("email_data", {})
+            # integrate real email provider here
+            return {"response": "Email sent successfully.", "action_data": {"email_sent": True, "recipient": email_data.get("to")}}
+
+        elif action_type == "url":
+            url = action_data.get("url")
+            if url:
+                return {"response": f"Opening URL: {url}", "action_data": {"url_opened": url}}
+
+        # default
+        return {"response": action_text, "action_data": {"action_type": action_type or "unknown"}}
+
+    except Exception as e:
+        logger.error(f"execute_action_bot error: {e}")
+        return {"response": "I'm sorry, there was an error executing that action. Please try again.", "action_data": {"error": str(e)}}
+
+
+async def evaluate_condition_bot(condition_data: Dict[str, Any], flow_state: FlowState, user_message: str) -> Dict[str, Any]:
+    """
+    Execute an Alive5 Condition Bot node.
+    Two minimal modes:
+      - condition_type == "variable": compare a stored variable with expected_value (string equality)
+      - condition_type == "user_input": substring match on user input
+    The node can contain 'true_flow' / 'false_flow' and corresponding responses.
+    Returns: {"response": <text>, "condition_result": {...}}
+    """
+    try:
+        condition_type = (condition_data.get("condition_type") or "variable").lower()
+        response_text  = condition_data.get("text", "")
+
+        if condition_type == "variable":
+            var_name = condition_data.get("variable_name")
+            expected = str(condition_data.get("expected_value", "")).lower()
+
+            actual = ""
+            if flow_state and flow_state.user_responses and var_name:
+                actual = str(flow_state.user_responses.get(var_name, "")).lower()
+
+            met = (actual == expected)
+            next_flow = condition_data.get("true_flow") if met else condition_data.get("false_flow")
+            resp      = condition_data.get("true_response") if met else condition_data.get("false_response")
+            if next_flow:
+                flow_state.current_step = next_flow.get("name")
+                flow_state.flow_data    = next_flow
+            return {
+                "response": resp or response_text or ("Condition met." if met else "Condition not met."),
+                "condition_result": {
+                    "condition_met": met, "variable_name": var_name,
+                    "expected_value": expected, "actual_value": actual
+                }
+            }
+
+        if condition_type == "user_input":
+            pattern = str(condition_data.get("condition_pattern","")).lower()
+            met = pattern in (user_message or "").lower() if pattern else False
+            next_flow = condition_data.get("true_flow") if met else condition_data.get("false_flow")
+            resp      = condition_data.get("true_response") if met else condition_data.get("false_response")
+            if next_flow:
+                flow_state.current_step = next_flow.get("name")
+                flow_state.flow_data    = next_flow
+            return {
+                "response": resp or response_text or ("Matched." if met else "Not matched."),
+                "condition_result": {"condition_met": met, "pattern": pattern, "user_input": user_message}
+            }
+
+        # default passthrough
+        return {"response": response_text or "Okay.", "condition_result": {"condition_type": condition_type}}
+
+    except Exception as e:
+        logger.error(f"evaluate_condition_bot error: {e}")
+        return {"response": "I'm sorry, there was an error evaluating that condition. Please try again.", "condition_result": {"error": str(e)}}
+
+
+async def _emit_or_advance_and_emit(state: FlowState) -> str:
+    """
+    Emit current node's text; if node has next_flow and doesn't require input, advance first.
+    Returns the text to speak.
+    """
+    node = state.flow_data or {}
+    node_type = (node.get("type") or "").lower()
+
+    # nodes that do not require user input -> auto-advance once before speaking (message -> next question, etc.)
+    auto_advance_types = {"message"}
+    if node_type in auto_advance_types and node.get("next_flow"):
+        nxt = node["next_flow"]
+        state.current_step = nxt.get("name")
+        state.flow_data = nxt
+        node = state.flow_data
+        node_type = (node.get("type") or "").lower()
+
+    # emit appropriate content
+    if node_type in {"greeting", "message", "question", "faq"}:
+        return node.get("text", "") or "Okay."
+    if node_type == "agent":
+        return node.get("text", "I'm connecting you with a human agent. Please hold on.")
+    if node_type in {"action", "condition"}:
+        # let the main dispatcher handle these during progression
+        return node.get("text", "") or "Okay."
+    # sms opt-in (some tenants label it differently)
+    if node_type in {"sms_opt_in", "sms_optin", "smsoptin"}:
+        return node.get("text", "Would you like to opt in to SMS?")
+
+    return node.get("text", "") or "Okay."
+
+
+async def _progress_flow_with_user_input(state: FlowState, user_message: str) -> Dict[str, Any]:
+    """
+    Interpret the current node and user input; progress the flow; return dict:
+    { "type": <node_type>, "response": <text>, "advanced": bool }
+    """
+    node = state.flow_data or {}
+    node_type = (node.get("type") or "").lower()
+
+    # 1) QUESTION nodes
+    if node_type == "question":
+        answers = node.get("answers") or {}
+        if answers:
+            # multiple-choice → match user to an answer key
+            from backend.llm_utils import match_answer_with_llm
+            qtext = node.get("text", "")
+            choice_key = match_answer_with_llm(qtext, user_message, answers)
+            if choice_key and choice_key in answers:
+                branch = answers[choice_key]
+                # go to the branch node
+                state.current_step = branch.get("name")
+                state.flow_data    = branch
+                # optionally auto-jump to next question after a message node
+                speak = branch.get("text", "")
+                nxt = branch.get("next_flow")
+                if speak and nxt and (nxt.get("type") or "").lower() == "question":
+                    # chain message + next question
+                    state.current_step = nxt.get("name")
+                    state.flow_data    = nxt
+                    speak = (speak + " " + (nxt.get("text",""))).strip()
+                return {"type": branch.get("type","message"), "response": speak or "Okay.", "advanced": True}
+            # no match → ask to rephrase
+            return {"type": "message", "response": "I didn't quite catch that. Could you pick one of the options?", "advanced": False}
+        else:
+            # free text answer – extract, validate confidence, persist, and advance
+            from backend.llm_utils import extract_answer_with_llm
+            qtext = node.get("text", "")
+            extracted = extract_answer_with_llm(qtext, user_message)  # {"status","kind","value","confidence"}
+
+            status     = extracted.get("status")
+            confidence = float(extracted.get("confidence", 0.0) or 0.0)
+            value      = extracted.get("value")
+            kind       = (extracted.get("kind") or "").lower()
+
+            # If unclear or very low confidence, re-ask instead of blindly advancing
+            if status != "extracted" or confidence < 0.6:
+                return {
+                    "type": "message",
+                    "response": "Sorry, I didn’t quite get that. Could you say it again?",
+                    "advanced": False
+                }
+
+            # Persist for downstream (e.g., Condition bots or summaries)
+            state.user_responses = (state.user_responses or {})
+            # store under current step name (you could normalize the key if you prefer)
+            state.user_responses[state.current_step] = value
+
+            # Keep voice snappy; short acknowledgment based on type
+            ack = "Thanks."
+            if kind == "boolean":
+                ack = "Got it."
+            elif kind == "number":
+                ack = "Thanks."
+
+            # Advance if next node exists, otherwise end with confirmation
+            nxt = node.get("next_flow")
+            if nxt:
+                state.current_step = nxt.get("name")
+                state.flow_data    = nxt
+                speak = (ack + " " + (nxt.get("text",""))).strip() or "Okay."
+                return {"type": nxt.get("type","message"), "response": speak, "advanced": True}
+
+            # No next node; just acknowledge
+            return {"type": "message", "response": f"{ack}", "advanced": False}
+
+
+    # 2) MESSAGE → just go to next
+    if node_type == "message":
+        nxt = node.get("next_flow")
+        if nxt:
+            state.current_step = nxt.get("name")
+            state.flow_data    = nxt
+            return {"type": nxt.get("type","message"), "response": nxt.get("text","") or "Okay.", "advanced": True}
+        return {"type": "message", "response": node.get("text","") or "Okay.", "advanced": False}
+
+    # 3) FAQ
+    if node_type == "faq":
+        # use FAQ for the user's question; stay on faq or advance if template specifies
+        faq = await get_faq_response(user_message)
+        nxt = node.get("next_flow")
+        if nxt:
+            state.current_step = nxt.get("name")
+            state.flow_data    = nxt
+            speak = (faq["response"] + " " + nxt.get("text","")).strip()
+            return {"type": "faq", "response": speak, "advanced": True}
+        return {"type": "faq", "response": faq["response"], "advanced": False}
+
+    # 4) AGENT
+    if node_type == "agent":
+        return {"type": "agent_handoff", "response": node.get("text","I'm connecting you with a human agent. Please hold on."), "advanced": False}
+
+    # 5) ACTION
+    if node_type == "action":
+        result = await execute_action_bot(node, state)
+        nxt = node.get("next_flow")
+        if nxt:
+            state.current_step = nxt.get("name")
+            state.flow_data    = nxt
+            speak = (result["response"] + " " + nxt.get("text","")).strip()
+            return {"type": "action_completed", "response": speak, "advanced": True}
+        return {"type": "action_completed", "response": result["response"], "advanced": False}
+
+    # 6) CONDITION
+    if node_type == "condition":
+        result = await evaluate_condition_bot(node, state, user_message)
+        nxt = state.flow_data  # evaluate_condition_bot may have advanced the flow_data
+        speak = result["response"]
+        return {"type": "condition_evaluated", "response": speak, "advanced": True}
+
+    # 7) SMS OPT-IN (treat like message/action hybrid)
+    if node_type in {"sms_opt_in", "sms_optin", "smsoptin"}:
+        nxt = node.get("next_flow")
+        if nxt:
+            state.current_step = nxt.get("name")
+            state.flow_data    = nxt
+            speak = (node.get("text","") + " " + nxt.get("text","")).strip() or "Okay."
+            return {"type": "sms_opt_in", "response": speak, "advanced": True}
+        return {"type": "sms_opt_in", "response": node.get("text","") or "Okay.", "advanced": False}
+
+    # default: just emit text
+    return {"type": node_type or "message", "response": node.get("text","") or "Okay.", "advanced": False}
+
+
+
 @app.post("/api/process_flow_message")
 async def process_flow_message(req: ProcessFlowMessageRequest):
     global conversational_orchestrator, bot_template
@@ -139,34 +409,22 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
     if msg == "__start__":
         if bot_template and "data" in bot_template:
             for flow_key, flow_data in bot_template["data"].items():
-                if flow_data.get("type") == "greeting":
+                if (flow_data.get("type") or "").lower() == "greeting":
                     greeting = flow_data.get("text", "Hello! How can I help?")
                     state = flow_states.get(room) or FlowState()
                     state.current_flow = flow_key
                     state.current_step = flow_data.get("name")
-                    state.flow_data   = flow_data
-                    flow_states[room] = state
+                    state.flow_data    = flow_data
+                    flow_states[room]  = state
                     save_flow_state(room, state)
-                    return {
-                        "status": "processed",
-                        "flow_result": {
-                            "type": "flow_started",
-                            "flow_name": "greeting",
-                            "response": greeting,
-                            "flow_state": state.dict()
-                        }
-                    }
-        return {
-            "status": "processed",
-            "flow_result": {
-                "type": "message",
-                "response": "Hello! Thanks for calling Alive5. How can I help today?",
-                "flow_state": {}
-            }
-        }
+                    return {"status":"processed","flow_result":{
+                        "type":"flow_started","flow_name":"greeting",
+                        "response":greeting,"flow_state":state.dict()}}
+        return {"status":"processed","flow_result":{
+            "type":"message","response":"Hello! Thanks for calling Alive5. How can I help today?","flow_state":{}}}
 
     state = flow_states.get(room) or load_flow_state(room) or FlowState()
-    state.conversation_history.append({"role": "user", "content": msg})
+    state.conversation_history.append({"role":"user","content":msg})
     state.conversation_history = state.conversation_history[-10:]
 
     try:
@@ -179,38 +437,66 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         )
     except Exception as e:
         logger.error(f"Orchestrator error: {e}", exc_info=True)
-        return {"status": "error", "flow_result": {"type": "error", "response": "System error"}}
+        return {"status":"error","flow_result":{"type":"error","response":"System error"}}
 
     response_text = decision.response or ""
+
     if decision.action == OrchestratorAction.EXECUTE_FLOW and decision.flow_to_execute:
-        state.current_flow = decision.flow_to_execute
-        state.current_step = decision.flow_to_execute
-        state.flow_data = conversational_orchestrator.available_flows.get(decision.flow_to_execute)
+        flow_container = conversational_orchestrator.available_flows.get(decision.flow_to_execute)
+        if not flow_container:
+            faq = await get_faq_response(msg); response_text = faq["response"]
+        else:
+            intent_node = flow_container.get("data", {})
+            state.current_flow = flow_container.get("key")
+            state.current_step = intent_node.get("name")
+            state.flow_data    = intent_node
+
+            # advance once if intent node leads straight to a question/message
+            response_text = await _emit_or_advance_and_emit(state)
+
+        flow_states[room] = state; save_flow_state(room, state)
+        return {"status":"processed","flow_result":{
+            "type":"flow_started","flow_name":decision.flow_to_execute,
+            "response":response_text,"flow_state":state.dict()}}
+
     elif decision.action == OrchestratorAction.USE_FAQ:
-        faq = await get_faq_response(msg)
-        response_text = faq["response"]
+        faq = await get_faq_response(msg); response_text = faq["response"]
+
     elif decision.action == OrchestratorAction.HANDLE_REFUSAL:
         response_text = response_text or "Got it, we’ll skip that."
+
     elif decision.action == OrchestratorAction.HANDLE_UNCERTAINTY:
         response_text = response_text or "No worries, let’s continue."
+
     elif decision.action == OrchestratorAction.SPEAK_WITH_PERSON:
         response_text = response_text or "Connecting you to an agent now."
-        return {"status": "processed", "flow_result": {"type": "agent_handoff", "response": response_text}}
+        return {"status":"processed","flow_result":{"type":"agent_handoff","response":response_text}}
+
     else:
+        # If orchestrator chose conversational handling AND we're in a node,
+        # try to progress the node per user input (question/faq/action/condition/etc.)
+        if state.flow_data and (decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY):
+            progressed = await _progress_flow_with_user_input(state, msg)
+            flow_states[room] = state; save_flow_state(room, state)
+            return {"status":"processed","flow_result":{
+                "type": progressed["type"],
+                "response": progressed["response"],
+                "flow_state": state.dict()
+            }}
+
+        # fallback: if nothing to say, use FAQ to avoid "..."
         if not response_text:
             faq = await get_faq_response(msg)
             response_text = faq["response"]
 
     flow_states[room] = state
     save_flow_state(room, state)
-    return {
-        "status": "processed",
-        "flow_result": {
-            "type": decision.action.value,
-            "response": response_text,
-            "flow_state": state.dict()
-        }
-    }
+    return {"status":"processed","flow_result":{
+        "type": decision.action.value,
+        "response": response_text,
+        "flow_state": state.dict()
+    }}
+
 
 # --------------------------------------------------------------------
 # FAQ Wrapper
