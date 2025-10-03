@@ -30,10 +30,16 @@ app = FastAPI(title="Alive5 Voice Agent — Orchestrator", version="3.0")
 logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 logger = logging.getLogger("orchestrator-backend")
 
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=[
+        "https://voice-agent-livekit.vercel.app",  # your frontend
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
