@@ -17,8 +17,23 @@ from livekit.agents import llm
 # Env & Logging
 # -----------------------------------------------------------------------------
 current_dir = Path(__file__).parent
-for path in [current_dir / "../../.env", Path(".env")]:
-    if path.exists(): load_dotenv(path)
+env_paths = [
+    current_dir / "../../.env",      # relative to worker/backend
+    current_dir / "../../../.env",   # project root fallback
+    Path("/home/ubuntu/alive5-voice-agent/.env"),  # production path
+    Path(".env"),                    # current working directory
+]
+
+env_loaded = False
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(dotenv_path=str(env_path), override=True)
+        print(f"✅ Loaded .env from: {env_path}")
+        env_loaded = True
+        break
+
+if not env_loaded:
+    load_dotenv()  # fallback, picks up whatever is in environment already
 
 logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 logger = logging.getLogger("orchestrator-worker")
@@ -99,7 +114,7 @@ class BackendLLM(llm.LLM):
 class OrchestratorAssistant(Agent):
     def __init__(self, sid: str, proxy: BackendLLM):
         self.sid=sid; self.room_name=None
-        self.selected_voice="7f423809-0011-4658-ba48-a411f5e516ba"
+        self.selected_voice="f114a467-c40a-4db8-964d-aaba89cd08fa"  # Miles - Yogi
         self._speech_lock=asyncio.Lock(); self._buffer=""; self._task=None; self._window=1.0
         self.proxy=proxy
         super().__init__(instructions="Voice agent (orchestrator-first)", llm=proxy)
@@ -107,8 +122,8 @@ class OrchestratorAssistant(Agent):
         logger.info(f"🎤 Room entered {self.sid}")
         # Trigger orchestrator to start greeting
         await self._process_text("__start__")
-    async def on_user_turn_completed(self, ctx, msg):
-        text=(msg.text_content or "").strip(); 
+    async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
+        text=(new_message.text_content or "").strip(); 
         if not text: return
         self._buffer=(self._buffer+" "+text).strip()
         if self._task and not self._task.done(): self._task.cancel()

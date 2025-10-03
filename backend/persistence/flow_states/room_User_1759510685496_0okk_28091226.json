@@ -1,0 +1,106 @@
+{
+  "current_flow": "marketing",
+  "current_step": "marketing",
+  "flow_data": {
+    "type": "intent_bot",
+    "name": "marketing",
+    "key": "Flow_3",
+    "data": {
+      "type": "intent_bot",
+      "text": "marketing",
+      "name": "intent_a8b84ce7-0112-49e6-bcea-4042f3b51575",
+      "next_flow": {
+        "type": "question",
+        "text": "How many campaigns are you running right now?",
+        "name": "question_60a8ad34-ef07-435a-b68a-513c679efe85",
+        "answers": {
+          "0": {
+            "type": "message",
+            "text": "Since you are not running any campaigns, we cannot help you.",
+            "name": "message_9d726be4-c9fe-4967-a922-861e0188baed",
+            "next_flow": null
+          },
+          "1-10": {
+            "type": "message",
+            "text": "Looks like you are running 1-10 campaigns.",
+            "name": "message_c833030d-7564-46d9-9ac1-79ea26010c76",
+            "next_flow": {
+              "type": "question",
+              "text": "How much budget do you want to spend on each campaign?",
+              "name": "question_b72ea68e-229f-40ca-a2e6-fca41a37ca98",
+              "next_flow": {
+                "type": "message",
+                "text": "We will let you know shortly. Thanks!",
+                "name": "message_b94ac11f-7da9-4493-9d88-8c0b3e5c6afa",
+                "next_flow": null
+              }
+            }
+          },
+          "11-20": {
+            "type": "message",
+            "text": "Looks like you are running 11-20 campaigns.",
+            "name": "message_4d6bc981-394c-486b-8bf2-ad514437e195",
+            "next_flow": {
+              "type": "question",
+              "text": "How much budget do you want to spend on each campaign?",
+              "name": "question_b72ea68e-229f-40ca-a2e6-fca41a37ca98",
+              "next_flow": {
+                "type": "message",
+                "text": "We will let you know shortly. Thanks!",
+                "name": "message_b94ac11f-7da9-4493-9d88-8c0b3e5c6afa",
+                "next_flow": null
+              }
+            }
+          },
+          "More than 21": {
+            "type": "message",
+            "text": "Looks like you are running more than 21 Campaigns. That's alot!",
+            "name": "message_1bceba5f-d2e0-4064-b5f8-11aa643a9ffc",
+            "next_flow": {
+              "type": "question",
+              "text": "How much budget do you want to spend on each campaign?",
+              "name": "question_b72ea68e-229f-40ca-a2e6-fca41a37ca98",
+              "next_flow": {
+                "type": "message",
+                "text": "We will let you know shortly. Thanks!",
+                "name": "message_b94ac11f-7da9-4493-9d88-8c0b3e5c6afa",
+                "next_flow": null
+              }
+            }
+          }
+        },
+        "next_flow": null
+      }
+    }
+  },
+  "conversation_history": [
+    {
+      "role": "user",
+      "content": "Hi there. Who am I speaking with?"
+    },
+    {
+      "role": "user",
+      "content": "Um, what is the life height?"
+    },
+    {
+      "role": "user",
+      "content": "No. I meant what is alive five."
+    },
+    {
+      "role": "user",
+      "content": "Okay. Can you tell me about the sales?"
+    },
+    {
+      "role": "user",
+      "content": "Can I get the information about sales?"
+    },
+    {
+      "role": "user",
+      "content": "Blank COVID assistant."
+    },
+    {
+      "role": "user",
+      "content": "Can I get the marketing information?"
+    }
+  ]
+}
