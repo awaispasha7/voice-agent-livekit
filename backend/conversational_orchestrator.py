@@ -39,6 +39,7 @@ class OrchestratorAction(str, Enum):
     HANDLE_UNCERTAINTY = "handle_uncertainty"
     NAVIGATE_BACK = "navigate_back"
     SUMMARIZE_CONTEXT = "summarize_context"
+    SPEAK_WITH_PERSON = "speak_with_person" 
 
 
 class ConversationObjective(str, Enum):

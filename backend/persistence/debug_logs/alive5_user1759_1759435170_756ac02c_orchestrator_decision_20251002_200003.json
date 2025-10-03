@@ -1,0 +1,75 @@
+{
+  "room_name": "alive5_user1759_1759435170_756ac02c",
+  "log_type": "orchestrator_decision",
+  "timestamp": "2025-10-02T20:00:03.333431",
+  "data": {
+    "user_message": "No. I wanna know about sales.",
+    "decision": {
+      "action": "execute_flow",
+      "reasoning": "The user has expressed a clear intent to know about sales, which aligns with the available 'sales' flow.",
+      "flow_to_execute": "sales",
+      "confidence": 0.95
+    },
+    "profile_state": {
+      "collected_info": {},
+      "preferences": [],
+      "refused_fields": [],
+      "skipped_fields": [],
+      "objectives": [
+        "Clarify the user's intent or question",
+        "Clarify the user's intent or question about 'Valley Motel'",
+        "get_sales_info"
+      ],
+      "conversation_summary": "",
+      "first_seen": 1759435201.0009189,
+      "last_updated": 1759435201.000919,
+      "interaction_count": 1
+    },
+    "flow_state": {
+      "current_flow": null,
+      "current_step": null,
+      "flow_key": "Flow_1",
+      "flow_data": null,
+      "user_responses": {
+        "greeting_a64c9233-b9bf-4e30-9edc-46bac61de650": "Nobody else?"
+      },
+      "conversation_history": [
+        {
+          "role": "system",
+          "content": "Flow-based voice assistant for Alive5 Support",
+          "timestamp": "2025-10-02T20:00:00.211898"
+        },
+        {
+          "role": "assistant",
+          "content": "Welcome to the voice one line! How can I help you today?",
+          "timestamp": "2025-10-02T20:00:00.211914"
+        },
+        {
+          "role": "user",
+          "content": "Nobody else?",
+          "timestamp": "2025-10-02T20:00:00.211918"
+        },
+        {
+          "role": "assistant",
+          "content": "I get that\u2014it can feel a bit quiet sometimes! Just me here, ready to help you out. What\u2019s on your mind today?",
+          "timestamp": "2025-10-02T20:00:00.211922"
+        },
+        {
+          "role": "user",
+          "content": "Valley Motel?",
+          "timestamp": "2025-10-02T20:00:00.211926"
+        },
+        {
+          "role": "user",
+          "content": "No. I wanna know about sales.",
+          "timestamp": "2025-10-02T20:00:00.211928"
+        }
+      ],
+      "pending_step": null,
+      "pending_expected_kind": null,
+      "pending_asked_at": null,
+      "pending_reask_count": 0,
+      "deferred_intent": null
+    }
+  }
+}

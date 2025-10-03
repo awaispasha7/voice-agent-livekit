@@ -1,0 +1,69 @@
+{
+  "room_name": "alive5_user1759_1759435170_756ac02c",
+  "log_type": "orchestrator_decision",
+  "timestamp": "2025-10-02T19:59:59.392983",
+  "data": {
+    "user_message": "Valley Motel?",
+    "decision": {
+      "action": "handle_conversationally",
+      "reasoning": "The user mentioned 'Valley Motel' without clear context or intent. It's important to clarify what the user means or needs regarding 'Valley Motel'.",
+      "flow_to_execute": null,
+      "confidence": 0.9
+    },
+    "profile_state": {
+      "collected_info": {},
+      "preferences": [],
+      "refused_fields": [],
+      "skipped_fields": [],
+      "objectives": [
+        "Clarify the user's intent or question",
+        "Clarify the user's intent or question about 'Valley Motel'"
+      ],
+      "conversation_summary": "",
+      "first_seen": 1759435197.0065446,
+      "last_updated": 1759435197.0065446,
+      "interaction_count": 1
+    },
+    "flow_state": {
+      "current_flow": null,
+      "current_step": null,
+      "flow_key": "Flow_1",
+      "flow_data": null,
+      "user_responses": {
+        "greeting_a64c9233-b9bf-4e30-9edc-46bac61de650": "Nobody else?"
+      },
+      "conversation_history": [
+        {
+          "role": "system",
+          "content": "Flow-based voice assistant for Alive5 Support",
+          "timestamp": "2025-10-02T19:59:56.752930"
+        },
+        {
+          "role": "assistant",
+          "content": "Welcome to the voice one line! How can I help you today?",
+          "timestamp": "2025-10-02T19:59:56.752946"
+        },
+        {
+          "role": "user",
+          "content": "Nobody else?",
+          "timestamp": "2025-10-02T19:59:56.752950"
+        },
+        {
+          "role": "assistant",
+          "content": "I get that\u2014it can feel a bit quiet sometimes! Just me here, ready to help you out. What\u2019s on your mind today?",
+          "timestamp": "2025-10-02T19:59:56.752954"
+        },
+        {
+          "role": "user",
+          "content": "Valley Motel?",
+          "timestamp": "2025-10-02T19:59:56.752957"
+        }
+      ],
+      "pending_step": null,
+      "pending_expected_kind": null,
+      "pending_asked_at": null,
+      "pending_reask_count": 0,
+      "deferred_intent": null
+    }
+  }
+}

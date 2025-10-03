@@ -902,6 +902,7 @@ a natural, human-like conversation experience.
 - Natural greetings: "Hi", "Hello", "Hi there"
 - Flow responses: When user is answering a question in an active flow
 - **CRITICAL**: When user refuses information in a flow, acknowledge respectfully and continue to next question
+- **FLOW PROGRESSION**: When in a flow and user responds (refusal, answer, or question), use handle_conversationally and set skip_fields if refusing
 
 **INTENT vs RESPONSE DISTINCTION (CRITICAL):**
 - "What's the marketing info?" → INTENT REQUEST (execute_flow)
