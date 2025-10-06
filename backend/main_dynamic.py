@@ -78,7 +78,10 @@ FAQ_BOT_ID    = os.getenv("FAQ_BOT_ID", "default-bot-id")
 # --------------------------------------------------------------------
 PERSISTENCE_DIR = current_dir / "persistence"
 FLOW_STATES_DIR = PERSISTENCE_DIR / "flow_states"
-for d in [PERSISTENCE_DIR, FLOW_STATES_DIR]:
+USER_PROFILES_DIR = PERSISTENCE_DIR / "user_profiles"
+DEBUG_LOGS_DIR = PERSISTENCE_DIR / "debug_logs"
+
+for d in [PERSISTENCE_DIR, FLOW_STATES_DIR, USER_PROFILES_DIR, DEBUG_LOGS_DIR]:
     d.mkdir(exist_ok=True)
 
 class FlowState(BaseModel):
@@ -93,6 +96,104 @@ class FlowState(BaseModel):
 flow_states: Dict[str, FlowState] = {}
 bot_template: Optional[Dict[str, Any]] = None
 conversational_orchestrator: Optional[ConversationalOrchestrator] = None
+
+# --------------------------------------------------------------------
+# Persistence Cleanup
+# --------------------------------------------------------------------
+def cleanup_old_persistence_files():
+    """
+    Clean up persistence files older than 7 days.
+    This runs automatically to prevent storage bloat.
+    """
+    try:
+        import time
+        from datetime import datetime, timedelta
+        
+        cutoff_time = time.time() - (7 * 24 * 60 * 60)  # 7 days ago
+        cleaned_count = 0
+        
+        # Clean up flow states
+        if FLOW_STATES_DIR.exists():
+            for file_path in FLOW_STATES_DIR.glob("*.json"):
+                if file_path.stat().st_mtime < cutoff_time:
+                    file_path.unlink()
+                    cleaned_count += 1
+                    logger.info(f"🗑️ Cleaned up old flow state: {file_path.name}")
+        
+        # Clean up user profiles
+        if USER_PROFILES_DIR.exists():
+            for file_path in USER_PROFILES_DIR.glob("*.json"):
+                if file_path.stat().st_mtime < cutoff_time:
+                    file_path.unlink()
+                    cleaned_count += 1
+                    logger.info(f"🗑️ Cleaned up old user profile: {file_path.name}")
+        
+        # Clean up debug logs
+        if DEBUG_LOGS_DIR.exists():
+            for file_path in DEBUG_LOGS_DIR.glob("*.json"):
+                if file_path.stat().st_mtime < cutoff_time:
+                    file_path.unlink()
+                    cleaned_count += 1
+                    logger.info(f"🗑️ Cleaned up old debug log: {file_path.name}")
+        
+        if cleaned_count > 0:
+            logger.info(f"🧹 Weekly cleanup completed: {cleaned_count} old files removed")
+        else:
+            logger.info("🧹 Weekly cleanup completed: No old files found")
+            
+    except Exception as e:
+        logger.error(f"❌ Error during persistence cleanup: {e}")
+
+def schedule_weekly_cleanup():
+    """
+    Schedule automatic weekly cleanup of persistence files.
+    """
+    import asyncio
+    import threading
+    from datetime import datetime, timedelta
+    
+    def run_cleanup():
+        """Run cleanup in a separate thread to avoid blocking the main application."""
+        try:
+            cleanup_old_persistence_files()
+        except Exception as e:
+            logger.error(f"❌ Error in scheduled cleanup: {e}")
+    
+    def schedule_next_cleanup():
+        """Calculate next cleanup time and schedule it."""
+        now = datetime.now()
+        # Schedule for next Monday at 2 AM
+        days_until_monday = (7 - now.weekday()) % 7
+        if days_until_monday == 0:  # If it's Monday, schedule for next Monday
+            days_until_monday = 7
+        
+        next_cleanup = now.replace(hour=2, minute=0, second=0, microsecond=0) + timedelta(days=days_until_monday)
+        
+        # Calculate seconds until next cleanup
+        seconds_until_cleanup = (next_cleanup - now).total_seconds()
+        
+        logger.info(f"📅 Next persistence cleanup scheduled for: {next_cleanup.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Schedule the cleanup
+        timer = threading.Timer(seconds_until_cleanup, run_cleanup)
+        timer.daemon = True
+        timer.start()
+        
+        # After cleanup, schedule the next one
+        def reschedule():
+            schedule_next_cleanup()
+        
+        # Schedule the next cleanup 7 days after this one
+        next_timer = threading.Timer(seconds_until_cleanup + (7 * 24 * 60 * 60), reschedule)
+        next_timer.daemon = True
+        next_timer.start()
+    
+    # Start the scheduling
+    schedule_next_cleanup()
+    logger.info("🔄 Weekly persistence cleanup scheduler started")
+
+# Start the weekly cleanup scheduler
+schedule_weekly_cleanup()
 
 # Live session tracking (frontend + worker use this)
 DEFAULT_VOICE_ID = "f114a467-c40a-4db8-964d-aaba89cd08fa" # Miles - Yogi
@@ -1092,11 +1193,83 @@ async def change_voice(req: VoiceChangeRequest):
     return {"status": "success", "voice_name": req.voice_id}
 
 # --------------------------------------------------------------------
-# Health
+# Health & Maintenance
 # --------------------------------------------------------------------
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "active_sessions": len(active_sessions), "timestamp": time.time()}
+
+@app.post("/api/cleanup_persistence")
+async def manual_cleanup_persistence():
+    """
+    Manually trigger persistence cleanup.
+    Useful for administrative purposes or testing.
+    """
+    try:
+        cleanup_old_persistence_files()
+        return {
+            "status": "success", 
+            "message": "Persistence cleanup completed successfully",
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        logger.error(f"Manual cleanup failed: {e}")
+        return {
+            "status": "error", 
+            "message": f"Cleanup failed: {str(e)}",
+            "timestamp": time.time()
+        }
+
+@app.get("/api/persistence_stats")
+async def get_persistence_stats():
+    """
+    Get statistics about persistence files.
+    """
+    try:
+        stats = {
+            "flow_states": 0,
+            "user_profiles": 0,
+            "debug_logs": 0,
+            "total_size_mb": 0
+        }
+        
+        total_size = 0
+        
+        # Count flow states
+        if FLOW_STATES_DIR.exists():
+            flow_files = list(FLOW_STATES_DIR.glob("*.json"))
+            stats["flow_states"] = len(flow_files)
+            for file_path in flow_files:
+                total_size += file_path.stat().st_size
+        
+        # Count user profiles
+        if USER_PROFILES_DIR.exists():
+            profile_files = list(USER_PROFILES_DIR.glob("*.json"))
+            stats["user_profiles"] = len(profile_files)
+            for file_path in profile_files:
+                total_size += file_path.stat().st_size
+        
+        # Count debug logs
+        if DEBUG_LOGS_DIR.exists():
+            log_files = list(DEBUG_LOGS_DIR.glob("*.json"))
+            stats["debug_logs"] = len(log_files)
+            for file_path in log_files:
+                total_size += file_path.stat().st_size
+        
+        stats["total_size_mb"] = round(total_size / (1024 * 1024), 2)
+        
+        return {
+            "status": "success",
+            "stats": stats,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get persistence stats: {e}")
+        return {
+            "status": "error",
+            "message": f"Failed to get stats: {str(e)}",
+            "timestamp": time.time()
+        }
 
 # --------------------------------------------------------------------
 # Run
