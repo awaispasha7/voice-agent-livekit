@@ -711,35 +711,71 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                 response_text = await generate_conversational_response(msg, conversational_context)
 
     elif decision.action == OrchestratorAction.HANDLE_UNCERTAINTY:
-        if not response_text or response_text.strip() == "":
-            # Generate natural conversational response for uncertainty
-            logger.info(f"🔍 Generating conversational response for uncertainty: '{msg}'")
-            from backend.llm_utils import generate_conversational_response
-            conversational_context = {
-                "conversation_history": state.conversation_history,
-                "current_flow": state.current_flow,
-                "current_step": state.current_step,
-                "profile": {
-                    "collected_info": state.user_responses,
-                    "objectives": state.objectives,
-                    "refused_fields": state.refused_fields
-                },
-                "refusal_context": False,
-                "uncertainty_context": True
-            }
-            response_text = await generate_conversational_response(msg, conversational_context)
-
-        # After handling uncertainty, advance to the next question in the flow
-        if state.flow_data and state.flow_data.get("next_flow"):
-            logger.info(f"🔍 Progressing flow after uncertainty handling")
-            # Advance to the next flow step
-            next_flow = state.flow_data.get("next_flow")
-            state.current_step = next_flow.get("name")
-            state.flow_data = next_flow
-            # Get the next question text
-            next_response = await _emit_or_advance_and_emit(state)
-            if next_response and next_response.strip():
-                response_text = f"{response_text} {next_response}".strip()
+        # Handle uncertainty differently based on whether we're in a flow or not
+        if state.flow_data:
+            # We're in a flow - skip the current question and move to next
+            logger.info(f"🔍 Handling uncertainty within flow context - skipping current question")
+            
+            # Check if there's a next flow step
+            if state.flow_data.get("next_flow"):
+                logger.info(f"🔍 Progressing flow after uncertainty handling")
+                # Advance to the next flow step
+                next_flow = state.flow_data.get("next_flow")
+                state.current_step = next_flow.get("name")
+                state.flow_data = next_flow
+                
+                # Generate a natural transition response that includes the next question
+                logger.info(f"🔍 Generating conversational response for uncertainty with next step context: '{msg}'")
+                from backend.llm_utils import generate_conversational_response
+                next_step_text = next_flow.get("text", "")
+                logger.info(f"🔍 Next step text: '{next_step_text}'")
+                conversational_context = {
+                    "conversation_history": state.conversation_history,
+                    "current_flow": state.current_flow,
+                    "current_step": state.current_step,
+                    "next_step_text": next_step_text,  # Provide context about what's coming next
+                    "profile": {
+                        "collected_info": state.user_responses,
+                        "objectives": state.objectives,
+                        "refused_fields": state.refused_fields
+                    },
+                    "refusal_context": False,
+                    "uncertainty_context": True
+                }
+                response_text = await generate_conversational_response(msg, conversational_context)
+                logger.info(f"🔍 Generated uncertainty response: '{response_text}'")
+                
+                # If we still don't have a good response, just use the next question
+                if not response_text or response_text.strip() == "":
+                    next_response = await _emit_or_advance_and_emit(state)
+                    if next_response and next_response.strip():
+                        response_text = next_response
+                        logger.info(f"🔍 Using next question as response: '{response_text}'")
+            else:
+                # No next flow, just acknowledge uncertainty and clear flow state
+                response_text = "No problem, I understand you're not sure. Let me know if you need anything else."
+                logger.info(f"🔍 No next flow available, clearing flow state")
+                state.current_flow = None
+                state.current_step = None
+                state.flow_data = None
+        else:
+            # We're not in a flow - handle uncertainty conversationally
+            logger.info(f"🔍 Handling uncertainty in conversational context: '{msg}'")
+            if not response_text or response_text.strip() == "":
+                from backend.llm_utils import generate_conversational_response
+                conversational_context = {
+                    "conversation_history": state.conversation_history,
+                    "current_flow": state.current_flow,
+                    "current_step": state.current_step,
+                    "profile": {
+                        "collected_info": state.user_responses,
+                        "objectives": state.objectives,
+                        "refused_fields": state.refused_fields
+                    },
+                    "refusal_context": False,
+                    "uncertainty_context": True
+                }
+                response_text = await generate_conversational_response(msg, conversational_context)
 
     elif decision.action == OrchestratorAction.SPEAK_WITH_PERSON:
         response_text = response_text or "Connecting you to an agent now."

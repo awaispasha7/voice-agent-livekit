@@ -659,7 +659,7 @@ body {
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    width: 100%;
+    width: auto;
     justify-content: flex-start;
 }
 
@@ -673,7 +673,7 @@ body {
     gap: 0.5rem;
     cursor: pointer;
     user-select: none;
-    width: 100%;
+    width: auto;
     justify-content: flex-start;
 }
 
