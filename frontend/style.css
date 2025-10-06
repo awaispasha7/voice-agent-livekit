@@ -748,9 +748,21 @@ body {
     padding-top: 0;
 }
 
+/* Specific alignment for toggle switch in form groups */
+.form-group-toggle .toggle-switch {
+    margin-top: 0.5rem; /* Match the label padding */
+}
+
 /* Align toggle switch with other form elements */
 .form-group-content .toggle-switch {
     align-self: flex-start;
+}
+
+/* Fix vertical alignment for FAQ Response Mode label with toggle switch */
+.form-group-toggle .form-group-label {
+    padding-top: 0.5rem; /* Reduce padding to align with toggle switch */
+    display: flex;
+    align-items: center;
 }
 
 .btn {
