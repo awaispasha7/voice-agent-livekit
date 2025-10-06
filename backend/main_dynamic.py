@@ -54,10 +54,12 @@ app.add_middleware(
         "https://18.210.238.67.nip.io",            # backend domain
         "http://localhost:3000",                   # local dev (optional)
         "http://localhost:5173",
+        "http://localhost:8080",                   # additional local dev
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # LiveKit
@@ -875,6 +877,29 @@ async def get_faq_response(user_message: str, verbose: bool = True) -> Dict[str,
         return {"response": "Sorry, I couldn't fetch that."}
 
 # --------------------------------------------------------------------
+# CORS OPTIONS Handlers (explicit preflight support)
+# --------------------------------------------------------------------
+@app.options("/api/available_voices")
+async def options_available_voices():
+    return {"message": "OK"}
+
+@app.options("/api/refresh_template")
+async def options_refresh_template():
+    return {"message": "OK"}
+
+@app.options("/api/connection_details")
+async def options_connection_details():
+    return {"message": "OK"}
+
+@app.options("/api/process_flow_message")
+async def options_process_flow_message():
+    return {"message": "OK"}
+
+@app.options("/api/change_voice")
+async def options_change_voice():
+    return {"message": "OK"}
+
+# --------------------------------------------------------------------
 # Template Refresh (accepts frontend botchain/org)
 # --------------------------------------------------------------------
 @app.post("/api/refresh_template")
@@ -1191,6 +1216,27 @@ async def change_voice(req: VoiceChangeRequest):
         active_sessions[req.room_name]["selected_voice"] = req.voice_id
         active_sessions[req.room_name]["voice_id"] = req.voice_id
     return {"status": "success", "voice_name": req.voice_id}
+
+# --------------------------------------------------------------------
+# Security & Bot Protection
+# --------------------------------------------------------------------
+@app.get("/admin/{path:path}")
+async def admin_security_redirect(path: str):
+    """Handle common admin scanning attempts"""
+    logger.warning(f"🚨 Admin scan attempt: /admin/{path} from unknown source")
+    return {"error": "Not found", "message": "Admin endpoints not available"}
+
+@app.get("/config/{path:path}")
+async def config_security_redirect(path: str):
+    """Handle common config scanning attempts"""
+    logger.warning(f"🚨 Config scan attempt: /config/{path} from unknown source")
+    return {"error": "Not found", "message": "Configuration endpoints not available"}
+
+@app.get("/.env")
+async def env_security_redirect():
+    """Handle .env file scanning attempts"""
+    logger.warning(f"🚨 Environment file scan attempt from unknown source")
+    return {"error": "Not found", "message": "Environment files not accessible"}
 
 # --------------------------------------------------------------------
 # Health & Maintenance
