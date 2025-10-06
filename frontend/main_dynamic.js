@@ -1913,10 +1913,27 @@ class DynamicVoiceAgent {
             console.log(`🎤 Changing voice to ${this.getVoiceName(voiceId)}`);
             this.updateConnectionStatus('connecting', 'Changing voice...');
             
+            // Send voice change request to backend
             const result = await this.sendVoiceChangeRequest(this.currentRoomName, voiceId);
-            // Voice change request sent
             
             if (result.status === 'success') {
+                // Send voice change data message to worker
+                try {
+                    const voiceChangeData = {
+                        type: 'voice_change',
+                        voice_id: voiceId,
+                        timestamp: new Date().toISOString()
+                    };
+                    
+                    await this.room.localParticipant.publishData(
+                        JSON.stringify(voiceChangeData),
+                        { topic: 'lk.voice.change' }
+                    );
+                    console.log(`🎤 Voice change data sent to worker: ${voiceId}`);
+                } catch (error) {
+                    console.error('Failed to send voice change to worker:', error);
+                }
+                
                 this.selectedVoice = voiceId;
                 this.pendingVoiceChange = null;
                 const voiceName = result.voice_name || this.getVoiceName(voiceId);

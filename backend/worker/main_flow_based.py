@@ -53,59 +53,34 @@ def preprocess_text_for_tts(text: str) -> str:
 
 def monitor_memory():
     p = psutil.Process(os.getpid())
-    while True: _ = p.memory_info().rss; time.sleep(5)
-threading.Thread(target=monitor_memory, daemon=True).start()
+    logger.info(f"💾 Memory: {p.memory_info().rss / 1024 / 1024:.1f} MB")
 
 # -----------------------------------------------------------------------------
-# Backend proxy LLM
+# Backend LLM Proxy
 # -----------------------------------------------------------------------------
 class BackendLLM(llm.LLM):
     def __init__(self, backend_url: str):
-        super().__init__(); self.backend_url = backend_url; self.room_name=None
-    def set_room_name(self, room: str): self.room_name=room
-    def chat(self, *, chat_ctx: llm.ChatContext, **kwargs) -> llm.LLMStream:
-        return self._create_response_stream(chat_ctx, "")
-    def _create_response_stream(self, ctx, text: str):
-        async def _gen():
-            yield llm.ChatChunk(
-                id=str(uuid.uuid4()),
-                delta=llm.ChoiceDelta(content=text, role="assistant")
-            )
+        super().__init__()
+        self.backend_url = backend_url
+        self.room_name = None
 
-        class Stream(llm.LLMStream):
-            def __init__(self, generator):
-                self._generator = generator
-                self._ctx = ctx
-
-            async def _run(self):
-                async for chunk in self._generator:
-                    yield chunk
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                return await anext(self._generator)
-
-            @property
-            def chat_ctx(self):
-                return self._ctx
-
-            def execute_functions(self):
-                return []
-
-            async def aclose(self):
-                return
-
-        return Stream(_gen())
+    def set_room_name(self, room_name: str):
+        self.room_name = room_name
 
     async def call_backend(self, msg: str, history: list) -> Dict[str,Any]:
-        payload={"room_name": self.room_name, "user_message": msg, "conversation_history": history[-10:]}
         try:
-            async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as c:
-                r=await c.post(f"{self.backend_url}/api/process_flow_message",json=payload)
-                if r.status_code==200: return r.json().get("flow_result",{})
-        except Exception as e: logger.error(f"Backend error: {e}")
+            async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
+                payload = {
+                    "room_name": self.room_name,
+                    "user_message": msg,
+                    "conversation_history": history
+                }
+                resp = await client.post(f"{self.backend_url}/api/process_flow_message", json=payload)
+                if resp.status_code == 200:
+                    return resp.json().get("flow_result", {})
+        except Exception as e:
+            logger.error(f"Backend call failed: {e}")
+
         return {"type":"error","response":"Sorry, I'm having trouble. Let me connect you with a human agent."}
 
 # -----------------------------------------------------------------------------
@@ -118,23 +93,68 @@ class OrchestratorAssistant(Agent):
         self._speech_lock=asyncio.Lock(); self._buffer=""; self._task=None; self._window=1.0
         self.proxy=proxy
         super().__init__(instructions="Voice agent (orchestrator-first)", llm=proxy)
+    
     async def on_enter(self):
         logger.info(f"🎤 Room entered {self.sid}")
+        # Set up room event listeners
+        if self.room:
+            self.room.on("data_received", self._on_data_received)
         # Trigger orchestrator to start greeting
         await self._process_text("__start__")
+    
     async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
         text=(new_message.text_content or "").strip(); 
         if not text: return
         self._buffer=(self._buffer+" "+text).strip()
         if self._task and not self._task.done(): self._task.cancel()
         self._task=asyncio.create_task(self._flush())
+    
     async def _flush(self):
         await asyncio.sleep(self._window)
         text=self._buffer.strip(); self._buffer=""
         if text: await self._process_text(text)
+    
+    async def _on_data_received(self, data):
+        """Handle data messages from frontend"""
+        try:
+            if data.topic == "lk.voice.change":
+                voice_data = json.loads(data.data.decode('utf-8'))
+                new_voice_id = voice_data.get("voice_id")
+                if new_voice_id:
+                    logger.info(f"🎤 Voice change received: {new_voice_id}")
+                    self.selected_voice = new_voice_id
+                    # Note: Cartesia TTS voice can't be changed after initialization
+                    # The voice will be updated on next TTS initialization
+                    logger.info(f"🎤 Voice updated to: {new_voice_id}")
+        except Exception as e:
+            logger.error(f"Error handling data message: {e}")
+    
+    async def _get_current_voice(self):
+        """Get current voice from session data"""
+        try:
+            if not self.room_name:
+                return self.selected_voice
+            
+            # Get session info from backend
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{BACKEND_URL}/api/sessions/{self.room_name}")
+                if response.status_code == 200:
+                    session_data = response.json()
+                    return session_data.get("selected_voice") or session_data.get("voice_id") or self.selected_voice
+        except Exception as e:
+            logger.error(f"Failed to get current voice: {e}")
+        
+        return self.selected_voice
+    
     async def _process_text(self, user_text: str):
         logger.info(f"USER: {user_text}")
         history=[{"role":"user","content":user_text,"timestamp":datetime.now().isoformat()}]
+        
+        # Get current voice from session data
+        current_voice = await self._get_current_voice()
+        if current_voice != self.selected_voice:
+            logger.info(f"🎤 Voice updated from session: {current_voice}")
+            self.selected_voice = current_voice
         
         # Send thinking indicator to frontend
         try:
@@ -146,9 +166,9 @@ class OrchestratorAssistant(Agent):
                 json.dumps(thinking_data).encode('utf-8'),
                 topic="lk.conversation.control"
             )
-            logger.info(f"🔍 Thinking indicator sent to frontend")
+            logger.info(f"🔍 Thinking indicator started")
         except Exception as e:
-            logger.error(f"Failed to send thinking indicator: {e}")
+            logger.error(f"Failed to start thinking indicator: {e}")
         
         result=await self.proxy.call_backend(user_text, history)
         response=result.get("response") or "..."
@@ -210,6 +230,7 @@ class OrchestratorAssistant(Agent):
         # THEN start TTS after frontend has displayed the message
         async with self._speech_lock: 
             await self.session.say(preprocess_text_for_tts(response))
+        
         if result.get("type") in ["conversation_end", "call_ended"]:
             logger.info(f"🔍 Session ending, sending conversation end signal...")
             await asyncio.sleep(2)  # Give time for the response to be spoken
@@ -241,10 +262,16 @@ async def entrypoint(ctx: JobContext):
     proxy=BackendLLM(BACKEND_URL); proxy.set_room_name(room)
     assistant=OrchestratorAssistant(sid, proxy); assistant.room_name=room
     await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
+    
+    # Get current voice from session data
+    current_voice = await assistant._get_current_voice()
+    assistant.selected_voice = current_voice
+    logger.info(f"🎤 Initializing TTS with voice: {current_voice}")
+    
     agent_session=AgentSession(
         stt=deepgram.STT(model="nova-2",language="en-US",api_key=os.getenv("DEEPGRAM_API_KEY")),
         llm=proxy,
-        tts=cartesia.TTS(model="sonic-2",voice=assistant.selected_voice,api_key=os.getenv("CARTESIA_API_KEY")),
+        tts=cartesia.TTS(model="sonic-2",voice=current_voice,api_key=os.getenv("CARTESIA_API_KEY")),
         vad=ctx.proc.userdata["vad"],turn_detection=None,
     )
     assistant.room,assistant.agent_session=ctx.room,agent_session
