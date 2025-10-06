@@ -716,9 +716,78 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
             # We're in a flow - skip the current question and move to next
             logger.info(f"🔍 Handling uncertainty within flow context - skipping current question")
             
-            # Check if there's a next flow step
-            if state.flow_data.get("next_flow"):
-                logger.info(f"🔍 Progressing flow after uncertainty handling")
+            # For questions, we need to find the next question in the flow structure
+            current_node = state.flow_data
+            next_question = None
+            
+            # If current node is a question, look for the next question in the answers
+            if current_node.get("type") == "question":
+                answers = current_node.get("answers", {})
+                logger.info(f"🔍 Current question has {len(answers)} answer options")
+                
+                # Find the first answer that leads to another question
+                for answer_key, answer_data in answers.items():
+                    if answer_data.get("type") == "message" and answer_data.get("next_flow"):
+                        next_flow = answer_data.get("next_flow")
+                        if next_flow.get("type") == "question":
+                            next_question = next_flow
+                            logger.info(f"🔍 Found next question via answer '{answer_key}': {next_question.get('text', '')}")
+                            break
+                
+                # If no direct next question found, try to find any next question in the flow
+                if not next_question:
+                    for answer_key, answer_data in answers.items():
+                        if answer_data.get("next_flow"):
+                            next_flow = answer_data.get("next_flow")
+                            # Check if this next_flow leads to a question
+                            if next_flow.get("type") == "question":
+                                next_question = next_flow
+                                logger.info(f"🔍 Found next question via answer '{answer_key}': {next_question.get('text', '')}")
+                                break
+                            # Or if it's a message that leads to a question
+                            elif next_flow.get("type") == "message" and next_flow.get("next_flow"):
+                                next_next_flow = next_flow.get("next_flow")
+                                if next_next_flow.get("type") == "question":
+                                    next_question = next_next_flow
+                                    logger.info(f"🔍 Found next question via answer '{answer_key}' -> message -> question: {next_question.get('text', '')}")
+                                    break
+            
+            # Check if we found a next question or if there's a direct next_flow
+            if next_question:
+                logger.info(f"🔍 Progressing flow after uncertainty handling to next question")
+                # Advance to the next question
+                state.current_step = next_question.get("name")
+                state.flow_data = next_question
+                
+                # Generate a natural transition response that includes the next question
+                logger.info(f"🔍 Generating conversational response for uncertainty with next step context: '{msg}'")
+                from backend.llm_utils import generate_conversational_response
+                next_step_text = next_question.get("text", "")
+                logger.info(f"🔍 Next step text: '{next_step_text}'")
+                conversational_context = {
+                    "conversation_history": state.conversation_history,
+                    "current_flow": state.current_flow,
+                    "current_step": state.current_step,
+                    "next_step_text": next_step_text,  # Provide context about what's coming next
+                    "profile": {
+                        "collected_info": state.user_responses,
+                        "objectives": state.objectives,
+                        "refused_fields": state.refused_fields
+                    },
+                    "refusal_context": False,
+                    "uncertainty_context": True
+                }
+                response_text = await generate_conversational_response(msg, conversational_context)
+                logger.info(f"🔍 Generated uncertainty response: '{response_text}'")
+                
+                # If we still don't have a good response, just use the next question
+                if not response_text or response_text.strip() == "":
+                    next_response = await _emit_or_advance_and_emit(state)
+                    if next_response and next_response.strip():
+                        response_text = next_response
+                        logger.info(f"🔍 Using next question as response: '{response_text}'")
+            elif state.flow_data.get("next_flow"):
+                logger.info(f"🔍 Progressing flow after uncertainty handling via direct next_flow")
                 # Advance to the next flow step
                 next_flow = state.flow_data.get("next_flow")
                 state.current_step = next_flow.get("name")
