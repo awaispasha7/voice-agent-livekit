@@ -70,6 +70,7 @@ A5_BASE_URL   = os.getenv("A5_BASE_URL")
 A5_API_KEY    = os.getenv("A5_API_KEY")
 A5_TEMPLATE_URL = os.getenv("A5_TEMPLATE_URL", "/1.0/org-botchain/generate-template")
 A5_FAQ_URL    = os.getenv("A5_FAQ_URL", "/public/1.0/get-faq-bot-response-by-bot-id")
+A5_FAQ_CONCISE_URL = os.getenv("A5_FAQ_CONCISE_URL", "/public/1.0/get-faq-bot-response-by-bot-id")  # TODO: Replace with actual concise endpoint
 FAQ_BOT_ID    = os.getenv("FAQ_BOT_ID", "default-bot-id")
 
 # --------------------------------------------------------------------
@@ -285,7 +286,7 @@ async def _emit_or_advance_and_emit(state: FlowState) -> str:
     return text
 
 
-async def _progress_flow_with_user_input(state: FlowState, user_message: str) -> Dict[str, Any]:
+async def _progress_flow_with_user_input(state: FlowState, user_message: str, faq_verbose_mode: bool = True) -> Dict[str, Any]:
     """
     Interpret the current node and user input; progress the flow; return dict:
     { "type": <node_type>, "response": <text>, "advanced": bool }
@@ -394,7 +395,7 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str) ->
     # 3) FAQ
     if node_type == "faq":
         # use FAQ for the user's question; stay on faq or advance if template specifies
-        faq = await get_faq_response(user_message)
+        faq = await get_faq_response(user_message, faq_verbose_mode)
         nxt = node.get("next_flow")
         if nxt:
             state.current_step = nxt.get("name")
@@ -473,6 +474,11 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         return {"status": "error", "message": "No orchestrator loaded"}
 
     room, msg = req.room_name, (req.user_message or "").strip()
+    
+    # Get FAQ verbose mode from session data
+    session_data = active_sessions.get(room, {})
+    user_data = session_data.get("user_data", {})
+    faq_verbose_mode = user_data.get("faq_verbose_mode", True)  # Default to verbose
 
     # Greeting trigger from worker
     if msg == "__start__":
@@ -520,7 +526,7 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         
         if not flow_container:
             logger.warning(f"Flow '{decision.flow_to_execute}' not found in available flows")
-            faq = await get_faq_response(msg); response_text = faq["response"]
+            faq = await get_faq_response(msg, faq_verbose_mode); response_text = faq["response"]
         else:
             intent_node = flow_container.get("data", {})
             state.current_flow = flow_container.get("key")
@@ -541,7 +547,7 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
             "response":response_text,"flow_state":state.dict()}}
 
     elif decision.action == OrchestratorAction.USE_FAQ:
-        faq = await get_faq_response(msg); response_text = faq["response"]
+        faq = await get_faq_response(msg, faq_verbose_mode); response_text = faq["response"]
 
     elif decision.action == OrchestratorAction.HANDLE_REFUSAL:
         # After handling refusal, advance to the next question in the flow
@@ -653,7 +659,7 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         if (state.flow_data and
             (decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY) and
             current_flow_type != "greeting"):
-            progressed = await _progress_flow_with_user_input(state, msg)
+            progressed = await _progress_flow_with_user_input(state, msg, faq_verbose_mode)
 
             # If the flow couldn't be progressed, exit the flow state for conversational handling
             if not progressed.get("advanced", False):
@@ -727,7 +733,7 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
 
         # fallback: if nothing to say, use FAQ to avoid "..."
         if not response_text:
-            faq = await get_faq_response(msg)
+            faq = await get_faq_response(msg, faq_verbose_mode)
             response_text = faq["response"]
 
     flow_states[room] = state
@@ -742,20 +748,30 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
 # --------------------------------------------------------------------
 # FAQ Wrapper
 # --------------------------------------------------------------------
-async def get_faq_response(user_message: str) -> Dict[str, Any]:
+async def get_faq_response(user_message: str, verbose: bool = True) -> Dict[str, Any]:
     if not (A5_BASE_URL and A5_FAQ_URL and A5_API_KEY):
         logger.error("❌ FAQ call missing env: A5_BASE_URL/A5_FAQ_URL/A5_API_KEY")
         return {"response": "Sorry, FAQ service is not configured."}
+    
+    # Use different API endpoints based on verbose mode
+    faq_url = A5_FAQ_URL if verbose else A5_FAQ_CONCISE_URL
+    
     async with httpx.AsyncClient(timeout=10.0) as client:
+        payload = {
+            "bot_id": FAQ_BOT_ID, 
+            "faq_question": user_message,
+            "verbose": verbose  # Add verbose parameter to request
+        }
+        
         resp = await client.post(
-            f"{A5_BASE_URL}{A5_FAQ_URL}",
+            f"{A5_BASE_URL}{faq_url}",
             headers={"X-A5-APIKEY": A5_API_KEY, "Content-Type": "application/json"},
-            json={"bot_id": FAQ_BOT_ID, "faq_question": user_message},
+            json=payload,
         )
         if resp.status_code == 200:
             data = resp.json()
             return {"response": data.get("data", {}).get("answer", "I'm not sure.")}
-        return {"response": "Sorry, I couldn’t fetch that."}
+        return {"response": "Sorry, I couldn't fetch that."}
 
 # --------------------------------------------------------------------
 # Template Refresh (accepts frontend botchain/org)
@@ -951,9 +967,9 @@ def update_session(req: SessionUpdateRequest):
             "last_updated": time.time(),
             "user_data": {},
             "status": "active",
-    "intent": None,
-    "voice_id": DEFAULT_VOICE_ID,
-    "selected_voice": DEFAULT_VOICE_ID,
+            "intent": None,
+            "voice_id": DEFAULT_VOICE_ID,
+            "selected_voice": DEFAULT_VOICE_ID,
         }
     
     session = active_sessions[room_name]
@@ -1028,11 +1044,11 @@ def cleanup_room(room_name: str):
             "session_id": room_name,
             "participant_name": session.get("participant_name"),
             "intent": session.get("intent"),
-                    "duration_seconds": int(duration),
+                "duration_seconds": int(duration),
             "user_data": session.get("user_data", {}),
             "voice_id": session.get("voice_id"),
             "selected_voice": session.get("selected_voice"),
-                    "status": "completed",
+                "status": "completed",
             "completed_at": time.time(),
         }
         logger.info(f"Session completed: {json.dumps(final_summary, indent=2)}")

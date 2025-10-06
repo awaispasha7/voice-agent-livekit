@@ -343,6 +343,7 @@ class DynamicVoiceAgent {
         const botchainName = document.getElementById('botchainName')?.value?.trim() || null;
         const orgName = document.getElementById('orgName')?.value?.trim() || null;
         const selectedVoice = document.getElementById('voiceSelect')?.value || this.selectedVoice;
+        const faqVerboseMode = document.getElementById('faqVerboseMode')?.checked ?? true;
         
         if (!botchainName) {
             this.showStatus('Please enter a bot name (botchain)', 'error');
@@ -408,7 +409,8 @@ class DynamicVoiceAgent {
                         session_start: new Date().toISOString(),
                         botchain_name: botchainName,
                         org_name: orgName,
-                        selected_voice: selectedVoice
+                        selected_voice: selectedVoice,
+                        faq_verbose_mode: faqVerboseMode
                     }
                 })
             });

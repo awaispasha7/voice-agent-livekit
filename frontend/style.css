@@ -654,6 +654,90 @@ body {
     padding-right: 2.5rem;
 }
 
+/* Toggle Switch Styles */
+.toggle-switch {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.toggle-switch input[type="checkbox"] {
+    display: none;
+}
+
+.toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+.toggle-text {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #6b7280;
+    transition: color 0.3s ease;
+}
+
+.toggle-slider {
+    position: relative;
+    width: 50px;
+    height: 24px;
+    background: #e5e7eb;
+    border-radius: 12px;
+    transition: background 0.3s ease;
+    border: 2px solid transparent;
+}
+
+.toggle-slider::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.3s ease;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.toggle-switch input[type="checkbox"]:checked + .toggle-label .toggle-slider {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+}
+
+.toggle-switch input[type="checkbox"]:checked + .toggle-label .toggle-slider::before {
+    transform: translateX(26px);
+}
+
+.toggle-switch input[type="checkbox"]:checked + .toggle-label .toggle-text:first-child {
+    color: #667eea;
+    font-weight: 600;
+}
+
+.toggle-switch input[type="checkbox"]:not(:checked) + .toggle-label .toggle-text:last-child {
+    color: #667eea;
+    font-weight: 600;
+}
+
+.toggle-switch input[type="checkbox"]:not(:checked) + .toggle-label .toggle-text:first-child {
+    color: #6b7280;
+}
+
+.toggle-switch input[type="checkbox"]:checked + .toggle-label .toggle-text:last-child {
+    color: #6b7280;
+}
+
+/* Hover effects */
+.toggle-switch:hover .toggle-slider {
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.toggle-switch input[type="checkbox"]:focus + .toggle-label .toggle-slider {
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+}
+
 .btn {
     background: linear-gradient(135deg, #667eea, #764ba2);
     color: white;
