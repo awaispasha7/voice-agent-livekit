@@ -1,0 +1,32 @@
+{
+  "current_flow": "Flow_2",
+  "current_step": "question_50a9a8c7-bab7-43fb-ae21-a07fd788ecdb",
+  "flow_data": {
+    "type": "question",
+    "text": "May I have your email?",
+    "name": "question_50a9a8c7-bab7-43fb-ae21-a07fd788ecdb",
+    "next_flow": {
+      "type": "message",
+      "text": "Thankyou! Someone will be connecting shortly with you!",
+      "name": "message_923c1e69-3e7d-4c56-954b-ed880e96dee0",
+      "next_flow": null
+    }
+  },
+  "conversation_history": [
+    {
+      "role": "user",
+      "content": "Hi, Dale. What's up?"
+    },
+    {
+      "role": "user",
+      "content": "Can I get the information about sales?"
+    },
+    {
+      "role": "user",
+      "content": "Uh, skip that."
+    }
+  ],
+  "user_responses": null,
+  "objectives": [],
+  "refused_fields": []
+}

@@ -1,0 +1,32 @@
+{
+  "current_flow": null,
+  "current_step": null,
+  "flow_data": null,
+  "conversation_history": [
+    {
+      "role": "user",
+      "content": "Hi. Can I get the information about the sales?"
+    },
+    {
+      "role": "user",
+      "content": "Skip that."
+    },
+    {
+      "role": "user",
+      "content": "Yeah. It's fahan4321@alchemy.com."
+    },
+    {
+      "role": "user",
+      "content": "Okay. Thanks. Bye."
+    },
+    {
+      "role": "user",
+      "content": "I know."
+    }
+  ],
+  "user_responses": {
+    "question_50a9a8c7-bab7-43fb-ae21-a07fd788ecdb": "fahan4321@alchemy.com"
+  },
+  "objectives": [],
+  "refused_fields": []
+}

@@ -396,11 +396,15 @@ STYLE:
 
 SPECIAL HANDLING:
 - Refusal (refusal_context=true):
-  Acknowledge kindly ("No problem at all") and continue with next relevant step.
+  Acknowledge kindly ("No problem at all") and transition naturally to the next step.
+  If next_step_text is provided, incorporate it smoothly into your response.
 - Uncertainty (uncertainty_context=true):
   Reassure the user; simplify the next step or offer an alternative.
 - Self-identification: When asked "who are you", "what's this", etc., respond:
   "I'm an Alive5 Agent here to help you with [relevant capabilities]"
+- End call detection: If user says goodbye, thanks, "that's all", "bye", etc., respond with warm farewell:
+  "You're welcome! Have a great day!" or "Thanks for calling! Take care!"
+- Flow progression: If next_step_text is provided, acknowledge the user's input naturally and transition smoothly to the next question without repeating it.
 
 AVOID:
 - Robotic phrasing, long monologues, repeating the user verbatim.
@@ -423,11 +427,16 @@ OUTPUT:
             flags.append("uncertainty_context=true")
         flags_str = ", ".join(flags) if flags else "none"
 
+        next_step_info = ""
+        if context.get("next_step_text"):
+            next_step_info = f"- Next step: {context.get('next_step_text')}"
+        
         user = f"""CONTEXT:
 - Flow: {context.get('current_flow')}
 - Step: {context.get('current_step')}
 - Profile.collected: {context.get('profile', {}).get('collected_info', {})}
 - Flags: {flags_str}
+{next_step_info}
 
 Recent history:
 {history}
@@ -476,6 +485,11 @@ VALID ACTIONS:
 - handle_refusal     → User refuses a requested field ("I prefer not", "I won't share").
 - handle_uncertainty → User expresses not knowing/being unsure.
 - speak_with_person  → User asks to talk to a human or says "agent", "representative", "connect me", etc.
+- end_call           → User says goodbye, thanks, "that's all", "bye", "have a good day", etc. (conversation ending).
+
+END CALL DETECTION:
+- If user says goodbye, thanks, "that's all", "bye", "have a good day", "thank you", "that's it", "all done", etc. → end_call with farewell response.
+- If user says "end call", "hang up", "disconnect", "terminate call" → speak_with_person (agent handoff).
 
 GLOBAL RULES:
 1) Check current_flow/current_step: if user is responding to a flow question, prefer handle_conversationally.
@@ -490,7 +504,7 @@ GLOBAL RULES:
 
 OUTPUT JSON SCHEMA:
 {
-  "action": "use_faq|execute_flow|handle_conversationally|handle_refusal|handle_uncertainty|speak_with_person",
+  "action": "use_faq|execute_flow|handle_conversationally|handle_refusal|handle_uncertainty|speak_with_person|end_call",
   "reasoning": "1-2 sentences why",
   "response": "<optional natural language reply or leave null>",
   "flow_to_execute": "<flow-name-or-null>",

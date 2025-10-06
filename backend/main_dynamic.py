@@ -86,6 +86,8 @@ class FlowState(BaseModel):
     flow_data: Optional[Dict[str, Any]] = None
     conversation_history: List[Dict[str, str]] = Field(default_factory=list)
     user_responses: Optional[Dict[str, Any]] = None
+    objectives: List[str] = Field(default_factory=list)
+    refused_fields: List[str] = Field(default_factory=list)
 
 flow_states: Dict[str, FlowState] = {}
 bot_template: Optional[Dict[str, Any]] = None
@@ -168,8 +170,8 @@ async def execute_action_bot(action_data: Dict[str, Any], flow_state: FlowState)
             if url:
                 return {"response": f"Opening URL: {url}", "action_data": {"url_opened": url}}
 
-            # default
-            return {"response": action_text, "action_data": {"action_type": action_type or "unknown"}}
+        # default
+        return {"response": action_text, "action_data": {"action_type": action_type or "unknown"}}
             
     except Exception as e:
         logger.error(f"execute_action_bot error: {e}")
@@ -339,32 +341,35 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str) ->
             # store under current step name (you could normalize the key if you prefer)
             state.user_responses[state.current_step] = value
 
-            # Generate natural acknowledgment using LLM instead of hardcoded responses
-            logger.info(f"🔍 Generating acknowledgment for flow response: '{user_message}'")
-            from backend.llm_utils import generate_conversational_response
-            conversational_context = {
-                "conversation_history": state.conversation_history,
-                "current_flow": state.current_flow,
-                "current_step": state.current_step,
-                "profile": {
-                    "collected_info": state.user_responses,
-                    "objectives": state.objectives,
-                    "refused_fields": state.refused_fields
-                },
-                "refusal_context": False,
-                "uncertainty_context": False
-            }
-            ack = await generate_conversational_response(f"I answered: {value}", conversational_context)
-            if not ack or len(ack.strip()) < 3:  # Fallback if LLM response is too short
-                ack = "Thanks."
-
             # Advance if next node exists, otherwise end with confirmation and clear flow state
             nxt = node.get("next_flow")
             if nxt:
                 state.current_step = nxt.get("name")
                 state.flow_data    = nxt
-                speak = (ack + " " + (nxt.get("text",""))).strip() or "Okay."
-                return {"type": nxt.get("type","message"), "response": speak, "advanced": True}
+                
+                # Generate natural acknowledgment with next step context
+                logger.info(f"🔍 Generating acknowledgment with next step context: '{user_message}'")
+                from backend.llm_utils import generate_conversational_response
+                next_step_text = nxt.get("text", "")
+                conversational_context = {
+                    "conversation_history": state.conversation_history,
+                    "current_flow": state.current_flow,
+                    "current_step": state.current_step,
+                    "next_step_text": next_step_text,  # Provide context about what's coming next
+                    "profile": {
+                        "collected_info": state.user_responses,
+                        "objectives": state.objectives,
+                        "refused_fields": state.refused_fields
+                    },
+                    "refusal_context": False,
+                    "uncertainty_context": False
+                }
+                ack = await generate_conversational_response(f"I answered: {value}", conversational_context)
+                if not ack or len(ack.strip()) < 3:  # Fallback if LLM response is too short
+                    ack = "Thanks."
+                
+                # Return just the acknowledgment, let the flow handle the next question separately
+                return {"type": "acknowledgment", "response": ack, "advanced": True}
 
             # No next node; clear flow state and just acknowledge
             state.current_flow = None
@@ -539,14 +544,27 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         faq = await get_faq_response(msg); response_text = faq["response"]
 
     elif decision.action == OrchestratorAction.HANDLE_REFUSAL:
-        if not response_text or response_text.strip() == "":
-            # Generate natural conversational response for refusal
-            logger.info(f"🔍 Generating conversational response for refusal: '{msg}'")
+        # After handling refusal, advance to the next question in the flow
+        if state.flow_data and state.flow_data.get("next_flow"):
+            logger.info(f"🔍 Progressing flow after refusal handling")
+            logger.info(f"🔍 Current flow_data: {state.flow_data}")
+            # Advance to the next flow step
+            next_flow = state.flow_data.get("next_flow")
+            logger.info(f"🔍 Next flow: {next_flow}")
+            state.current_step = next_flow.get("name")
+            state.flow_data = next_flow
+            logger.info(f"🔍 Advanced to step: {state.current_step}")
+            
+            # Generate a natural transition response that includes the next question
+            logger.info(f"🔍 Generating conversational response for refusal with next step context: '{msg}'")
             from backend.llm_utils import generate_conversational_response
+            next_step_text = next_flow.get("text", "")
+            logger.info(f"🔍 Next step text: '{next_step_text}'")
             conversational_context = {
                 "conversation_history": state.conversation_history,
                 "current_flow": state.current_flow,
                 "current_step": state.current_step,
+                "next_step_text": next_step_text,  # Provide context about what's coming next
                 "profile": {
                     "collected_info": state.user_responses,
                     "objectives": state.objectives,
@@ -556,13 +574,32 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                 "uncertainty_context": False
             }
             response_text = await generate_conversational_response(msg, conversational_context)
-
-        # After handling refusal, check if we need to progress the flow
-        if state.flow_data and state.flow_data.get("next_flow"):
-            logger.info(f"🔍 Progressing flow after refusal handling")
-            next_response = await _emit_or_advance_and_emit(state)
-            if next_response and next_response.strip():
-                response_text = f"{response_text} {next_response}".strip()
+            logger.info(f"🔍 Generated refusal response: '{response_text}'")
+            
+            # If we still don't have a good response, just use the next question
+            if not response_text or response_text.strip() == "":
+                next_response = await _emit_or_advance_and_emit(state)
+                if next_response and next_response.strip():
+                    response_text = next_response
+                    logger.info(f"🔍 Using next question as response: '{response_text}'")
+        else:
+            # No next flow, just generate a refusal response
+            if not response_text or response_text.strip() == "":
+                logger.info(f"🔍 Generating conversational response for refusal: '{msg}'")
+                from backend.llm_utils import generate_conversational_response
+                conversational_context = {
+                    "conversation_history": state.conversation_history,
+                    "current_flow": state.current_flow,
+                    "current_step": state.current_step,
+                    "profile": {
+                        "collected_info": state.user_responses,
+                        "objectives": state.objectives,
+                        "refused_fields": state.refused_fields
+                    },
+                    "refusal_context": True,
+                    "uncertainty_context": False
+                }
+                response_text = await generate_conversational_response(msg, conversational_context)
 
     elif decision.action == OrchestratorAction.HANDLE_UNCERTAINTY:
         if not response_text or response_text.strip() == "":
@@ -583,9 +620,14 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
             }
             response_text = await generate_conversational_response(msg, conversational_context)
 
-        # After handling uncertainty, check if we need to progress the flow
+        # After handling uncertainty, advance to the next question in the flow
         if state.flow_data and state.flow_data.get("next_flow"):
             logger.info(f"🔍 Progressing flow after uncertainty handling")
+            # Advance to the next flow step
+            next_flow = state.flow_data.get("next_flow")
+            state.current_step = next_flow.get("name")
+            state.flow_data = next_flow
+            # Get the next question text
             next_response = await _emit_or_advance_and_emit(state)
             if next_response and next_response.strip():
                 response_text = f"{response_text} {next_response}".strip()
@@ -593,6 +635,15 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
     elif decision.action == OrchestratorAction.SPEAK_WITH_PERSON:
         response_text = response_text or "Connecting you to an agent now."
         return {"status":"processed","flow_result":{"type":"agent_handoff","response":response_text}}
+
+    elif decision.action == OrchestratorAction.END_CALL:
+        response_text = response_text or "Thank you for calling! Have a great day!"
+        # Clear flow state and end the conversation
+        state.current_flow = None
+        state.current_step = None
+        state.flow_data = None
+        flow_states[room] = state; save_flow_state(room, state)
+        return {"status":"processed","flow_result":{"type":"call_ended","response":response_text,"flow_state":state.dict()}}
 
     else:
         # If orchestrator chose conversational handling AND we're in a node,
@@ -610,6 +661,25 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                 state.current_flow = None
                 state.current_step = None
                 state.flow_data = None
+            elif progressed.get("type") == "acknowledgment":
+                # For acknowledgments, we need to emit the next question after the acknowledgment
+                logger.info(f"🔍 Handling acknowledgment, will emit next question")
+                next_question = await _emit_or_advance_and_emit(state)
+                if next_question and next_question.strip():
+                    # Don't concatenate - the LLM should have already incorporated the next step
+                    # Just use the acknowledgment response as is
+                    logger.info(f"🔍 Acknowledgment response: '{progressed['response']}', Next question: '{next_question}'")
+                    # Check if the acknowledgment already covers the next step semantically
+                    ack_lower = progressed["response"].lower()
+                    next_lower = next_question.lower()
+                    # If the acknowledgment already mentions the key concepts from the next step, don't concatenate
+                    if ("connecting" in ack_lower and "connecting" in next_lower) or \
+                       ("thank" in ack_lower and "thank" in next_lower) or \
+                       ("shortly" in ack_lower and "shortly" in next_lower):
+                        logger.info(f"🔍 Acknowledgment already covers next step, not concatenating")
+                    else:
+                        progressed["response"] = f"{progressed['response']} {next_question}".strip()
+                        logger.info(f"🔍 Concatenated response: '{progressed['response']}'")
 
             flow_states[room] = state; save_flow_state(room, state)
             return {"status":"processed","flow_result":{
@@ -881,9 +951,9 @@ def update_session(req: SessionUpdateRequest):
             "last_updated": time.time(),
             "user_data": {},
             "status": "active",
-        "intent": None,
-        "voice_id": DEFAULT_VOICE_ID,
-        "selected_voice": DEFAULT_VOICE_ID,
+    "intent": None,
+    "voice_id": DEFAULT_VOICE_ID,
+    "selected_voice": DEFAULT_VOICE_ID,
         }
     
     session = active_sessions[room_name]
@@ -958,18 +1028,18 @@ def cleanup_room(room_name: str):
             "session_id": room_name,
             "participant_name": session.get("participant_name"),
             "intent": session.get("intent"),
-                "duration_seconds": int(duration),
+                    "duration_seconds": int(duration),
             "user_data": session.get("user_data", {}),
             "voice_id": session.get("voice_id"),
             "selected_voice": session.get("selected_voice"),
-                "status": "completed",
+                    "status": "completed",
             "completed_at": time.time(),
         }
         logger.info(f"Session completed: {json.dumps(final_summary, indent=2)}")
         del active_sessions[room_name]
         return {"message": f"Room {room_name} cleaned up successfully", "session_summary": final_summary}
     return {"message": f"Room {room_name} cleanup requested (no session data found)"}
-        
+            
 # --------------------------------------------------------------------
 # Voices
 # --------------------------------------------------------------------

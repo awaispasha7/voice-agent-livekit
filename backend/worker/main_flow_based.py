@@ -135,13 +135,62 @@ class OrchestratorAssistant(Agent):
     async def _process_text(self, user_text: str):
         logger.info(f"USER: {user_text}")
         history=[{"role":"user","content":user_text,"timestamp":datetime.now().isoformat()}]
+        
+        # Send thinking indicator to frontend
+        try:
+            thinking_data = {
+                "type": "thinking_start",
+                "timestamp": datetime.now().isoformat()
+            }
+            await self.room.local_participant.publish_data(
+                json.dumps(thinking_data).encode('utf-8'),
+                topic="lk.conversation.control"
+            )
+            logger.info(f"🔍 Thinking indicator sent to frontend")
+        except Exception as e:
+            logger.error(f"Failed to send thinking indicator: {e}")
+        
         result=await self.proxy.call_backend(user_text, history)
         response=result.get("response") or "..."
         logger.info(f"ASSISTANT: {response}")
-        async with self._speech_lock: await self.session.say(preprocess_text_for_tts(response))
-        if result.get("type")=="conversation_end":
-            await asyncio.sleep(1)
-            if self.room: await self.room.disconnect()
+        
+        # Stop thinking indicator
+        try:
+            thinking_data = {
+                "type": "thinking_stop",
+                "timestamp": datetime.now().isoformat()
+            }
+            await self.room.local_participant.publish_data(
+                json.dumps(thinking_data).encode('utf-8'),
+                topic="lk.conversation.control"
+            )
+            logger.info(f"🔍 Thinking indicator stopped")
+        except Exception as e:
+            logger.error(f"Failed to stop thinking indicator: {e}")
+        
+        async with self._speech_lock: 
+            await self.session.say(preprocess_text_for_tts(response))
+        if result.get("type") in ["conversation_end", "call_ended"]:
+            logger.info(f"🔍 Session ending, sending conversation end signal...")
+            await asyncio.sleep(2)  # Give time for the response to be spoken
+            if self.room: 
+                # Send data message to frontend to notify of conversation end
+                try:
+                    end_data = {
+                        "type": "conversation_end",
+                        "reason": "user_requested",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    await self.room.local_participant.publish_data(
+                        json.dumps(end_data).encode('utf-8'),
+                        topic="lk.conversation.control"
+                    )
+                    logger.info(f"🔍 Conversation end signal sent to frontend")
+                except Exception as e:
+                    logger.error(f"Failed to send conversation end signal: {e}")
+                    # Fallback to direct disconnect
+                    await self.room.disconnect()
+                    logger.info(f"🔍 Room disconnected (fallback)")
 
 # -----------------------------------------------------------------------------
 # Entrypoint

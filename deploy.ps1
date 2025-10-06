@@ -4,6 +4,8 @@ Write-Host "===============================================" -ForegroundColor Gr
 Write-Host "Server: 18.210.238.67" -ForegroundColor Yellow
 Write-Host "User: ubuntu" -ForegroundColor Yellow
 Write-Host ""
+Write-Host "SPEED OPTIMIZATION: Options 1-3 skip persistence sync for faster deployment" -ForegroundColor Cyan
+Write-Host ""
 
 # Ask user what they want to deploy
 Write-Host "What would you like to deploy?" -ForegroundColor Cyan
@@ -111,7 +113,15 @@ switch ($deployChoice) {
         # Core application files
         Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory"
         Sync-Directory "frontend" "/home/ubuntu/alive5-voice-agent/" "Frontend directory"
-        Sync-Directory "flow_states" "/home/ubuntu/alive5-voice-agent/" "Flow states directory"
+        
+        # Ask if user wants to sync persistence data (can be slow)
+        Write-Host ""
+        $syncPersistence = Read-Host "Sync persistence data from server? (y/n) - This can be slow"
+        if ($syncPersistence -eq "y" -or $syncPersistence -eq "Y") {
+            Sync-Directory "flow_states" "/home/ubuntu/alive5-voice-agent/" "Flow states directory"
+        } else {
+            Write-Host "Skipping persistence data sync for faster deployment" -ForegroundColor Yellow
+        }
         
         # Configuration files
         Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
@@ -128,7 +138,15 @@ switch ($deployChoice) {
         # Core application files
         Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory"
         Sync-Directory "frontend" "/home/ubuntu/alive5-voice-agent/" "Frontend directory"
-        Sync-Directory "flow_states" "/home/ubuntu/alive5-voice-agent/" "Flow states directory"
+        
+        # Ask if user wants to sync persistence data (can be slow)
+        Write-Host ""
+        $syncPersistence = Read-Host "Sync persistence data from server? (y/n) - This can be slow"
+        if ($syncPersistence -eq "y" -or $syncPersistence -eq "Y") {
+            Sync-Directory "flow_states" "/home/ubuntu/alive5-voice-agent/" "Flow states directory"
+        } else {
+            Write-Host "Skipping persistence data sync for faster deployment" -ForegroundColor Yellow
+        }
         
         # Configuration files
         Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
@@ -143,28 +161,38 @@ switch ($deployChoice) {
 
 Write-Host "File synchronization completed!" -ForegroundColor Green
 
-# Download persistence data from server to local directory
-Write-Host "Downloading persistence data from server..." -ForegroundColor Cyan
-try {
-    # Create local persistence directories if they don't exist
-    if (-not (Test-Path "backend/persistence")) {
-        New-Item -ItemType Directory -Path "backend/persistence" -Force | Out-Null
+# Download persistence data from server to local directory (optional for fast deployments)
+if ($deployChoice -eq "full" -or $deployChoice -eq "full_with_venv") {
+    Write-Host ""
+    $downloadPersistence = Read-Host "Download persistence data from server to local? (y/n) - This can be slow"
+    if ($downloadPersistence -eq "y" -or $downloadPersistence -eq "Y") {
+        Write-Host "Downloading persistence data from server..." -ForegroundColor Cyan
+        try {
+            # Create local persistence directories if they don't exist
+            if (-not (Test-Path "backend/persistence")) {
+                New-Item -ItemType Directory -Path "backend/persistence" -Force | Out-Null
+            }
+            if (-not (Test-Path "backend/persistence/flow_states")) {
+                New-Item -ItemType Directory -Path "backend/persistence/flow_states" -Force | Out-Null
+            }
+            if (-not (Test-Path "backend/persistence/user_profiles")) {
+                New-Item -ItemType Directory -Path "backend/persistence/user_profiles" -Force | Out-Null
+            }
+            if (-not (Test-Path "backend/persistence/debug_logs")) {
+                New-Item -ItemType Directory -Path "backend/persistence/debug_logs" -Force | Out-Null
+            }
+            
+            # Download persistence data
+            scp -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 -r ubuntu@18.210.238.67:/home/ubuntu/alive5-voice-agent/backend/persistence/* backend/persistence/ 2>$null
+            Write-Host "Persistence data downloaded successfully" -ForegroundColor Green
+        } catch {
+            Write-Host "Warning: Could not download persistence data (server may not have data yet)" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Skipping persistence data download for faster deployment" -ForegroundColor Yellow
     }
-    if (-not (Test-Path "backend/persistence/flow_states")) {
-        New-Item -ItemType Directory -Path "backend/persistence/flow_states" -Force | Out-Null
-    }
-    if (-not (Test-Path "backend/persistence/user_profiles")) {
-        New-Item -ItemType Directory -Path "backend/persistence/user_profiles" -Force | Out-Null
-    }
-    if (-not (Test-Path "backend/persistence/debug_logs")) {
-        New-Item -ItemType Directory -Path "backend/persistence/debug_logs" -Force | Out-Null
-    }
-    
-    # Download persistence data
-    scp -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 -r ubuntu@18.210.238.67:/home/ubuntu/alive5-voice-agent/backend/persistence/* backend/persistence/ 2>$null
-    Write-Host "Persistence data downloaded successfully" -ForegroundColor Green
-} catch {
-    Write-Host "Warning: Could not download persistence data (server may not have data yet)" -ForegroundColor Yellow
+} else {
+    Write-Host "Skipping persistence data download (not needed for backend/worker only deployments)" -ForegroundColor Yellow
 }
 
 # Virtual environment setup (only for full_with_venv option)
@@ -280,14 +308,14 @@ $deployedItems = switch ($deployChoice) {
     "full" { 
         "  - backend/ directory (main backend application)`n" +
         "  - frontend/ directory (web interface)`n" +
-        "  - flow_states/ directory (conversation states)`n" +
-        "  - Optional directories (docs/, KMS/)"
+        "  - Optional directories (docs/, KMS/)`n" +
+        "  - Persistence data sync (optional, can be skipped for speed)"
     }
     "full_with_venv" { 
         "  - backend/ directory (main backend application)`n" +
         "  - frontend/ directory (web interface)`n" +
-        "  - flow_states/ directory (conversation states)`n" +
         "  - Optional directories (docs/, KMS/)`n" +
+        "  - Persistence data sync (optional, can be skipped for speed)`n" +
         "  - NEW virtual environment created`n" +
         "  - All packages installed from requirements.txt"
     }

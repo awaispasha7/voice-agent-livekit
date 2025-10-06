@@ -30,6 +30,22 @@ class DynamicVoiceAgent {
         this.finalTranscript = "";
         this.lastTranscriptUpdate = Date.now();
         
+        // Thinking indicator
+        this.isThinking = false;
+        this.thinkingInterval = null;
+        this.thinkingMessages = [
+            "Thinking...",
+            "Cooking up a response...",
+            "Ideating...",
+            "Building something for you...",
+            "Processing your request...",
+            "Working on it...",
+            "Crafting a response...",
+            "Analyzing...",
+            "Connecting the dots...",
+            "Almost there..."
+        ];
+        
         // Configuration
         this.config = {
             API_BASE_URL: window.API_BASE_URL || window.BACKEND_URL || 'http://localhost:8000',
@@ -690,6 +706,12 @@ class DynamicVoiceAgent {
                                 this.room.disconnect().catch(()=>{});
                             }
                         } catch(e) { /* ignore */ }
+                    } else if (data.type === 'thinking_start') {
+                        console.log('🤔 Thinking started:', data);
+                        this.startThinkingIndicator();
+                    } else if (data.type === 'thinking_stop') {
+                        console.log('✅ Thinking stopped:', data);
+                        this.stopThinkingIndicator();
                     }
                 } catch (error) {
                     console.error('Error processing conversation control data:', error);
@@ -1246,7 +1268,7 @@ class DynamicVoiceAgent {
         this.conversationLog.push(entry);
         
         // Add to chat interface if connected
-        if (this.isConnected && (entry.type === 'user' || entry.type === 'agent')) {
+        if (this.isConnected && (entry.type === 'user' || entry.type === 'agent' || entry.type === 'thinking')) {
             this.addMessage(entry.message, entry.type, entry.timestamp);
         }
         
@@ -1596,6 +1618,54 @@ class DynamicVoiceAgent {
             statusText.textContent = type === 'error' ? 'Error' : type === 'connecting' ? 'Connecting' : 'Offline';
         }
     }
+    
+    startThinkingIndicator() {
+        if (this.isThinking) return; // Already thinking
+        
+        this.isThinking = true;
+        let messageIndex = 0;
+        
+        // Show initial thinking message
+        this.showThinkingMessage(this.thinkingMessages[0]);
+        
+        // Cycle through thinking messages every 2 seconds
+        this.thinkingInterval = setInterval(() => {
+            messageIndex = (messageIndex + 1) % this.thinkingMessages.length;
+            this.showThinkingMessage(this.thinkingMessages[messageIndex]);
+        }, 2000);
+    }
+    
+    stopThinkingIndicator() {
+        if (!this.isThinking) return; // Not thinking
+        
+        this.isThinking = false;
+        
+        if (this.thinkingInterval) {
+            clearInterval(this.thinkingInterval);
+            this.thinkingInterval = null;
+        }
+        
+        // Clear thinking message from UI
+        this.clearThinkingMessage();
+    }
+    
+    showThinkingMessage(message) {
+        // Add thinking message to chat interface
+        this.addLogEntry({
+            speaker: 'Assistant',
+            message: message,
+            type: 'thinking'
+        });
+    }
+    
+    clearThinkingMessage() {
+        // Remove the last thinking message from chat
+        const chatContainer = document.getElementById('chat-container');
+        if (chatContainer) {
+            const thinkingMessages = chatContainer.querySelectorAll('.thinking-message');
+            thinkingMessages.forEach(msg => msg.remove());
+        }
+    }
 
     showToast(message, type = 'info', title = null) {
         const container = document.getElementById('toast-container');
@@ -1718,6 +1788,32 @@ class DynamicVoiceAgent {
             console.warn('Chat messages container not found');
             return;
         }
+        
+        // Handle thinking messages specially
+        if (sender === 'thinking') {
+            // Remove any existing thinking messages first
+            const existingThinking = chatMessages.querySelectorAll('.message.thinking');
+            existingThinking.forEach(msg => msg.remove());
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message thinking thinking-message';
+            
+            const avatar = document.createElement('div');
+            avatar.className = 'message-avatar';
+            avatar.textContent = '🤔';
+            
+            const bubble = document.createElement('div');
+            bubble.className = 'message-bubble thinking-bubble';
+            bubble.textContent = content;
+            
+            messageDiv.appendChild(avatar);
+            messageDiv.appendChild(bubble);
+            
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            return;
+        }
+        
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${sender}`;
         
