@@ -404,7 +404,7 @@ SPECIAL HANDLING:
   "I'm an Alive5 Agent here to help you with [relevant capabilities]"
 - End call detection: If user says goodbye, thanks, "that's all", "bye", etc., respond with warm farewell:
   "You're welcome! Have a great day!" or "Thanks for calling! Take care!"
-- Flow progression: If next_step_text is provided, acknowledge the user's input naturally and transition smoothly to the next question without repeating it.
+- Flow progression: If next_step_text is provided, acknowledge the user's input naturally and then ask the next question directly. For example: "Thanks for that information! [Next question here]"
 
 AVOID:
 - Robotic phrasing, long monologues, repeating the user verbatim.
@@ -444,7 +444,7 @@ Recent history:
 USER: "{user_message}"
 
 TASK:
-Reply naturally, acknowledge the situation, and move forward helpfully."""
+Reply naturally, acknowledge the situation, and move forward helpfully. If next_step is provided, incorporate it directly into your response."""
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "system", "content": system},

@@ -94,6 +94,7 @@ class FlowState(BaseModel):
     user_responses: Optional[Dict[str, Any]] = None
     objectives: List[str] = Field(default_factory=list)
     refused_fields: List[str] = Field(default_factory=list)
+    flow_contexts: Dict[str, Dict[str, Any]] = Field(default_factory=dict)  # Store context for each flow
 
 flow_states: Dict[str, FlowState] = {}
 bot_template: Optional[Dict[str, Any]] = None
@@ -631,19 +632,91 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
             logger.warning(f"Flow '{decision.flow_to_execute}' not found in available flows")
             faq = await get_faq_response(msg, faq_verbose_mode); response_text = faq["response"]
         else:
-            intent_node = flow_container.get("data", {})
-            state.current_flow = flow_container.get("key")
-            state.current_step = intent_node.get("name")
-            state.flow_data    = intent_node
-            
-            logger.info(f"🔍 Flow execution: flow_container={flow_container}")
-            logger.info(f"🔍 Flow execution: intent_node={intent_node}")
-            logger.info(f"🔍 Flow execution: state.flow_data={state.flow_data}")
+            # Check if we're already in this flow - if so, progress it instead of restarting
+            if (state.current_flow == flow_container.get("key") and 
+                state.flow_data and 
+                state.flow_data.get("type") != "intent_bot"):
+                logger.info(f"🔍 Already in flow '{decision.flow_to_execute}', progressing current flow instead of restarting")
+                # We're already in this flow, so progress it with user input
+                progressed = await _progress_flow_with_user_input(state, msg, faq_verbose_mode)
+                
+                # If the flow couldn't be progressed, exit the flow state
+                if not progressed.get("advanced", False):
+                    logger.info(f"🔍 Flow could not be progressed, exiting flow state")
+                    state.current_flow = None
+                    state.current_step = None
+                    state.flow_data = None
+                
+                flow_states[room] = state; save_flow_state(room, state)
+                return {"status":"processed","flow_result":{
+                    "type": progressed["type"],
+                    "response": progressed["response"],
+                    "flow_state": state.dict()
+                }}
+            else:
+                # Check if we have collected information for this flow that we can resume from
+                flow_key = flow_container.get("key")
+                logger.info(f"🔍 Starting flow '{decision.flow_to_execute}' - checking for existing context")
+                
+                # Check if we have any collected information that might be relevant to this flow
+                has_relevant_context = False
+                if state.user_responses:
+                    # Check if we have information that could be relevant to this flow
+                    for key, value in state.user_responses.items():
+                        if value and str(value).strip():
+                            has_relevant_context = True
+                            logger.info(f"🔍 Found existing context: {key}={value}")
+                            break
+                
+                if has_relevant_context:
+                    logger.info(f"🔍 Resuming flow '{decision.flow_to_execute}' with existing context")
+                    # Check if we have saved context for this specific flow
+                    flow_key = flow_container.get("key")
+                    if flow_key in state.flow_contexts:
+                        saved_context = state.flow_contexts[flow_key]
+                        logger.info(f"🔍 Found saved context for flow {flow_key}: {saved_context}")
+                        
+                        # Restore the flow state from saved context
+                        state.current_flow = flow_key
+                        state.current_step = saved_context.get("current_step")
+                        state.flow_data = saved_context.get("flow_data")
+                        
+                        # Merge any new user responses with the saved context
+                        if state.user_responses and saved_context.get("user_responses"):
+                            saved_context["user_responses"].update(state.user_responses)
+                            state.user_responses = saved_context["user_responses"]
+                        elif saved_context.get("user_responses"):
+                            state.user_responses = saved_context["user_responses"]
+                    else:
+                        # No saved context, start fresh but preserve current responses
+                        intent_node = flow_container.get("data", {})
+                        state.current_flow = flow_container.get("key")
+                        state.current_step = intent_node.get("name")
+                        state.flow_data = intent_node
+                else:
+                    logger.info(f"🔍 Starting fresh flow '{decision.flow_to_execute}'")
+                    intent_node = flow_container.get("data", {})
+                    state.current_flow = flow_container.get("key")
+                    state.current_step = intent_node.get("name")
+                    state.flow_data = intent_node
+                
+                logger.info(f"🔍 Flow execution: flow_container={flow_container}")
+                logger.info(f"🔍 Flow execution: intent_node={intent_node}")
+                logger.info(f"🔍 Flow execution: state.flow_data={state.flow_data}")
 
-            # advance once if intent node leads straight to a question/message
-            response_text = await _emit_or_advance_and_emit(state)
-            logger.info(f"Executing flow '{decision.flow_to_execute}' with response: '{response_text}'")
+                # advance once if intent node leads straight to a question/message
+                response_text = await _emit_or_advance_and_emit(state)
+                logger.info(f"Executing flow '{decision.flow_to_execute}' with response: '{response_text}'")
 
+        # Save the current flow context before switching
+        if state.current_flow and state.current_flow != flow_container.get("key"):
+            logger.info(f"🔍 Saving context for previous flow: {state.current_flow}")
+            state.flow_contexts[state.current_flow] = {
+                "current_step": state.current_step,
+                "flow_data": state.flow_data,
+                "user_responses": state.user_responses.copy() if state.user_responses else {}
+            }
+        
         flow_states[room] = state; save_flow_state(room, state)
         return {"status":"processed","flow_result":{
             "type":"flow_started","flow_name":decision.flow_to_execute,
@@ -864,6 +937,7 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         # try to progress the node per user input (question/faq/action/condition/etc.)
         # BUT skip this for greeting flows - they should just generate conversational responses
         current_flow_type = state.flow_data.get("type", "").lower() if state.flow_data else ""
+        logger.info(f"🔍 Flow progression check: state.flow_data={bool(state.flow_data)}, decision.action={decision.action}, current_flow_type='{current_flow_type}'")
         if (state.flow_data and
             (decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY) and
             current_flow_type != "greeting"):
