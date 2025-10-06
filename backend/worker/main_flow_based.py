@@ -168,6 +168,27 @@ class OrchestratorAssistant(Agent):
         except Exception as e:
             logger.error(f"Failed to stop thinking indicator: {e}")
         
+        # Send agent response to frontend for chat display FIRST
+        try:
+            agent_transcript_data = {
+                "type": "agent_transcript",
+                "message": response,
+                "speaker": "Assistant",
+                "timestamp": datetime.now().isoformat()
+            }
+            await self.room.local_participant.publish_data(
+                json.dumps(agent_transcript_data).encode('utf-8'),
+                topic="lk.agent.transcript"
+            )
+            logger.info(f"🔍 Agent transcript sent to frontend: {response}")
+            
+            # Give frontend a moment to display the message before starting TTS
+            await asyncio.sleep(0.5)
+            
+        except Exception as e:
+            logger.error(f"Failed to send agent transcript: {e}")
+        
+        # THEN start TTS after frontend has displayed the message
         async with self._speech_lock: 
             await self.session.say(preprocess_text_for_tts(response))
         if result.get("type") in ["conversation_end", "call_ended"]:
