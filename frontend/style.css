@@ -659,6 +659,8 @@ body {
     display: flex;
     align-items: center;
     gap: 0.75rem;
+    width: 100%;
+    justify-content: flex-start;
 }
 
 .toggle-switch input[type="checkbox"] {
@@ -671,6 +673,8 @@ body {
     gap: 0.5rem;
     cursor: pointer;
     user-select: none;
+    width: 100%;
+    justify-content: flex-start;
 }
 
 .toggle-text {
@@ -736,6 +740,17 @@ body {
 
 .toggle-switch input[type="checkbox"]:focus + .toggle-label .toggle-slider {
     box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+}
+
+/* Ensure toggle switch aligns with form inputs */
+.form-group .toggle-switch {
+    margin-top: 0;
+    padding-top: 0;
+}
+
+/* Align toggle switch with other form elements */
+.form-group-content .toggle-switch {
+    align-self: flex-start;
 }
 
 .btn {
