@@ -168,9 +168,9 @@ async def execute_action_bot(action_data: Dict[str, Any], flow_state: FlowState)
             if url:
                 return {"response": f"Opening URL: {url}", "action_data": {"url_opened": url}}
 
-        # default
-        return {"response": action_text, "action_data": {"action_type": action_type or "unknown"}}
-
+            # default
+            return {"response": action_text, "action_data": {"action_type": action_type or "unknown"}}
+            
     except Exception as e:
         logger.error(f"execute_action_bot error: {e}")
         return {"response": "I'm sorry, there was an error executing that action. Please try again.", "action_data": {"error": str(e)}}
@@ -226,7 +226,7 @@ async def evaluate_condition_bot(condition_data: Dict[str, Any], flow_state: Flo
 
         # default passthrough
         return {"response": response_text or "Okay.", "condition_result": {"condition_type": condition_type}}
-
+                
     except Exception as e:
         logger.error(f"evaluate_condition_bot error: {e}")
         return {"response": "I'm sorry, there was an error evaluating that condition. Please try again.", "condition_result": {"error": str(e)}}
@@ -239,29 +239,48 @@ async def _emit_or_advance_and_emit(state: FlowState) -> str:
     """
     node = state.flow_data or {}
     node_type = (node.get("type") or "").lower()
+    
+    logger.info(f"🔍 _emit_or_advance_and_emit: node_type='{node_type}', node={node}")
 
     # nodes that do not require user input -> auto-advance once before speaking (message -> next question, etc.)
-    auto_advance_types = {"message"}
+    auto_advance_types = {"message", "intent_bot"}
     if node_type in auto_advance_types and node.get("next_flow"):
         nxt = node["next_flow"]
         state.current_step = nxt.get("name")
         state.flow_data = nxt
         node = state.flow_data
         node_type = (node.get("type") or "").lower()
+        logger.info(f"🔍 Auto-advanced to: node_type='{node_type}', node={node}")
 
     # emit appropriate content
     if node_type in {"greeting", "message", "question", "faq"}:
-        return node.get("text", "") or "Okay."
+        text = node.get("text", "") or "Okay."
+        logger.info(f"🔍 Returning text for {node_type}: '{text}'")
+        return text
+    if node_type == "intent_bot":
+        # This should have been auto-advanced, but if not, return the text
+        text = node.get("text", "") or "Okay."
+        logger.info(f"🔍 Returning intent_bot text (should have auto-advanced): '{text}'")
+        return text
     if node_type == "agent":
-        return node.get("text", "I'm connecting you with a human agent. Please hold on.")
+        text = node.get("text", "I'm connecting you with a human agent. Please hold on.")
+        logger.info(f"🔍 Returning agent text: '{text}'")
+        return text
     if node_type in {"action", "condition"}:
         # let the main dispatcher handle these during progression
-        return node.get("text", "") or "Okay."
+        text = node.get("text", "") or "Okay."
+        logger.info(f"🔍 Returning action/condition text: '{text}'")
+        return text
     # sms opt-in (some tenants label it differently)
     if node_type in {"sms_opt_in", "sms_optin", "smsoptin"}:
-        return node.get("text", "Would you like to opt in to SMS?")
+        text = node.get("text", "Would you like to opt in to SMS?")
+        logger.info(f"🔍 Returning SMS opt-in text: '{text}'")
+        return text
 
-    return node.get("text", "") or "Okay."
+    # Default fallback
+    text = node.get("text", "") or "Okay."
+    logger.info(f"🔍 Returning default text: '{text}'")
+    return text
 
 
 async def _progress_flow_with_user_input(state: FlowState, user_message: str) -> Dict[str, Any]:
@@ -311,7 +330,7 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str) ->
             if status != "extracted" or confidence < 0.6:
                 return {
                     "type": "message",
-                    "response": "Sorry, I didn’t quite get that. Could you say it again?",
+                    "response": "Sorry, I didn't quite get that. Could you say it again?",
                     "advanced": False
                 }
 
@@ -320,14 +339,26 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str) ->
             # store under current step name (you could normalize the key if you prefer)
             state.user_responses[state.current_step] = value
 
-            # Keep voice snappy; short acknowledgment based on type
-            ack = "Thanks."
-            if kind == "boolean":
-                ack = "Got it."
-            elif kind == "number":
+            # Generate natural acknowledgment using LLM instead of hardcoded responses
+            logger.info(f"🔍 Generating acknowledgment for flow response: '{user_message}'")
+            from backend.llm_utils import generate_conversational_response
+            conversational_context = {
+                "conversation_history": state.conversation_history,
+                "current_flow": state.current_flow,
+                "current_step": state.current_step,
+                "profile": {
+                    "collected_info": state.user_responses,
+                    "objectives": state.objectives,
+                    "refused_fields": state.refused_fields
+                },
+                "refusal_context": False,
+                "uncertainty_context": False
+            }
+            ack = await generate_conversational_response(f"I answered: {value}", conversational_context)
+            if not ack or len(ack.strip()) < 3:  # Fallback if LLM response is too short
                 ack = "Thanks."
 
-            # Advance if next node exists, otherwise end with confirmation
+            # Advance if next node exists, otherwise end with confirmation and clear flow state
             nxt = node.get("next_flow")
             if nxt:
                 state.current_step = nxt.get("name")
@@ -335,7 +366,10 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str) ->
                 speak = (ack + " " + (nxt.get("text",""))).strip() or "Okay."
                 return {"type": nxt.get("type","message"), "response": speak, "advanced": True}
 
-            # No next node; just acknowledge
+            # No next node; clear flow state and just acknowledge
+            state.current_flow = None
+            state.current_step = None
+            state.flow_data = None
             return {"type": "message", "response": f"{ack}", "advanced": False}
 
 
@@ -346,6 +380,10 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str) ->
             state.current_step = nxt.get("name")
             state.flow_data    = nxt
             return {"type": nxt.get("type","message"), "response": nxt.get("text","") or "Okay.", "advanced": True}
+        # No next node; clear flow state
+        state.current_flow = None
+        state.current_step = None
+        state.flow_data = None
         return {"type": "message", "response": node.get("text","") or "Okay.", "advanced": False}
 
     # 3) FAQ
@@ -358,10 +396,18 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str) ->
             state.flow_data    = nxt
             speak = (faq["response"] + " " + nxt.get("text","")).strip()
             return {"type": "faq", "response": speak, "advanced": True}
+        # No next node; clear flow state
+        state.current_flow = None
+        state.current_step = None
+        state.flow_data = None
         return {"type": "faq", "response": faq["response"], "advanced": False}
 
     # 4) AGENT
     if node_type == "agent":
+        # Agent handoff should clear the flow state since the conversation ends
+        state.current_flow = None
+        state.current_step = None
+        state.flow_data = None
         return {"type": "agent_handoff", "response": node.get("text","I'm connecting you with a human agent. Please hold on."), "advanced": False}
 
     # 5) ACTION
@@ -373,6 +419,10 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str) ->
             state.flow_data    = nxt
             speak = (result["response"] + " " + nxt.get("text","")).strip()
             return {"type": "action_completed", "response": speak, "advanced": True}
+        # No next node; clear flow state
+        state.current_flow = None
+        state.current_step = None
+        state.flow_data = None
         return {"type": "action_completed", "response": result["response"], "advanced": False}
 
     # 6) CONDITION
@@ -380,7 +430,14 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str) ->
         result = await evaluate_condition_bot(node, state, user_message)
         nxt = state.flow_data  # evaluate_condition_bot may have advanced the flow_data
         speak = result["response"]
-        return {"type": "condition_evaluated", "response": speak, "advanced": True}
+        # Condition evaluation may or may not have advanced the flow, but we should check if there's a next step
+        if nxt and nxt.get("next_flow"):
+            return {"type": "condition_evaluated", "response": speak, "advanced": True}
+        # No valid next step; clear flow state
+        state.current_flow = None
+        state.current_step = None
+        state.flow_data = None
+        return {"type": "condition_evaluated", "response": speak, "advanced": False}
 
     # 7) SMS OPT-IN (treat like message/action hybrid)
     if node_type in {"sms_opt_in", "sms_optin", "smsoptin"}:
@@ -390,9 +447,16 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str) ->
             state.flow_data    = nxt
             speak = (node.get("text","") + " " + nxt.get("text","")).strip() or "Okay."
             return {"type": "sms_opt_in", "response": speak, "advanced": True}
+        # No next node; clear flow state
+        state.current_flow = None
+        state.current_step = None
+        state.flow_data = None
         return {"type": "sms_opt_in", "response": node.get("text","") or "Okay.", "advanced": False}
 
-    # default: just emit text
+    # default: just emit text and clear flow state for unhandled node types
+    state.current_flow = None
+    state.current_step = None
+    state.flow_data = None
     return {"type": node_type or "message", "response": node.get("text","") or "Okay.", "advanced": False}
 
 
@@ -411,14 +475,13 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
             for flow_key, flow_data in bot_template["data"].items():
                 if (flow_data.get("type") or "").lower() == "greeting":
                     greeting = flow_data.get("text", "Hello! How can I help?")
-                    state = flow_states.get(room) or FlowState()
-                    state.current_flow = flow_key
-                    state.current_step = flow_data.get("name")
-                    state.flow_data    = flow_data
+                    # Greeting flows are one-time messages, not persistent states
+                    # Clear any existing flow state and just return the greeting
+                    state = FlowState()  # Fresh state, no flow persistence
                     flow_states[room]  = state
                     save_flow_state(room, state)
                     return {"status":"processed","flow_result":{
-                        "type":"flow_started","flow_name":"greeting",
+                        "type":"greeting","flow_name":"greeting",
                         "response":greeting,"flow_state":state.dict()}}
         return {"status":"processed","flow_result":{
             "type":"message","response":"Hello! Thanks for calling Alive5. How can I help today?","flow_state":{}}}
@@ -440,19 +503,32 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         return {"status":"error","flow_result":{"type":"error","response":"System error"}}
 
     response_text = decision.response or ""
+    logger.info(f"🔍 Orchestrator decision: action={decision.action}, response='{response_text}', flow_to_execute='{decision.flow_to_execute}'")
 
     if decision.action == OrchestratorAction.EXECUTE_FLOW and decision.flow_to_execute:
-        flow_container = conversational_orchestrator.available_flows.get(decision.flow_to_execute)
+        # Find the flow by text (since orchestrator uses flow text as key)
+        flow_container = None
+        for flow_key, flow_data in conversational_orchestrator.available_flows.items():
+            if flow_data.get("name") == decision.flow_to_execute:
+                flow_container = flow_data
+                break
+        
         if not flow_container:
+            logger.warning(f"Flow '{decision.flow_to_execute}' not found in available flows")
             faq = await get_faq_response(msg); response_text = faq["response"]
         else:
             intent_node = flow_container.get("data", {})
             state.current_flow = flow_container.get("key")
             state.current_step = intent_node.get("name")
             state.flow_data    = intent_node
+            
+            logger.info(f"🔍 Flow execution: flow_container={flow_container}")
+            logger.info(f"🔍 Flow execution: intent_node={intent_node}")
+            logger.info(f"🔍 Flow execution: state.flow_data={state.flow_data}")
 
             # advance once if intent node leads straight to a question/message
             response_text = await _emit_or_advance_and_emit(state)
+            logger.info(f"Executing flow '{decision.flow_to_execute}' with response: '{response_text}'")
 
         flow_states[room] = state; save_flow_state(room, state)
         return {"status":"processed","flow_result":{
@@ -463,10 +539,56 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         faq = await get_faq_response(msg); response_text = faq["response"]
 
     elif decision.action == OrchestratorAction.HANDLE_REFUSAL:
-        response_text = response_text or "Got it, we’ll skip that."
+        if not response_text or response_text.strip() == "":
+            # Generate natural conversational response for refusal
+            logger.info(f"🔍 Generating conversational response for refusal: '{msg}'")
+            from backend.llm_utils import generate_conversational_response
+            conversational_context = {
+                "conversation_history": state.conversation_history,
+                "current_flow": state.current_flow,
+                "current_step": state.current_step,
+                "profile": {
+                    "collected_info": state.user_responses,
+                    "objectives": state.objectives,
+                    "refused_fields": state.refused_fields
+                },
+                "refusal_context": True,
+                "uncertainty_context": False
+            }
+            response_text = await generate_conversational_response(msg, conversational_context)
+
+        # After handling refusal, check if we need to progress the flow
+        if state.flow_data and state.flow_data.get("next_flow"):
+            logger.info(f"🔍 Progressing flow after refusal handling")
+            next_response = await _emit_or_advance_and_emit(state)
+            if next_response and next_response.strip():
+                response_text = f"{response_text} {next_response}".strip()
 
     elif decision.action == OrchestratorAction.HANDLE_UNCERTAINTY:
-        response_text = response_text or "No worries, let’s continue."
+        if not response_text or response_text.strip() == "":
+            # Generate natural conversational response for uncertainty
+            logger.info(f"🔍 Generating conversational response for uncertainty: '{msg}'")
+            from backend.llm_utils import generate_conversational_response
+            conversational_context = {
+                "conversation_history": state.conversation_history,
+                "current_flow": state.current_flow,
+                "current_step": state.current_step,
+                "profile": {
+                    "collected_info": state.user_responses,
+                    "objectives": state.objectives,
+                    "refused_fields": state.refused_fields
+                },
+                "refusal_context": False,
+                "uncertainty_context": True
+            }
+            response_text = await generate_conversational_response(msg, conversational_context)
+
+        # After handling uncertainty, check if we need to progress the flow
+        if state.flow_data and state.flow_data.get("next_flow"):
+            logger.info(f"🔍 Progressing flow after uncertainty handling")
+            next_response = await _emit_or_advance_and_emit(state)
+            if next_response and next_response.strip():
+                response_text = f"{response_text} {next_response}".strip()
 
     elif decision.action == OrchestratorAction.SPEAK_WITH_PERSON:
         response_text = response_text or "Connecting you to an agent now."
@@ -475,14 +597,63 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
     else:
         # If orchestrator chose conversational handling AND we're in a node,
         # try to progress the node per user input (question/faq/action/condition/etc.)
-        if state.flow_data and (decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY):
+        # BUT skip this for greeting flows - they should just generate conversational responses
+        current_flow_type = state.flow_data.get("type", "").lower() if state.flow_data else ""
+        if (state.flow_data and
+            (decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY) and
+            current_flow_type != "greeting"):
             progressed = await _progress_flow_with_user_input(state, msg)
+
+            # If the flow couldn't be progressed, exit the flow state for conversational handling
+            if not progressed.get("advanced", False):
+                logger.info(f"🔍 Flow could not be progressed, exiting flow state for conversational handling")
+                state.current_flow = None
+                state.current_step = None
+                state.flow_data = None
+
             flow_states[room] = state; save_flow_state(room, state)
             return {"status":"processed","flow_result":{
                 "type": progressed["type"],
                 "response": progressed["response"],
                 "flow_state": state.dict()
             }}
+
+        # If orchestrator chose conversational handling but no response provided, generate one
+        # Also clear flow state if we're in a dead-end flow (no valid progression)
+        if decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY:
+            if state.flow_data:
+                current_flow_type = state.flow_data.get("type", "").lower()
+                next_flow = state.flow_data.get("next_flow")
+
+                # Clear greeting flow state
+                if current_flow_type == "greeting":
+                    logger.info(f"🔍 Clearing greeting flow state for conversational handling")
+                    state.current_flow = None
+                    state.current_step = None
+                    state.flow_data = None
+                # Clear flow state if it has no valid next step
+                elif not next_flow or next_flow.get("name") == "N/A":
+                    logger.info(f"🔍 Clearing dead-end flow state for conversational handling")
+                    state.current_flow = None
+                    state.current_step = None
+                    state.flow_data = None
+
+        if decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY and (not response_text or response_text.strip() == ""):
+            logger.info(f"🔍 Generating conversational response for: '{msg}'")
+            from backend.llm_utils import generate_conversational_response
+            conversational_context = {
+                "user_message": msg,
+                "conversation_history": state.conversation_history,
+                "current_flow": state.current_flow,
+                "current_step": state.current_step,
+                "profile": {},  # Could add user profile here if needed
+                "refusal_context": False,
+                "skipped_fields": []
+            }
+            response_text = await generate_conversational_response(msg, conversational_context)
+            logger.info(f"🔍 Generated conversational response: '{response_text}'")
+        else:
+            logger.info(f"🔍 Not generating conversational response: action={decision.action}, response_text='{response_text}'")
 
         # fallback: if nothing to say, use FAQ to avoid "..."
         if not response_text:
@@ -560,7 +731,7 @@ async def refresh_template(req: Request):
             raise HTTPException(status_code=resp.status_code, detail="Template refresh failed")
         bot_template = resp.json()
         conversational_orchestrator = create_orchestrator_from_template(bot_template)
-        return {
+    return {
             "status": "success",
             "flows": list(conversational_orchestrator.available_flows.keys())
         }
@@ -710,13 +881,13 @@ def update_session(req: SessionUpdateRequest):
             "last_updated": time.time(),
             "user_data": {},
             "status": "active",
-            "intent": None,
-            "voice_id": DEFAULT_VOICE_ID,
-            "selected_voice": DEFAULT_VOICE_ID,
+        "intent": None,
+        "voice_id": DEFAULT_VOICE_ID,
+        "selected_voice": DEFAULT_VOICE_ID,
         }
-
+    
     session = active_sessions[room_name]
-
+        
     if req.intent:
         session["intent"] = req.intent
         session["intent_detected_at"] = time.time()
@@ -732,24 +903,23 @@ def update_session(req: SessionUpdateRequest):
     if req.status:
         session["status"] = req.status
         session["status_updated_at"] = time.time()
-
-    session["last_updated"] = time.time()
-
-    return {
-        "message": "Session updated successfully",
-        "session_id": room_name,
-        "current_intent": session.get("intent"),
+        session["last_updated"] = time.time()
+        
+        return {
+            "message": "Session updated successfully",
+            "session_id": room_name,
+            "current_intent": session.get("intent"),
         "status": session.get("status"),
-    }
+        }
 
 @app.get("/api/sessions/{room_name}")
 def get_session_info(room_name: str):
     if room_name not in active_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
-
+    
     session = active_sessions[room_name]
     duration = time.time() - session["created_at"]
-
+    
     return {
         "session_id": room_name,
         "participant_name": session.get("participant_name"),
@@ -788,18 +958,18 @@ def cleanup_room(room_name: str):
             "session_id": room_name,
             "participant_name": session.get("participant_name"),
             "intent": session.get("intent"),
-            "duration_seconds": int(duration),
+                "duration_seconds": int(duration),
             "user_data": session.get("user_data", {}),
             "voice_id": session.get("voice_id"),
             "selected_voice": session.get("selected_voice"),
-            "status": "completed",
+                "status": "completed",
             "completed_at": time.time(),
         }
         logger.info(f"Session completed: {json.dumps(final_summary, indent=2)}")
         del active_sessions[room_name]
         return {"message": f"Room {room_name} cleaned up successfully", "session_summary": final_summary}
     return {"message": f"Room {room_name} cleanup requested (no session data found)"}
-
+        
 # --------------------------------------------------------------------
 # Voices
 # --------------------------------------------------------------------
