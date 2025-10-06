@@ -714,18 +714,12 @@ class DynamicVoiceAgent {
                     } else if (data.type === 'thinking_stop') {
                         console.log('✅ Thinking stopped:', data);
                         this.stopThinkingIndicator();
-                    }
-                } catch (error) {
-                    console.error('Error processing conversation control data:', error);
-                }
-            } else if (topic === 'lk.intent.update') {
-                try {
-                    const data = JSON.parse(new TextDecoder().decode(payload));
-                    if (data.type === 'intent_update' && data.intent) {
+                    } else if (data.type === 'intent_update' && data.intent) {
+                        console.log('🎯 Intent update received:', data);
                         this.handleIntentUpdate(data.intent, data.source || 'Flow System');
                     }
                 } catch (error) {
-                    console.error('Error processing intent update data:', error);
+                    console.error('Error processing conversation control data:', error);
                 }
             } else if (topic) {
                 // console.log('📨 Other data received:', { topic, participant: participant?.identity, data: new TextDecoder().decode(payload) });

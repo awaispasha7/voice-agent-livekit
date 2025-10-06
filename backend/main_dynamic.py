@@ -408,6 +408,12 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
             choice_key = match_answer_with_llm(qtext, user_message, answers)
             if choice_key and choice_key in answers:
                 branch = answers[choice_key]
+                logger.info(f"🔍 Found matching answer: {choice_key} -> {branch.get('text', '')}")
+
+                # Persist the user's choice for downstream use
+                state.user_responses = (state.user_responses or {})
+                state.user_responses[state.current_step] = choice_key
+
                 # go to the branch node
                 state.current_step = branch.get("name")
                 state.flow_data    = branch
@@ -419,6 +425,22 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
                     state.current_step = nxt.get("name")
                     state.flow_data    = nxt
                     speak = (speak + " " + (nxt.get("text",""))).strip()
+                    logger.info(f"🔍 Auto-advanced to next question: {nxt.get('text', '')}")
+
+                # Save the current flow context after advancing
+                if state.current_flow:
+                    logger.info(f"🔍 Saving flow context for {state.current_flow} with choice: {choice_key}")
+                    logger.info(f"🔍 Current flow key: {state.current_flow}")
+                    logger.info(f"🔍 Current step: {state.current_step}")
+                    logger.info(f"🔍 Current flow_data type: {state.flow_data.get('type') if state.flow_data else 'None'}")
+                    state.flow_contexts[state.current_flow] = {
+                        "current_step": state.current_step,
+                        "flow_data": state.flow_data,
+                        "user_responses": state.user_responses.copy() if state.user_responses else {}
+                    }
+                    logger.info(f"🔍 Saved context for {state.current_flow}: {state.flow_contexts[state.current_flow]}")
+
+                logger.info(f"🔍 Flow progressed to step: {state.current_step}, type: {state.flow_data.get('type')}")
                 return {"type": branch.get("type","message"), "response": speak or "Okay.", "advanced": True}
             # no match → ask to rephrase
             return {"type": "message", "response": "I didn't quite catch that. Could you pick one of the options?", "advanced": False}
@@ -451,6 +473,19 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
             if nxt:
                 state.current_step = nxt.get("name")
                 state.flow_data    = nxt
+
+            # Save the current flow context after advancing
+            if state.current_flow:
+                logger.info(f"🔍 Saving flow context for {state.current_flow} with response: {value}")
+                logger.info(f"🔍 Current flow key: {state.current_flow}")
+                logger.info(f"🔍 Current step: {state.current_step}")
+                logger.info(f"🔍 Current flow_data type: {state.flow_data.get('type') if state.flow_data else 'None'}")
+                state.flow_contexts[state.current_flow] = {
+                    "current_step": state.current_step,
+                    "flow_data": state.flow_data,
+                    "user_responses": state.user_responses.copy() if state.user_responses else {}
+                }
+                logger.info(f"🔍 Saved context for {state.current_flow}: {state.flow_contexts[state.current_flow]}")
                 
                 # Generate natural acknowledgment with next step context
                 logger.info(f"🔍 Generating acknowledgment with next step context: '{user_message}'")
@@ -489,6 +524,20 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
         if nxt:
             state.current_step = nxt.get("name")
             state.flow_data    = nxt
+
+            # Save the current flow context after advancing
+            if state.current_flow:
+                logger.info(f"🔍 Saving flow context for {state.current_flow} (message node)")
+                logger.info(f"🔍 Current flow key: {state.current_flow}")
+                logger.info(f"🔍 Current step: {state.current_step}")
+                logger.info(f"🔍 Current flow_data type: {state.flow_data.get('type') if state.flow_data else 'None'}")
+                state.flow_contexts[state.current_flow] = {
+                    "current_step": state.current_step,
+                    "flow_data": state.flow_data,
+                    "user_responses": state.user_responses.copy() if state.user_responses else {}
+                }
+                logger.info(f"🔍 Saved context: {state.flow_contexts[state.current_flow]}")
+
             return {"type": nxt.get("type","message"), "response": nxt.get("text","") or "Okay.", "advanced": True}
         # No next node; clear flow state
         state.current_flow = None
@@ -504,6 +553,20 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
         if nxt:
             state.current_step = nxt.get("name")
             state.flow_data    = nxt
+
+            # Save the current flow context after advancing
+            if state.current_flow:
+                logger.info(f"🔍 Saving flow context for {state.current_flow} (faq node)")
+                logger.info(f"🔍 Current flow key: {state.current_flow}")
+                logger.info(f"🔍 Current step: {state.current_step}")
+                logger.info(f"🔍 Current flow_data type: {state.flow_data.get('type') if state.flow_data else 'None'}")
+                state.flow_contexts[state.current_flow] = {
+                    "current_step": state.current_step,
+                    "flow_data": state.flow_data,
+                    "user_responses": state.user_responses.copy() if state.user_responses else {}
+                }
+                logger.info(f"🔍 Saved context: {state.flow_contexts[state.current_flow]}")
+
             speak = (faq["response"] + " " + nxt.get("text","")).strip()
             return {"type": "faq", "response": speak, "advanced": True}
         # No next node; clear flow state
@@ -527,6 +590,20 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
         if nxt:
             state.current_step = nxt.get("name")
             state.flow_data    = nxt
+
+            # Save the current flow context after advancing
+            if state.current_flow:
+                logger.info(f"🔍 Saving flow context for {state.current_flow} (action node)")
+                logger.info(f"🔍 Current flow key: {state.current_flow}")
+                logger.info(f"🔍 Current step: {state.current_step}")
+                logger.info(f"🔍 Current flow_data type: {state.flow_data.get('type') if state.flow_data else 'None'}")
+                state.flow_contexts[state.current_flow] = {
+                    "current_step": state.current_step,
+                    "flow_data": state.flow_data,
+                    "user_responses": state.user_responses.copy() if state.user_responses else {}
+                }
+                logger.info(f"🔍 Saved context: {state.flow_contexts[state.current_flow]}")
+
             speak = (result["response"] + " " + nxt.get("text","")).strip()
             return {"type": "action_completed", "response": speak, "advanced": True}
         # No next node; clear flow state
@@ -555,6 +632,20 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
         if nxt:
             state.current_step = nxt.get("name")
             state.flow_data    = nxt
+
+            # Save the current flow context after advancing
+            if state.current_flow:
+                logger.info(f"🔍 Saving flow context for {state.current_flow} (sms_opt_in node)")
+                logger.info(f"🔍 Current flow key: {state.current_flow}")
+                logger.info(f"🔍 Current step: {state.current_step}")
+                logger.info(f"🔍 Current flow_data type: {state.flow_data.get('type') if state.flow_data else 'None'}")
+                state.flow_contexts[state.current_flow] = {
+                    "current_step": state.current_step,
+                    "flow_data": state.flow_data,
+                    "user_responses": state.user_responses.copy() if state.user_responses else {}
+                }
+                logger.info(f"🔍 Saved context: {state.flow_contexts[state.current_flow]}")
+
             speak = (node.get("text","") + " " + nxt.get("text","")).strip() or "Okay."
             return {"type": "sms_opt_in", "response": speak, "advanced": True}
         # No next node; clear flow state
@@ -668,19 +759,28 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                             logger.info(f"🔍 Found existing context: {key}={value}")
                             break
                 
+                # Get the intent node for this flow
+                intent_node = flow_container.get("data", {})
+
                 if has_relevant_context:
                     logger.info(f"🔍 Resuming flow '{decision.flow_to_execute}' with existing context")
                     # Check if we have saved context for this specific flow
                     flow_key = flow_container.get("key")
+                    logger.info(f"🔍 Looking for context under flow key: {flow_key}")
+                    logger.info(f"🔍 Available flow contexts: {list(state.flow_contexts.keys())}")
+
                     if flow_key in state.flow_contexts:
                         saved_context = state.flow_contexts[flow_key]
                         logger.info(f"🔍 Found saved context for flow {flow_key}: {saved_context}")
-                        
+
                         # Restore the flow state from saved context
                         state.current_flow = flow_key
                         state.current_step = saved_context.get("current_step")
                         state.flow_data = saved_context.get("flow_data")
-                        
+
+                        logger.info(f"🔍 Restored flow state - current_step: {state.current_step}")
+                        logger.info(f"🔍 Restored flow state - flow_data type: {state.flow_data.get('type') if state.flow_data else 'None'}")
+
                         # Merge any new user responses with the saved context
                         if state.user_responses and saved_context.get("user_responses"):
                             saved_context["user_responses"].update(state.user_responses)
@@ -688,14 +788,13 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                         elif saved_context.get("user_responses"):
                             state.user_responses = saved_context["user_responses"]
                     else:
+                        logger.info(f"🔍 No saved context found for flow {flow_key}, starting fresh")
                         # No saved context, start fresh but preserve current responses
-                        intent_node = flow_container.get("data", {})
                         state.current_flow = flow_container.get("key")
                         state.current_step = intent_node.get("name")
                         state.flow_data = intent_node
                 else:
                     logger.info(f"🔍 Starting fresh flow '{decision.flow_to_execute}'")
-                    intent_node = flow_container.get("data", {})
                     state.current_flow = flow_container.get("key")
                     state.current_step = intent_node.get("name")
                     state.flow_data = intent_node
@@ -710,12 +809,13 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
 
         # Save the current flow context before switching
         if state.current_flow and state.current_flow != flow_container.get("key"):
-            logger.info(f"🔍 Saving context for previous flow: {state.current_flow}")
+            logger.info(f"🔍 Saving context for previous flow before switching: {state.current_flow}")
             state.flow_contexts[state.current_flow] = {
                 "current_step": state.current_step,
                 "flow_data": state.flow_data,
                 "user_responses": state.user_responses.copy() if state.user_responses else {}
             }
+            logger.info(f"🔍 Saved context: {state.flow_contexts[state.current_flow]}")
         
         flow_states[room] = state; save_flow_state(room, state)
         return {"status":"processed","flow_result":{
@@ -984,13 +1084,28 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
 
         if decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY and (not response_text or response_text.strip() == ""):
             logger.info(f"🔍 Generating conversational response for: '{msg}'")
+
+            # Save current flow context before generating conversational response
+            if state.current_flow and state.flow_data:
+                logger.info(f"🔍 Saving flow context before conversational handling: {state.current_flow}")
+                state.flow_contexts[state.current_flow] = {
+                    "current_step": state.current_step,
+                    "flow_data": state.flow_data,
+                    "user_responses": state.user_responses.copy() if state.user_responses else {}
+                }
+                logger.info(f"🔍 Saved context: {state.flow_contexts[state.current_flow]}")
+
             from backend.llm_utils import generate_conversational_response
             conversational_context = {
                 "user_message": msg,
                 "conversation_history": state.conversation_history,
                 "current_flow": state.current_flow,
                 "current_step": state.current_step,
-                "profile": {},  # Could add user profile here if needed
+                "profile": {
+                    "collected_info": state.user_responses,
+                    "objectives": state.objectives,
+                    "refused_fields": state.refused_fields
+                },
                 "refusal_context": False,
                 "skipped_fields": []
             }
@@ -1419,10 +1534,10 @@ async def manual_cleanup_persistence():
     try:
         cleanup_old_persistence_files()
         return {
-            "status": "success", 
+            "status": "success",
             "message": "Persistence cleanup completed successfully",
             "timestamp": time.time()
-        }
+            }
     except Exception as e:
         logger.error(f"Manual cleanup failed: {e}")
         return {
@@ -1468,7 +1583,7 @@ async def get_persistence_stats():
                 total_size += file_path.stat().st_size
         
         stats["total_size_mb"] = round(total_size / (1024 * 1024), 2)
-        
+            
         return {
             "status": "success",
             "stats": stats,
@@ -1476,7 +1591,7 @@ async def get_persistence_stats():
         }
     except Exception as e:
         logger.error(f"Failed to get persistence stats: {e}")
-        return {
+    return {
             "status": "error",
             "message": f"Failed to get stats: {str(e)}",
             "timestamp": time.time()

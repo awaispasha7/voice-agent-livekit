@@ -168,6 +168,25 @@ class OrchestratorAssistant(Agent):
         except Exception as e:
             logger.error(f"Failed to stop thinking indicator: {e}")
         
+        # Send intent update to frontend if flow was started
+        flow_type = result.get("type", "")
+        flow_name = result.get("flow_name", "")
+        if flow_type == "flow_started" and flow_name:
+            try:
+                intent_data = {
+                    "type": "intent_update",
+                    "intent": flow_name,
+                    "source": "Flow System",
+                    "timestamp": datetime.now().isoformat()
+                }
+                await self.room.local_participant.publish_data(
+                    json.dumps(intent_data).encode('utf-8'),
+                    topic="lk.conversation.control"
+                )
+                logger.info(f"🔍 Intent update sent to frontend: {flow_name}")
+            except Exception as e:
+                logger.error(f"Failed to send intent update: {e}")
+        
         # Send agent response to frontend for chat display FIRST
         try:
             agent_transcript_data = {
