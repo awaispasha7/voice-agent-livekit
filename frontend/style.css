@@ -751,6 +751,7 @@ body {
 /* Specific alignment for toggle switch in form groups */
 .form-group-toggle .toggle-switch {
     margin-top: 0.5rem; /* Match the label padding */
+    margin-left: 2rem;
 }
 
 /* Align toggle switch with other form elements */
