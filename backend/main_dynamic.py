@@ -771,24 +771,10 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                 state.current_step = None
                 state.flow_data = None
             elif progressed.get("type") == "acknowledgment":
-                # For acknowledgments, we need to emit the next question after the acknowledgment
-                logger.info(f"🔍 Handling acknowledgment, will emit next question")
-                next_question = await _emit_or_advance_and_emit(state)
-                if next_question and next_question.strip():
-                    # Don't concatenate - the LLM should have already incorporated the next step
-                    # Just use the acknowledgment response as is
-                    logger.info(f"🔍 Acknowledgment response: '{progressed['response']}', Next question: '{next_question}'")
-                    # Check if the acknowledgment already covers the next step semantically
-                    ack_lower = progressed["response"].lower()
-                    next_lower = next_question.lower()
-                    # If the acknowledgment already mentions the key concepts from the next step, don't concatenate
-                    if ("connecting" in ack_lower and "connecting" in next_lower) or \
-                       ("thank" in ack_lower and "thank" in next_lower) or \
-                       ("shortly" in ack_lower and "shortly" in next_lower):
-                        logger.info(f"🔍 Acknowledgment already covers next step, not concatenating")
-                    else:
-                        progressed["response"] = f"{progressed['response']} {next_question}".strip()
-                        logger.info(f"🔍 Concatenated response: '{progressed['response']}'")
+                # For acknowledgments, the LLM has already incorporated the next step context
+                # No need to emit additional questions - the response is complete
+                logger.info(f"🔍 Handling acknowledgment: '{progressed['response']}'")
+                logger.info(f"🔍 Acknowledgment is complete, no additional processing needed")
 
             flow_states[room] = state; save_flow_state(room, state)
             return {"status":"processed","flow_result":{
