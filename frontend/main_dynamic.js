@@ -1659,10 +1659,10 @@ class DynamicVoiceAgent {
     }
     
     clearThinkingMessage() {
-        // Remove the last thinking message from chat
-        const chatContainer = document.getElementById('chat-container');
-        if (chatContainer) {
-            const thinkingMessages = chatContainer.querySelectorAll('.thinking-message');
+        // Remove all thinking messages from chat
+        const chatMessages = document.getElementById('chatMessages');
+        if (chatMessages) {
+            const thinkingMessages = chatMessages.querySelectorAll('.message.thinking');
             thinkingMessages.forEach(msg => msg.remove());
         }
     }
