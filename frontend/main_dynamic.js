@@ -12,7 +12,6 @@ class DynamicVoiceAgent {
         this.detectedUserData = {};
         this.conversationLog = [];
         this.selectedVoice = localStorage.getItem('alive5.defaultVoice') || "f114a467-c40a-4db8-964d-aaba89cd08fa"; // Default voice (Miles - Yogi)
-        this.pendingVoiceChange = null;
         this.availableVoices = {}; // Will be populated from backend
         
         // Track processed messages to prevent duplicates
@@ -123,14 +122,9 @@ class DynamicVoiceAgent {
     
     populateVoiceDropdowns() {
         const voiceSelect = document.getElementById('voiceSelect');
-        const voiceChangeSelect = document.getElementById('voiceChangeSelect');
         
         if (voiceSelect) {
             this.populateVoiceDropdown(voiceSelect);
-        }
-        
-        if (voiceChangeSelect) {
-            this.populateVoiceDropdown(voiceChangeSelect);
         }
     }
     
@@ -301,7 +295,6 @@ class DynamicVoiceAgent {
         if (voiceSelect) {
             voiceSelect.addEventListener('change', (e) => {
                 const newVoice = e.target.value;
-                this.pendingVoiceChange = newVoice;
                 try {
                     localStorage.setItem('alive5.defaultVoice', newVoice);
                 } catch (err) {
@@ -314,20 +307,6 @@ class DynamicVoiceAgent {
             });
         }
 
-        const voiceChangeSelect = document.getElementById('voiceChangeSelect');
-        if (voiceChangeSelect) {
-            voiceChangeSelect.addEventListener('change', (e) => {
-                // Voice changes are only supported before starting a call
-                if (this.connectionStatus === 'connected') {
-                    console.log('🎤 Voice changes are not supported during calls. Please disconnect and reconnect to change voice.');
-                    this.addMessage('Voice changes are not supported during calls. Please disconnect and reconnect to change voice.', 'system');
-                    // Reset the select to the current voice
-                    e.target.value = this.selectedVoice;
-                    return;
-                }
-                this.changeVoice(e.target.value);
-            });
-        }
         
         document.addEventListener('keydown', (e) => {
             if (e.key === 'r' && e.ctrlKey && !this.isConnected) {
@@ -473,7 +452,6 @@ class DynamicVoiceAgent {
                 }
             }
 
-            this.applyPendingVoiceChange();
             
             // Switch to chat interface
             this.showChatInterface();
@@ -1767,11 +1745,6 @@ class DynamicVoiceAgent {
             transcriptContainer.style.display = 'block';
         }
         
-        // Sync voice selectors
-        const voiceChangeSelect = document.getElementById('voiceChangeSelect');
-        if (voiceChangeSelect) {
-            voiceChangeSelect.value = this.selectedVoice;
-        }
     }
 
     showConnectionForm() {
@@ -1910,52 +1883,7 @@ class DynamicVoiceAgent {
         return await response.json();
     }
 
-    async changeVoice(voiceId) {
-        if (!this.isConnected || !this.currentRoomName) {
-            console.warn('Cannot change voice: not connected');
-            this.pendingVoiceChange = voiceId;
-            return;
-        }
 
-        // Voice changes are only supported before starting a call
-        if (this.connectionStatus === 'connected') {
-            console.log('🎤 Voice changes are not supported during calls. Please disconnect and reconnect to change voice.');
-            this.addMessage('Voice changes are not supported during calls. Please disconnect and reconnect to change voice.', 'system');
-            return;
-        }
-
-        try {
-            console.log(`🎤 Changing voice to ${this.getVoiceName(voiceId)}`);
-            this.updateConnectionStatus('connecting', 'Changing voice...');
-            
-            // Send voice change request to backend
-            const result = await this.sendVoiceChangeRequest(this.currentRoomName, voiceId);
-            
-            if (result.status === 'success') {
-                this.selectedVoice = voiceId;
-                this.pendingVoiceChange = null;
-                const voiceName = result.voice_name || this.getVoiceName(voiceId);
-                this.addMessage(`Voice changed to ${voiceName}`, 'agent');
-                this.updateConnectionStatus('connected', 'Voice changed successfully');
-                console.log(`🎤 Voice changed to ${voiceName}`);
-            } else {
-                throw new Error(result.message || 'Failed to change voice');
-            }
-        } catch (error) {
-            console.error('Error changing voice:', error);
-            this.addMessage(`Failed to change voice: ${error.message}`, 'system');
-            this.updateConnectionStatus('error', 'Voice change failed');
-            this.pendingVoiceChange = voiceId;
-        }
-    }
-
-    applyPendingVoiceChange() {
-        if (this.pendingVoiceChange) {
-            const voiceId = this.pendingVoiceChange;
-            this.pendingVoiceChange = null;
-            this.changeVoice(voiceId);
-        }
-    }
 
         getVoiceName(voiceId) {
             // Use cached voices from backend, fallback to hardcoded if not available

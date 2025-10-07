@@ -390,25 +390,6 @@ body {
     border: 1px solid #d61515;
 }
 
-.voice-change-select {
-    padding: 0.5rem;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    background: white;
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: all 0.3s ease;
-}
-
-.voice-change-select:hover {
-    border-color: #667eea;
-}
-
-.voice-change-select:focus {
-    outline: none;
-    border-color: #667eea;
-    box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
-}
 
 .voice-visualizer {
     display: flex;
