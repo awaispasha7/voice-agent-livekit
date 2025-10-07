@@ -1199,16 +1199,31 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                 logger.info(f"🔍 Flow could not be progressed, checking for orchestrator response")
                 if response_text and response_text.strip():
                     logger.info(f"🔍 Using orchestrator's conversational response: '{response_text}'")
-                    # Clear flow state since we're handling conversationally
-                    state.current_flow = None
-                    state.current_step = None
-                    state.flow_data = None
-                    flow_states[room] = state; save_flow_state(room, state)
-                    return {"status":"processed","flow_result":{
-                        "type": "conversational_response",
-                        "response": response_text,
-                        "flow_state": state.dict()
-                    }}
+                    
+                    # Try to progress the flow to the next step with the orchestrator's response
+                    # This allows the flow to continue naturally after acknowledging the user's choice
+                    next_progressed = await _progress_flow_with_user_input(state, response_text, faq_verbose_mode)
+                    
+                    if next_progressed.get("advanced", False):
+                        logger.info(f"🔍 Flow progressed to next step after orchestrator response")
+                        flow_states[room] = state; save_flow_state(room, state)
+                        return {"status":"processed","flow_result":{
+                            "type": next_progressed["type"],
+                            "response": next_progressed["response"],
+                            "flow_state": state.dict()
+                        }}
+                    else:
+                        # If still can't progress, use the orchestrator's response and clear flow state
+                        logger.info(f"🔍 Flow still cannot progress, using orchestrator response and clearing flow state")
+                        state.current_flow = None
+                        state.current_step = None
+                        state.flow_data = None
+                        flow_states[room] = state; save_flow_state(room, state)
+                        return {"status":"processed","flow_result":{
+                            "type": "conversational_response",
+                            "response": response_text,
+                            "flow_state": state.dict()
+                        }}
                 else:
                     logger.info(f"🔍 No orchestrator response available, exiting flow state for conversational handling")
                     state.current_flow = None

@@ -86,7 +86,7 @@ EXAMPLES:
 
         user = f'TRANSCRIBED TEXT: "{transcribed_text}"\nRespond in JSON only.'
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             temperature=0.1,
@@ -168,7 +168,7 @@ Q: "How many?" A:"uh the"
 USER RESPONSE: "{user_text}"
 Return ONLY JSON per the schema."""
         resp = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-5-mini",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             temperature=0.1,
@@ -222,7 +222,7 @@ User: {user_response}
 Options: {keys}
 Return only the exact option key or "none"."""
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-nano",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             temperature=0.0,
@@ -267,7 +267,7 @@ EXAMPLES:
 USER: "{user_message}"
 Return exactly one: an intent key, or "greeting", or "speak_with_person", or "none"."""
         resp = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-5-nano",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             temperature=0.0,
@@ -307,7 +307,7 @@ OUTPUT:
 Return only "uncertain" or "certain"."""
         user = f'Question: "{question_text}"\nUser: "{user_message}"'
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-nano",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             temperature=0.0,
@@ -357,7 +357,7 @@ EXAMPLES:
   {"budget":"$50k","quantity":"25 campaigns"}"""
         user = f'MESSAGE: "{user_message}"\nReturn JSON with found keys only.'
         resp = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-5-mini",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             temperature=0.1,
@@ -474,7 +474,7 @@ USER MESSAGE: "{user_message}"
 
 IMPORTANT: This is a normal conversational response request. Do NOT add meta-commentary like "Here's a more conversational version" or "Sure!". Simply respond naturally to the user's message."""
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             temperature=0.7,
@@ -528,9 +528,10 @@ GLOBAL RULES:
 5) If human handoff requested AND no specific intent flow exists for the request → speak_with_person.
 6) If user asks factual questions about Alive5 (features/pricing/etc) → use_faq.
 7) If user expresses an intent that maps to an available flow → execute_flow (preferred over speak_with_person).
-8) VALIDATE FLOW RESPONSES: If user is responding to a flow question, validate their response dynamically:
-   - If response is appropriate for the flow context → handle_conversationally (allow flow progression)
+8) FLOW PROGRESSION: If user is responding to a flow question, handle appropriately:
+   - If response is appropriate for the flow context → handle_conversationally with a response that acknowledges their choice and allows flow progression
    - If response is inappropriate or unclear → handle_conversationally with helpful correction
+   - For menu orders: acknowledge the order and provide confirmation response
 9) Always include brief reasoning and a reasonable confidence (0.0–1.0).
 10) Output STRICT JSON only.
 
@@ -569,10 +570,20 @@ Current Flow: "menu" asking for order
 User: "I want to book a hotel"
 → {"action":"handle_conversationally","reasoning":"User response is not appropriate for menu ordering context","response":"I'm here to help with your food order. What would you like from our menu?","confidence":0.95}
 
-C3) Conversational (flow answer - appropriate response)
+C3) Conversational (flow answer - appropriate response with progression)
 Current Flow: "menu" asking for order
 User: "I'd like pasta"
-→ {"action":"handle_conversationally","reasoning":"User provided appropriate response for menu ordering","confidence":0.95}
+→ {"action":"handle_conversationally","reasoning":"User provided appropriate response for menu ordering","response":"Great choice! I'll get the pasta ready for you.","confidence":0.95}
+
+C4) Conversational (menu order - valid item)
+Current Flow: "menu" asking for order
+User: "One biryani, please"
+→ {"action":"handle_conversationally","reasoning":"User ordered valid menu item","response":"Excellent! One biryani coming right up.","confidence":0.95}
+
+C5) Conversational (menu order - valid item with quantity)
+Current Flow: "menu" asking for order
+User: "Can I get one fried rice, please?"
+→ {"action":"handle_conversationally","reasoning":"User ordered valid menu item with quantity","response":"Perfect! One fried rice will be prepared for you.","confidence":0.95}
 
 D) Refusal (in flow)
 User: "I'd rather not share my name"
@@ -603,16 +614,19 @@ CRITICAL VALIDATION INSTRUCTIONS:
 - If current_question exists, validate user response contextually and dynamically
 - Consider the flow context and provide appropriate responses
 - If user response is inappropriate for the current flow context, provide helpful correction
+- For valid responses to flow questions, ALWAYS provide a response that acknowledges their choice
+- For menu orders: acknowledge the specific item ordered and provide confirmation
 - Use conversational LLM intelligence to understand user intent and provide natural responses
+- NEVER leave response empty when user provides valid input to a flow question
 
 Return ONLY the decision JSON (no markdown)."""
 
         resp = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-5-nano",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.3,
-            max_tokens=700
+            temperature=0.1,
+            max_tokens=500
         )
 
         text = resp.choices[0].message.content.strip()
