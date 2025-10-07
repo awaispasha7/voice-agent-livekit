@@ -405,10 +405,12 @@ SPECIAL HANDLING:
 - End call detection: If user says goodbye, thanks, "that's all", "bye", etc., respond with warm farewell:
   "You're welcome! Have a great day!" or "Thanks for calling! Take care!"
 - Flow progression: If next_step_text is provided, acknowledge the user's input naturally and then ask the next question directly. For example: "Thanks for that information! [Next question here]"
+- Flow message enhancement (is_flow_start=true): When enhancing flow messages, make them sound natural and conversational. Transform rigid flow text into warm, engaging dialogue while preserving the core intent and information. NEVER add meta-commentary like "Here's a more conversational version" or "Sure!".
 
 AVOID:
 - Robotic phrasing, long monologues, repeating the user verbatim.
 - Generic "AI assistant" - always specify "Alive5 Agent"
+- Adding meta-commentary like "Here's a more conversational version" or "Sure!" to normal responses
 
 OUTPUT:
 - A single, helpful response (1-2 sentences is ideal)."""
@@ -431,7 +433,34 @@ OUTPUT:
         if context.get("next_step_text"):
             next_step_info = f"- Next step: {context.get('next_step_text')}"
         
-        user = f"""CONTEXT:
+        # Handle FAQ cleanup only
+        if context.get("faq_cleanup_only"):
+            user = f"""FAQ RESPONSE CLEANUP:
+- Original FAQ response: "{user_message}"
+
+CRITICAL INSTRUCTIONS:
+- ONLY remove meta-commentary like "Based on the search results", "I can see that", "From what I can see", etc.
+- DO NOT change, summarize, or rephrase the actual content
+- DO NOT add any new information
+- DO NOT add meta-commentary like "Here's a cleaned version"
+- Simply remove the meta-commentary and return the clean response
+- If no meta-commentary is present, return the response exactly as provided
+- Output ONLY the cleaned response, nothing else"""
+        # Handle flow message enhancement
+        elif context.get("is_flow_start") and context.get("intent_detected"):
+            user = f"""FLOW MESSAGE ENHANCEMENT:
+- Intent detected: {context.get('intent_detected')}
+- Original flow message: "{user_message}"
+- Conversation history: {history}
+
+CRITICAL INSTRUCTIONS:
+- DO NOT add any meta-commentary like "Here's a more conversational version" or "Sure!"
+- DO NOT rewrite or rephrase the message unless it's extremely rigid/technical
+- If the message is already conversational, return it EXACTLY as provided
+- Only make minor natural language improvements if the message sounds robotic
+- Output ONLY the enhanced message, nothing else"""
+        else:
+            user = f"""CONTEXT:
 - Flow: {context.get('current_flow')}
 - Step: {context.get('current_step')}
 - Profile.collected: {context.get('profile', {}).get('collected_info', {})}
@@ -441,10 +470,9 @@ OUTPUT:
 Recent history:
 {history}
 
-USER: "{user_message}"
+USER MESSAGE: "{user_message}"
 
-TASK:
-Reply naturally, acknowledge the situation, and move forward helpfully. If next_step is provided, incorporate it directly into your response."""
+IMPORTANT: This is a normal conversational response request. Do NOT add meta-commentary like "Here's a more conversational version" or "Sure!". Simply respond naturally to the user's message."""
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "system", "content": system},
@@ -461,6 +489,56 @@ Reply naturally, acknowledge the situation, and move forward helpfully. If next_
 # ──────────────────────────────────────────────────────────────────────────────
 # 8) Orchestrator Decision (async)  — includes speak_with_person
 # ──────────────────────────────────────────────────────────────────────────────
+async def validate_menu_request(user_message: str) -> Dict[str, Any]:
+    """
+    Validate if a user message contains a valid menu item request.
+
+    Returns:
+        {"is_valid": bool, "response": str}
+    """
+    # Define valid menu items
+    valid_menu_items = ["pasta", "biryani", "qorma", "fried rice"]
+
+    user_message_lower = user_message.lower()
+
+    # Common invalid menu items that users might request
+    invalid_indicators = ["chicken", "beef", "fish", "pizza", "burger", "sandwich", "salad"]
+
+    # Check if user message contains any invalid menu items
+    for invalid_item in invalid_indicators:
+        if invalid_item in user_message_lower:
+            return {
+                "is_valid": False,
+                "response": f"I'm sorry, but {invalid_item} isn't on our menu. We have pasta, biryani, qorma, and fried rice. What would you like?"
+            }
+
+    # Check if user message contains any of the valid menu items
+    mentioned_items = []
+    for item in valid_menu_items:
+        if item in user_message_lower:
+            mentioned_items.append(item)
+
+    # If no valid menu items mentioned, it's invalid
+    if not mentioned_items:
+        return {
+            "is_valid": False,
+            "response": "I'm sorry, I didn't understand your menu request. We have pasta, biryani, qorma, and fried rice. What would you like?"
+        }
+
+    # If multiple valid items mentioned, it's ambiguous
+    if len(mentioned_items) > 1:
+        return {
+            "is_valid": False,
+            "response": f"I see you mentioned {', '.join(mentioned_items)}. Could you please specify just one item from our menu: pasta, biryani, qorma, or fried rice?"
+        }
+
+    # Single valid item mentioned - this is valid
+    requested_item = mentioned_items[0]
+    return {
+        "is_valid": True,
+        "response": f"Great choice! You requested {requested_item}. I'll help you with that."
+    }
+
 async def make_orchestrator_decision(context: Dict[str, Any]) -> Any:
     """
     Orchestrator decision maker.
@@ -484,7 +562,7 @@ VALID ACTIONS:
                      → Natural dialogue: greetings, clarifications, follow-ups, answers to current flow questions.
 - handle_refusal     → User refuses a requested field ("I prefer not", "I won't share").
 - handle_uncertainty → User expresses not knowing/being unsure.
-- speak_with_person  → User asks to talk to a human or says "agent", "representative", "connect me", etc.
+- speak_with_person  → User asks to talk to a human or says "agent", "representative", "connect me", etc. (ONLY when no specific intent flow exists for the request).
 - end_call           → User says goodbye, thanks, "that's all", "bye", "have a good day", etc. (conversation ending).
 
 END CALL DETECTION:
@@ -496,11 +574,14 @@ GLOBAL RULES:
 2) Never re-ask for info already in profile.collected_info; respect refused_fields.
 3) If user refuses a field → handle_refusal and include that field in skip_fields.
 4) If uncertain → handle_uncertainty.
-5) If human handoff requested → speak_with_person.
+5) If human handoff requested AND no specific intent flow exists for the request → speak_with_person.
 6) If user asks factual questions about Alive5 (features/pricing/etc) → use_faq.
-7) Only execute_flow when user expresses a new intent that maps to an available flow.
-8) Always include brief reasoning and a reasonable confidence (0.0–1.0).
-9) Output STRICT JSON only.
+7) If user expresses an intent that maps to an available flow → execute_flow (preferred over speak_with_person).
+8) VALIDATE FLOW RESPONSES: If user is responding to a flow question with expected_answers, validate their response:
+   - If response matches expected answers → handle_conversationally (allow flow progression)
+   - If response doesn't match expected answers → handle_conversationally with correction response explaining the issue
+9) Always include brief reasoning and a reasonable confidence (0.0–1.0).
+10) Output STRICT JSON only.
 
 OUTPUT JSON SCHEMA:
 {
@@ -523,10 +604,29 @@ B) Execute Flow
 User: "I want marketing information"
 → {"action":"execute_flow","reasoning":"Clear intent for marketing flow","flow_to_execute":"marketing","next_objective":"get_marketing_info","confidence":0.95}
 
-C) Conversational (flow answer)
+H) Execute Specific Intent Flow (preferred over speak_with_person)
+User: "speak with manager"
+→ {"action":"execute_flow","reasoning":"Specific intent flow exists for manager request","flow_to_execute":"speak_with_manager","confidence":0.98}
+
+C) Conversational (flow answer - valid)
 Current Flow: "sales" asking name
 User: "My name is Rebecca"
 → {"action":"handle_conversationally","reasoning":"User answered current flow question","confidence":0.95}
+
+C2) Conversational (flow answer - invalid menu item)
+Current Flow: "menu" asking for order, expected_answers: ["pasta", "biryani", "qorma", "fried rice"]
+User: "Fried chicken"
+→ {"action":"handle_conversationally","reasoning":"User provided invalid menu item not in expected answers","response":"I'm sorry, but fried chicken isn't on our menu. We have pasta, biryani, qorma, and fried rice. What would you like?","confidence":0.95}
+
+C3) Conversational (flow answer - valid menu item)
+Current Flow: "menu" asking for order, expected_answers: ["pasta", "biryani", "qorma", "fried rice"]
+User: "Pasta"
+→ {"action":"handle_conversationally","reasoning":"User provided valid menu item, flow will progress","confidence":0.95}
+
+C4) Conversational (invalid menu request in sentence)
+Current Flow: "menu" asking for order, expected_answers: ["pasta", "biryani", "qorma", "fried rice"]
+User: "Can I get the chicken, please?"
+→ {"action":"handle_conversationally","reasoning":"User requested invalid menu item 'chicken'","response":"I'm sorry, but chicken isn't on our menu. We have pasta, biryani, qorma, and fried rice. What would you like?","confidence":0.95}
 
 D) Refusal (in flow)
 User: "I'd rather not share my name"
@@ -536,9 +636,9 @@ E) Uncertainty
 User: "I'm not sure how many campaigns"
 → {"action":"handle_uncertainty","reasoning":"User unsure","confidence":0.9}
 
-F) Speak to a Person
-User: "Can I talk to a human?"
-→ {"action":"speak_with_person","reasoning":"User requested human handoff","confidence":0.99}
+F) Speak to a Person (only when no specific flow exists)
+User: "Can I talk to a human?" (no specific intent flow for this)
+→ {"action":"speak_with_person","reasoning":"User requested human handoff with no specific flow","confidence":0.99}
 
 G) Conversational (small talk/greeting)
 User: "Hi there"
@@ -546,10 +646,22 @@ User: "Hi there"
 
 EDGE CASES:
 - If both FAQ and flow seem plausible, prefer use_faq only if it is a direct factual question.
-- If user mid-flow asks a different intent, you MAY switch flows via execute_flow (with reasoning)."""
+- If user mid-flow asks a different intent, you MAY switch flows via execute_flow (with reasoning).
+- If user requests to speak with a specific person/role (manager, supervisor, etc.) and a specific intent flow exists, prefer execute_flow over speak_with_person."""
 
         # Pass the entire context as JSON (so the model sees structured data)
-        user = f"CONTEXT:\n{json.dumps(context, indent=2)}\nReturn ONLY the decision JSON (no markdown)."
+        user = f"""CONTEXT:
+{json.dumps(context, indent=2)}
+
+CRITICAL VALIDATION INSTRUCTIONS:
+- If current_question exists and expected_answers is provided, validate user response against expected_answers
+- For menu flows: expected_answers contains the valid menu items ["pasta", "biryani", "qorma", "fried rice"]
+- If user response mentions items NOT in expected_answers, provide correction response
+- Check for menu item mentions in user messages, even in full sentences like "Can I get the chicken?"
+- If user requests invalid menu items, use handle_conversationally with correction
+- Always check expected_answers before deciding on execute_flow vs handle_conversationally
+
+Return ONLY the decision JSON (no markdown)."""
 
         resp = client.chat.completions.create(
             model="gpt-4o",

@@ -67,6 +67,48 @@ class BackendLLM(llm.LLM):
     def set_room_name(self, room_name: str):
         self.room_name = room_name
 
+    async def chat(self, ctx: Optional[llm.ChatContext] = None, *, chat_ctx: Optional[llm.ChatContext] = None):
+        ctx = ctx or chat_ctx
+        try:
+            user_message = None
+            for msg in reversed(ctx.messages):
+                if msg.role == "user":
+                    user_message = msg.content
+                    break
+
+            if not user_message:
+                return llm.ChatCompletion(
+                    choices=[llm.ChatCompletionChoice(
+                        message=llm.ChatMessage(
+                            role="assistant",
+                            content="I didn’t receive your message. Could you please repeat that?"
+                        )
+                    )]
+                )
+
+            history = [
+                {"role": m.role, "content": m.content, "timestamp": datetime.now().isoformat()}
+                for m in ctx.messages if m.role in ["user", "assistant"]
+            ]
+
+            result = await self.call_backend(user_message, history)
+            response = result.get("response", "Sorry, I'm having trouble. Let me connect you with a human agent.")
+
+            return llm.ChatCompletion(
+                choices=[llm.ChatCompletionChoice(
+                    message=llm.ChatMessage(role="assistant", content=response)
+                )]
+            )
+
+        except Exception as e:
+            logger.error(f"Chat error: {e}")
+            return llm.ChatCompletion(
+                choices=[llm.ChatCompletionChoice(
+                    message=llm.ChatMessage(role="assistant", content="Sorry, I’m having trouble reaching the backend.")
+                )]
+            )
+
+
     async def call_backend(self, msg: str, history: list) -> Dict[str,Any]:
         try:
             async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
@@ -98,7 +140,9 @@ class OrchestratorAssistant(Agent):
         logger.info(f"🎤 Room entered {self.sid}")
         # Set up room event listeners
         if self.room:
-            self.room.on("data_received", self._on_data_received)
+            def _handle_data_received(data):
+                asyncio.create_task(self._on_data_received(data))
+            self.room.on("data_received", _handle_data_received)
         # Trigger orchestrator to start greeting
         await self._process_text("__start__")
     
@@ -117,18 +161,14 @@ class OrchestratorAssistant(Agent):
     async def _on_data_received(self, data):
         """Handle data messages from frontend"""
         try:
+            # Voice changes are no longer supported during calls
+            # Voice can only be changed before starting the session
             if data.topic == "lk.voice.change":
-                voice_data = json.loads(data.data.decode('utf-8'))
-                new_voice_id = voice_data.get("voice_id")
-                if new_voice_id:
-                    logger.info(f"🎤 Voice change received: {new_voice_id}")
-                    self.selected_voice = new_voice_id
-                    # Note: Cartesia TTS voice can't be changed after initialization
-                    # The voice will be updated on next TTS initialization
-                    logger.info(f"🎤 Voice updated to: {new_voice_id}")
+                logger.info(f"🎤 Voice change request received but ignored - voice changes only supported before session start")
         except Exception as e:
             logger.error(f"Error handling data message: {e}")
-    
+
+
     async def _get_current_voice(self):
         """Get current voice from session data"""
         try:
@@ -267,7 +307,7 @@ async def entrypoint(ctx: JobContext):
     current_voice = await assistant._get_current_voice()
     assistant.selected_voice = current_voice
     logger.info(f"🎤 Initializing TTS with voice: {current_voice}")
-    
+
     agent_session=AgentSession(
         stt=deepgram.STT(model="nova-2",language="en-US",api_key=os.getenv("DEEPGRAM_API_KEY")),
         llm=proxy,

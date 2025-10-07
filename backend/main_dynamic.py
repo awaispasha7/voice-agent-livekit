@@ -339,7 +339,7 @@ async def evaluate_condition_bot(condition_data: Dict[str, Any], flow_state: Flo
         return {"response": "I'm sorry, there was an error evaluating that condition. Please try again.", "condition_result": {"error": str(e)}}
 
 
-async def _emit_or_advance_and_emit(state: FlowState) -> str:
+async def _emit_or_advance_and_emit(state: FlowState, enhance_with_llm: bool = False, intent_detected: str = None) -> str:
     """
     Emit current node's text; if node has next_flow and doesn't require input, advance first.
     Returns the text to speak.
@@ -363,6 +363,27 @@ async def _emit_or_advance_and_emit(state: FlowState) -> str:
     if node_type in {"greeting", "message", "question", "faq"}:
         text = node.get("text", "") or "Okay."
         logger.info(f"🔍 Returning text for {node_type}: '{text}'")
+        
+        # Enhance with LLM if requested and this is a flow start
+        if enhance_with_llm and intent_detected and text.strip():
+            logger.info(f"🔍 Enhancing flow message with LLM: '{text}'")
+            try:
+                from backend.llm_utils import generate_conversational_response
+                conversational_context = {
+                    "conversation_history": state.conversation_history,
+                    "user_profile": {},
+                    "intent_detected": intent_detected,
+                    "is_flow_start": True
+                }
+                enhanced_text = await generate_conversational_response(text, conversational_context)
+                if enhanced_text and enhanced_text.strip():
+                    logger.info(f"🔍 Enhanced flow response: '{enhanced_text}'")
+                    return enhanced_text
+                else:
+                    logger.info(f"🔍 Using original response (enhancement failed): '{text}'")
+            except Exception as e:
+                logger.error(f"Error enhancing flow response: {e}")
+        
         return text
     if node_type == "intent_bot":
         # This should have been auto-advanced, but if not, return the text
@@ -417,15 +438,33 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
                 # go to the branch node
                 state.current_step = branch.get("name")
                 state.flow_data    = branch
-                # optionally auto-jump to next question after a message node
                 speak = branch.get("text", "")
-                nxt = branch.get("next_flow")
-                if speak and nxt and (nxt.get("type") or "").lower() == "question":
-                    # chain message + next question
-                    state.current_step = nxt.get("name")
-                    state.flow_data    = nxt
-                    speak = (speak + " " + (nxt.get("text",""))).strip()
-                    logger.info(f"🔍 Auto-advanced to next question: {nxt.get('text', '')}")
+
+                # Implement waterfall next_flow logic
+                # 1. If branch has next_flow, follow it
+                # 2. If branch next_flow is null but parent question has next_flow, follow parent's next_flow
+                # 3. Continue up the chain if needed
+                current_node = branch
+                nxt = current_node.get("next_flow")
+
+                # If branch has no next_flow or next_flow is null, check parent question's next_flow
+                if not nxt and node.get("next_flow"):
+                    nxt = node.get("next_flow")
+                    logger.info(f"🔍 Branch ended, continuing with parent question's next_flow: {nxt.get('text', '') if nxt else 'None'}")
+
+                if nxt:
+                    # Check if we should auto-advance to next question after a message
+                    if speak and (nxt.get("type") or "").lower() == "question":
+                        # chain message + next question
+                        state.current_step = nxt.get("name")
+                        state.flow_data    = nxt
+                        speak = (speak + " " + (nxt.get("text",""))).strip()
+                        logger.info(f"🔍 Auto-advanced to next question: {nxt.get('text', '')}")
+                    else:
+                        # Just advance to the next node
+                        state.current_step = nxt.get("name")
+                        state.flow_data    = nxt
+                        logger.info(f"🔍 Advanced to next node: {nxt.get('type', '')}")
 
                 # Save the current flow context after advancing
                 if state.current_flow:
@@ -518,8 +557,14 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
             return {"type": "message", "response": f"{ack}", "advanced": False}
 
 
-    # 2) MESSAGE → just go to next
+    # 2) MESSAGE → just go to next (but only if no user input to handle)
     if node_type == "message":
+        # If this message node has user input that needs conversational handling,
+        # don't auto-advance - let the conversational handler deal with it
+        if user_message and user_message.strip():
+            logger.info(f"🔍 Message node has user input, not auto-advancing: '{user_message}'")
+            return {"type": "message", "response": node.get("text", ""), "advanced": False}
+
         nxt = node.get("next_flow")
         if nxt:
             state.current_step = nxt.get("name")
@@ -549,6 +594,71 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
     if node_type == "faq":
         # use FAQ for the user's question; stay on faq or advance if template specifies
         faq = await get_faq_response(user_message, faq_verbose_mode)
+
+        # Check if FAQ node has answers (like in the complex flow structure)
+        answers = node.get("answers") or {}
+        if answers:
+            # FAQ with answers - similar to question handling
+            from backend.llm_utils import match_answer_with_llm
+            qtext = node.get("text", "")
+            choice_key = match_answer_with_llm(qtext, faq["response"], answers)
+            if choice_key and choice_key in answers:
+                branch = answers[choice_key]
+                logger.info(f"🔍 Found matching FAQ answer: {choice_key} -> {branch.get('text', '')}")
+
+                # Persist the user's choice for downstream use
+                state.user_responses = (state.user_responses or {})
+                state.user_responses[state.current_step] = choice_key
+
+                # go to the branch node
+                state.current_step = branch.get("name")
+                state.flow_data    = branch
+                speak = branch.get("text", "")
+
+                # Implement waterfall next_flow logic for FAQ answers
+                # 1. If branch has next_flow, follow it
+                # 2. If branch next_flow is null but parent FAQ has next_flow, follow parent's next_flow
+                current_node = branch
+                nxt = current_node.get("next_flow")
+
+                # If branch has no next_flow or next_flow is null, check parent FAQ's next_flow
+                if not nxt and node.get("next_flow"):
+                    nxt = node.get("next_flow")
+                    logger.info(f"🔍 FAQ answer branch ended, continuing with parent FAQ's next_flow: {nxt.get('text', '') if nxt else 'None'}")
+
+                if nxt:
+                    # Check if we should auto-advance to next question after a message
+                    if speak and (nxt.get("type") or "").lower() == "question":
+                        # chain message + next question
+                        state.current_step = nxt.get("name")
+                        state.flow_data    = nxt
+                        speak = (speak + " " + (nxt.get("text",""))).strip()
+                        logger.info(f"🔍 Auto-advanced to next question: {nxt.get('text', '')}")
+                    else:
+                        # Just advance to the next node
+                        state.current_step = nxt.get("name")
+                        state.flow_data    = nxt
+                        logger.info(f"🔍 Advanced to next node: {nxt.get('type', '')}")
+
+                # Save the current flow context after advancing
+                if state.current_flow:
+                    logger.info(f"🔍 Saving flow context for {state.current_flow} with FAQ choice: {choice_key}")
+                    logger.info(f"🔍 Current flow key: {state.current_flow}")
+                    logger.info(f"🔍 Current step: {state.current_step}")
+                    logger.info(f"🔍 Current flow_data type: {state.flow_data.get('type') if state.flow_data else 'None'}")
+                    state.flow_contexts[state.current_flow] = {
+                        "current_step": state.current_step,
+                        "flow_data": state.flow_data,
+                        "user_responses": state.user_responses.copy() if state.user_responses else {}
+                    }
+                    logger.info(f"🔍 Saved context for {state.current_flow}: {state.flow_contexts[state.current_flow]}")
+
+                logger.info(f"🔍 FAQ flow progressed to step: {state.current_step}, type: {state.flow_data.get('type')}")
+                return {"type": branch.get("type","message"), "response": speak or "Okay.", "advanced": True}
+            # no match → just use the FAQ response and continue with normal next_flow
+            logger.info(f"🔍 No matching FAQ answer found, using FAQ response directly")
+
+        # Normal FAQ processing (no answers or no match)
         nxt = node.get("next_flow")
         if nxt:
             state.current_step = nxt.get("name")
@@ -721,23 +831,43 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         
         if not flow_container:
             logger.warning(f"Flow '{decision.flow_to_execute}' not found in available flows")
-            faq = await get_faq_response(msg, faq_verbose_mode); response_text = faq["response"]
+            faq = await get_faq_response(msg, faq_verbose_mode)
+            response_text = faq["response"]
         else:
+            # Special validation for menu flow - check if user is requesting invalid menu items
+            if decision.flow_to_execute == "menu":
+                # Check if user message contains invalid menu items
+                from backend.llm_utils import validate_menu_request
+                validation_result = await validate_menu_request(msg)
+
+                if not validation_result["is_valid"]:
+                    logger.info(f"🔍 Invalid menu request detected: '{msg}' -> '{validation_result['response']}'")
+                    # Clear any existing flow state since we're providing conversational correction
+                    state.current_flow = None
+                    state.current_step = None
+                    state.flow_data = None
+                    flow_states[room] = state; save_flow_state(room, state)
+                    return {"status":"processed","flow_result":{
+                        "type": "conversational_response",
+                        "response": validation_result["response"],
+                        "flow_state": state.dict()
+                    }}
+
             # Check if we're already in this flow - if so, progress it instead of restarting
-            if (state.current_flow == flow_container.get("key") and 
-                state.flow_data and 
+            if (state.current_flow == flow_container.get("key") and
+                state.flow_data and
                 state.flow_data.get("type") != "intent_bot"):
                 logger.info(f"🔍 Already in flow '{decision.flow_to_execute}', progressing current flow instead of restarting")
                 # We're already in this flow, so progress it with user input
                 progressed = await _progress_flow_with_user_input(state, msg, faq_verbose_mode)
-                
+
                 # If the flow couldn't be progressed, exit the flow state
                 if not progressed.get("advanced", False):
                     logger.info(f"🔍 Flow could not be progressed, exiting flow state")
                     state.current_flow = None
                     state.current_step = None
                     state.flow_data = None
-                
+
                 flow_states[room] = state; save_flow_state(room, state)
                 return {"status":"processed","flow_result":{
                     "type": progressed["type"],
@@ -761,6 +891,9 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                 
                 # Get the intent node for this flow
                 intent_node = flow_container.get("data", {})
+
+                # Track if this is a fresh flow start for conversational enhancement
+                is_fresh_flow_start = False
 
                 if has_relevant_context:
                     logger.info(f"🔍 Resuming flow '{decision.flow_to_execute}' with existing context")
@@ -793,18 +926,31 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                         state.current_flow = flow_container.get("key")
                         state.current_step = intent_node.get("name")
                         state.flow_data = intent_node
+                        is_fresh_flow_start = True
                 else:
                     logger.info(f"🔍 Starting fresh flow '{decision.flow_to_execute}'")
                     state.current_flow = flow_container.get("key")
                     state.current_step = intent_node.get("name")
                     state.flow_data = intent_node
+                    is_fresh_flow_start = True
                 
                 logger.info(f"🔍 Flow execution: flow_container={flow_container}")
                 logger.info(f"🔍 Flow execution: intent_node={intent_node}")
                 logger.info(f"🔍 Flow execution: state.flow_data={state.flow_data}")
 
                 # advance once if intent node leads straight to a question/message
-                response_text = await _emit_or_advance_and_emit(state)
+                # Enhance with LLM if this is a fresh flow start
+                should_enhance = (is_fresh_flow_start and
+                                state.flow_data and
+                                state.flow_data.get("type") in ["question", "message", "greeting"])
+                
+                response_text = await _emit_or_advance_and_emit(
+                    state, 
+                    enhance_with_llm=should_enhance, 
+                    intent_detected=decision.flow_to_execute
+                )
+                logger.info(f"Flow response: '{response_text}'")
+
                 logger.info(f"Executing flow '{decision.flow_to_execute}' with response: '{response_text}'")
 
         # Save the current flow context before switching
@@ -823,7 +969,21 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
             "response":response_text,"flow_state":state.dict()}}
 
     elif decision.action == OrchestratorAction.USE_FAQ:
-        faq = await get_faq_response(msg, faq_verbose_mode); response_text = faq["response"]
+        faq = await get_faq_response(msg, faq_verbose_mode)
+        response_text = faq["response"]
+        
+        # Use conversational LLM to remove meta-commentary only
+        from backend.llm_utils import generate_conversational_response
+        conversational_context = {
+            "conversation_history": state.conversation_history,
+            "faq_cleanup_only": True  # Special flag to indicate we only want meta-commentary removal
+        }
+        response_text = await generate_conversational_response(response_text, conversational_context)
+        
+        flow_states[room] = state
+        save_flow_state(room, state)
+        return {"status":"processed","flow_result":{
+            "type":"faq_response","response":response_text,"flow_state":state.dict()}}
 
     elif decision.action == OrchestratorAction.HANDLE_REFUSAL:
         # After handling refusal, advance to the next question in the flow
@@ -1036,19 +1196,42 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         # If orchestrator chose conversational handling AND we're in a node,
         # try to progress the node per user input (question/faq/action/condition/etc.)
         # BUT skip this for greeting flows - they should just generate conversational responses
+        # Also skip if orchestrator already provided a response for this input
         current_flow_type = state.flow_data.get("type", "").lower() if state.flow_data else ""
-        logger.info(f"🔍 Flow progression check: state.flow_data={bool(state.flow_data)}, decision.action={decision.action}, current_flow_type='{current_flow_type}'")
-        if (state.flow_data and
-            (decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY) and
-            current_flow_type != "greeting"):
+        logger.info(f"🔍 Flow progression check: state.flow_data={bool(state.flow_data)}, decision.action={decision.action}, current_flow_type='{current_flow_type}', response_text='{response_text}'")
+
+        # Progress flow if:
+        # 1. We're in a flow
+        # 2. Action is HANDLE_CONVERSATIONALLY (user responding to flow)
+        # 3. Not a greeting flow
+        should_progress_flow = (state.flow_data and
+                              (decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY) and
+                              current_flow_type != "greeting")
+
+        if should_progress_flow:
+            logger.info(f"🔍 Progressing flow with user input: '{msg}'")
             progressed = await _progress_flow_with_user_input(state, msg, faq_verbose_mode)
 
-            # If the flow couldn't be progressed, exit the flow state for conversational handling
+            # If the flow couldn't be progressed, use orchestrator's response if available
             if not progressed.get("advanced", False):
-                logger.info(f"🔍 Flow could not be progressed, exiting flow state for conversational handling")
-                state.current_flow = None
-                state.current_step = None
-                state.flow_data = None
+                logger.info(f"🔍 Flow could not be progressed, checking for orchestrator response")
+                if response_text and response_text.strip():
+                    logger.info(f"🔍 Using orchestrator's conversational response: '{response_text}'")
+                    # Clear flow state since we're handling conversationally
+                    state.current_flow = None
+                    state.current_step = None
+                    state.flow_data = None
+                    flow_states[room] = state; save_flow_state(room, state)
+                    return {"status":"processed","flow_result":{
+                        "type": "conversational_response",
+                        "response": response_text,
+                        "flow_state": state.dict()
+                    }}
+                else:
+                    logger.info(f"🔍 No orchestrator response available, exiting flow state for conversational handling")
+                    state.current_flow = None
+                    state.current_step = None
+                    state.flow_data = None
             elif progressed.get("type") == "acknowledgment":
                 # For acknowledgments, the LLM has already incorporated the next step context
                 # No need to emit additional questions - the response is complete
@@ -1062,57 +1245,54 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                 "flow_state": state.dict()
             }}
 
-        # If orchestrator chose conversational handling but no response provided, generate one
-        # Also clear flow state if we're in a dead-end flow (no valid progression)
-        if decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY:
-            if state.flow_data:
-                current_flow_type = state.flow_data.get("type", "").lower()
-                next_flow = state.flow_data.get("next_flow")
+        # If no flow to execute, handle conversationally
+        # Clear flow state if we're in a dead-end flow (no valid progression)
+        if state.flow_data:
+            current_flow_type = state.flow_data.get("type", "").lower()
+            next_flow = state.flow_data.get("next_flow")
 
-                # Clear greeting flow state
-                if current_flow_type == "greeting":
-                    logger.info(f"🔍 Clearing greeting flow state for conversational handling")
-                    state.current_flow = None
-                    state.current_step = None
-                    state.flow_data = None
-                # Clear flow state if it has no valid next step
-                elif not next_flow or next_flow.get("name") == "N/A":
-                    logger.info(f"🔍 Clearing dead-end flow state for conversational handling")
-                    state.current_flow = None
-                    state.current_step = None
-                    state.flow_data = None
+            # Clear greeting flow state
+            if current_flow_type == "greeting":
+                logger.info(f"🔍 Clearing greeting flow state for conversational handling")
+                state.current_flow = None
+                state.current_step = None
+                state.flow_data = None
+            # Clear flow state if it has no valid next step
+            elif not next_flow or next_flow.get("name") == "N/A":
+                logger.info(f"🔍 Clearing dead-end flow state for conversational handling")
+                state.current_flow = None
+                state.current_step = None
+                state.flow_data = None
 
-        if decision.action == OrchestratorAction.HANDLE_CONVERSATIONALLY and (not response_text or response_text.strip() == ""):
-            logger.info(f"🔍 Generating conversational response for: '{msg}'")
+        # Generate conversational response for non-flow interactions
+        logger.info(f"🔍 Generating conversational response for: '{msg}'")
 
-            # Save current flow context before generating conversational response
-            if state.current_flow and state.flow_data:
-                logger.info(f"🔍 Saving flow context before conversational handling: {state.current_flow}")
-                state.flow_contexts[state.current_flow] = {
-                    "current_step": state.current_step,
-                    "flow_data": state.flow_data,
-                    "user_responses": state.user_responses.copy() if state.user_responses else {}
-                }
-                logger.info(f"🔍 Saved context: {state.flow_contexts[state.current_flow]}")
-
-            from backend.llm_utils import generate_conversational_response
-            conversational_context = {
-                "user_message": msg,
-                "conversation_history": state.conversation_history,
-                "current_flow": state.current_flow,
+        # Save current flow context before generating conversational response
+        if state.current_flow and state.flow_data:
+            logger.info(f"🔍 Saving flow context before conversational handling: {state.current_flow}")
+            state.flow_contexts[state.current_flow] = {
                 "current_step": state.current_step,
-                "profile": {
-                    "collected_info": state.user_responses,
-                    "objectives": state.objectives,
-                    "refused_fields": state.refused_fields
-                },
-                "refusal_context": False,
-                "skipped_fields": []
+                "flow_data": state.flow_data,
+                "user_responses": state.user_responses.copy() if state.user_responses else {}
             }
-            response_text = await generate_conversational_response(msg, conversational_context)
-            logger.info(f"🔍 Generated conversational response: '{response_text}'")
-        else:
-            logger.info(f"🔍 Not generating conversational response: action={decision.action}, response_text='{response_text}'")
+            logger.info(f"🔍 Saved context: {state.flow_contexts[state.current_flow]}")
+
+        from backend.llm_utils import generate_conversational_response
+        conversational_context = {
+            "user_message": msg,
+            "conversation_history": state.conversation_history,
+            "current_flow": state.current_flow,
+            "current_step": state.current_step,
+            "profile": {
+                "collected_info": state.user_responses,
+                "objectives": state.objectives,
+                "refused_fields": state.refused_fields
+            },
+            "refusal_context": False,
+            "skipped_fields": []
+        }
+        response_text = await generate_conversational_response(msg, conversational_context)
+        logger.info(f"🔍 Generated conversational response: '{response_text}'")
 
         # fallback: if nothing to say, use FAQ to avoid "..."
         if not response_text:

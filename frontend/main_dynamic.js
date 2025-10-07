@@ -317,6 +317,14 @@ class DynamicVoiceAgent {
         const voiceChangeSelect = document.getElementById('voiceChangeSelect');
         if (voiceChangeSelect) {
             voiceChangeSelect.addEventListener('change', (e) => {
+                // Voice changes are only supported before starting a call
+                if (this.connectionStatus === 'connected') {
+                    console.log('🎤 Voice changes are not supported during calls. Please disconnect and reconnect to change voice.');
+                    this.addMessage('Voice changes are not supported during calls. Please disconnect and reconnect to change voice.', 'system');
+                    // Reset the select to the current voice
+                    e.target.value = this.selectedVoice;
+                    return;
+                }
                 this.changeVoice(e.target.value);
             });
         }
@@ -1909,6 +1917,13 @@ class DynamicVoiceAgent {
             return;
         }
 
+        // Voice changes are only supported before starting a call
+        if (this.connectionStatus === 'connected') {
+            console.log('🎤 Voice changes are not supported during calls. Please disconnect and reconnect to change voice.');
+            this.addMessage('Voice changes are not supported during calls. Please disconnect and reconnect to change voice.', 'system');
+            return;
+        }
+
         try {
             console.log(`🎤 Changing voice to ${this.getVoiceName(voiceId)}`);
             this.updateConnectionStatus('connecting', 'Changing voice...');
@@ -1917,23 +1932,6 @@ class DynamicVoiceAgent {
             const result = await this.sendVoiceChangeRequest(this.currentRoomName, voiceId);
             
             if (result.status === 'success') {
-                // Send voice change data message to worker
-                try {
-                    const voiceChangeData = {
-                        type: 'voice_change',
-                        voice_id: voiceId,
-                        timestamp: new Date().toISOString()
-                    };
-                    
-                    await this.room.localParticipant.publishData(
-                        JSON.stringify(voiceChangeData),
-                        { topic: 'lk.voice.change' }
-                    );
-                    console.log(`🎤 Voice change data sent to worker: ${voiceId}`);
-                } catch (error) {
-                    console.error('Failed to send voice change to worker:', error);
-                }
-                
                 this.selectedVoice = voiceId;
                 this.pendingVoiceChange = null;
                 const voiceName = result.voice_name || this.getVoiceName(voiceId);
