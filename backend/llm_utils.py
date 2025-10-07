@@ -489,55 +489,6 @@ IMPORTANT: This is a normal conversational response request. Do NOT add meta-com
 # ──────────────────────────────────────────────────────────────────────────────
 # 8) Orchestrator Decision (async)  — includes speak_with_person
 # ──────────────────────────────────────────────────────────────────────────────
-async def validate_menu_request(user_message: str) -> Dict[str, Any]:
-    """
-    Validate if a user message contains a valid menu item request.
-
-    Returns:
-        {"is_valid": bool, "response": str}
-    """
-    # Define valid menu items
-    valid_menu_items = ["pasta", "biryani", "qorma", "fried rice"]
-
-    user_message_lower = user_message.lower()
-
-    # Common invalid menu items that users might request
-    invalid_indicators = ["chicken", "beef", "fish", "pizza", "burger", "sandwich", "salad"]
-
-    # Check if user message contains any invalid menu items
-    for invalid_item in invalid_indicators:
-        if invalid_item in user_message_lower:
-            return {
-                "is_valid": False,
-                "response": f"I'm sorry, but {invalid_item} isn't on our menu. We have pasta, biryani, qorma, and fried rice. What would you like?"
-            }
-
-    # Check if user message contains any of the valid menu items
-    mentioned_items = []
-    for item in valid_menu_items:
-        if item in user_message_lower:
-            mentioned_items.append(item)
-
-    # If no valid menu items mentioned, it's invalid
-    if not mentioned_items:
-        return {
-            "is_valid": False,
-            "response": "I'm sorry, I didn't understand your menu request. We have pasta, biryani, qorma, and fried rice. What would you like?"
-        }
-
-    # If multiple valid items mentioned, it's ambiguous
-    if len(mentioned_items) > 1:
-        return {
-            "is_valid": False,
-            "response": f"I see you mentioned {', '.join(mentioned_items)}. Could you please specify just one item from our menu: pasta, biryani, qorma, or fried rice?"
-        }
-
-    # Single valid item mentioned - this is valid
-    requested_item = mentioned_items[0]
-    return {
-        "is_valid": True,
-        "response": f"Great choice! You requested {requested_item}. I'll help you with that."
-    }
 
 async def make_orchestrator_decision(context: Dict[str, Any]) -> Any:
     """
@@ -577,9 +528,9 @@ GLOBAL RULES:
 5) If human handoff requested AND no specific intent flow exists for the request → speak_with_person.
 6) If user asks factual questions about Alive5 (features/pricing/etc) → use_faq.
 7) If user expresses an intent that maps to an available flow → execute_flow (preferred over speak_with_person).
-8) VALIDATE FLOW RESPONSES: If user is responding to a flow question with expected_answers, validate their response:
-   - If response matches expected answers → handle_conversationally (allow flow progression)
-   - If response doesn't match expected answers → handle_conversationally with correction response explaining the issue
+8) VALIDATE FLOW RESPONSES: If user is responding to a flow question, validate their response dynamically:
+   - If response is appropriate for the flow context → handle_conversationally (allow flow progression)
+   - If response is inappropriate or unclear → handle_conversationally with helpful correction
 9) Always include brief reasoning and a reasonable confidence (0.0–1.0).
 10) Output STRICT JSON only.
 
@@ -613,20 +564,15 @@ Current Flow: "sales" asking name
 User: "My name is Rebecca"
 → {"action":"handle_conversationally","reasoning":"User answered current flow question","confidence":0.95}
 
-C2) Conversational (flow answer - invalid menu item)
-Current Flow: "menu" asking for order, expected_answers: ["pasta", "biryani", "qorma", "fried rice"]
-User: "Fried chicken"
-→ {"action":"handle_conversationally","reasoning":"User provided invalid menu item not in expected answers","response":"I'm sorry, but fried chicken isn't on our menu. We have pasta, biryani, qorma, and fried rice. What would you like?","confidence":0.95}
+C2) Conversational (flow answer - inappropriate response)
+Current Flow: "menu" asking for order
+User: "I want to book a hotel"
+→ {"action":"handle_conversationally","reasoning":"User response is not appropriate for menu ordering context","response":"I'm here to help with your food order. What would you like from our menu?","confidence":0.95}
 
-C3) Conversational (flow answer - valid menu item)
-Current Flow: "menu" asking for order, expected_answers: ["pasta", "biryani", "qorma", "fried rice"]
-User: "Pasta"
-→ {"action":"handle_conversationally","reasoning":"User provided valid menu item, flow will progress","confidence":0.95}
-
-C4) Conversational (invalid menu request in sentence)
-Current Flow: "menu" asking for order, expected_answers: ["pasta", "biryani", "qorma", "fried rice"]
-User: "Can I get the chicken, please?"
-→ {"action":"handle_conversationally","reasoning":"User requested invalid menu item 'chicken'","response":"I'm sorry, but chicken isn't on our menu. We have pasta, biryani, qorma, and fried rice. What would you like?","confidence":0.95}
+C3) Conversational (flow answer - appropriate response)
+Current Flow: "menu" asking for order
+User: "I'd like pasta"
+→ {"action":"handle_conversationally","reasoning":"User provided appropriate response for menu ordering","confidence":0.95}
 
 D) Refusal (in flow)
 User: "I'd rather not share my name"
@@ -654,12 +600,10 @@ EDGE CASES:
 {json.dumps(context, indent=2)}
 
 CRITICAL VALIDATION INSTRUCTIONS:
-- If current_question exists and expected_answers is provided, validate user response against expected_answers
-- For menu flows: expected_answers contains the valid menu items ["pasta", "biryani", "qorma", "fried rice"]
-- If user response mentions items NOT in expected_answers, provide correction response
-- Check for menu item mentions in user messages, even in full sentences like "Can I get the chicken?"
-- If user requests invalid menu items, use handle_conversationally with correction
-- Always check expected_answers before deciding on execute_flow vs handle_conversationally
+- If current_question exists, validate user response contextually and dynamically
+- Consider the flow context and provide appropriate responses
+- If user response is inappropriate for the current flow context, provide helpful correction
+- Use conversational LLM intelligence to understand user intent and provide natural responses
 
 Return ONLY the decision JSON (no markdown)."""
 

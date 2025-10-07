@@ -834,24 +834,6 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
             faq = await get_faq_response(msg, faq_verbose_mode)
             response_text = faq["response"]
         else:
-            # Special validation for menu flow - check if user is requesting invalid menu items
-            if decision.flow_to_execute == "menu":
-                # Check if user message contains invalid menu items
-                from backend.llm_utils import validate_menu_request
-                validation_result = await validate_menu_request(msg)
-
-                if not validation_result["is_valid"]:
-                    logger.info(f"🔍 Invalid menu request detected: '{msg}' -> '{validation_result['response']}'")
-                    # Clear any existing flow state since we're providing conversational correction
-                    state.current_flow = None
-                    state.current_step = None
-                    state.flow_data = None
-                    flow_states[room] = state; save_flow_state(room, state)
-                    return {"status":"processed","flow_result":{
-                        "type": "conversational_response",
-                        "response": validation_result["response"],
-                        "flow_state": state.dict()
-                    }}
 
             # Check if we're already in this flow - if so, progress it instead of restarting
             if (state.current_flow == flow_container.get("key") and
