@@ -58,6 +58,27 @@ def monitor_memory():
 # -----------------------------------------------------------------------------
 # Backend LLM Proxy
 # -----------------------------------------------------------------------------
+class BackendLLMChatContext:
+    """Async context manager for BackendLLM chat"""
+    def __init__(self, backend_llm, ctx, **kwargs):
+        self.backend_llm = backend_llm
+        self.ctx = ctx
+        self.kwargs = kwargs
+        self.result = None
+    
+    async def __aenter__(self):
+        # Execute the chat logic
+        self.result = await self.backend_llm._execute_chat(self.ctx, **self.kwargs)
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+    
+    async def __aiter__(self):
+        # Yield the result as a single chunk
+        if self.result:
+            yield self.result
+
 class BackendLLM(llm.LLM):
     def __init__(self, backend_url: str):
         super().__init__()
@@ -67,8 +88,13 @@ class BackendLLM(llm.LLM):
     def set_room_name(self, room_name: str):
         self.room_name = room_name
 
-    async def chat(self, ctx: Optional[llm.ChatContext] = None, *, chat_ctx: Optional[llm.ChatContext] = None, tools=None):
+    def chat(self, ctx: Optional[llm.ChatContext] = None, *, chat_ctx: Optional[llm.ChatContext] = None, tools=None, tool_choice=None, **kwargs):
+        """Return an async context manager for chat"""
         ctx = ctx or chat_ctx
+        return BackendLLMChatContext(self, ctx, tools=tools, tool_choice=tool_choice, **kwargs)
+    
+    async def _execute_chat(self, ctx: Optional[llm.ChatContext] = None, **kwargs):
+        """Execute the actual chat logic"""
         try:
             user_message = None
             for msg in reversed(ctx.messages):
@@ -81,7 +107,7 @@ class BackendLLM(llm.LLM):
                     choices=[llm.ChatCompletionChoice(
                         message=llm.ChatMessage(
                             role="assistant",
-                            content="I didn’t receive your message. Could you please repeat that?"
+                            content="I didn't receive your message. Could you please repeat that?"
                         )
                     )]
                 )
@@ -104,7 +130,7 @@ class BackendLLM(llm.LLM):
             logger.error(f"Chat error: {e}")
             return llm.ChatCompletion(
                 choices=[llm.ChatCompletionChoice(
-                    message=llm.ChatMessage(role="assistant", content="Sorry, I’m having trouble reaching the backend.")
+                    message=llm.ChatMessage(role="assistant", content="Sorry, I'm having trouble reaching the backend.")
                 )]
             )
 
