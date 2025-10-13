@@ -77,7 +77,8 @@ llm_variants:
   # 8) Orchestrator Decision
   make_orchestrator_decision:
     model: gpt-5-pro
-    reasoning_effort: high
+    # NOTE: omit reasoning_effort for gpt-5-pro to avoid incompatibility;
+    # it operates at high reasoning by default.
     temperature: 0.3
     max_completion_tokens: 500
     notes: |
