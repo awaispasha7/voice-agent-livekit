@@ -39,19 +39,31 @@ def get_openai_client():
 @lru_cache(maxsize=1)
 def load_llm_config():
     """Load centralized model configuration from YAML"""
-    try:
-        with open("llm_config.yaml", "r") as f:
-            return yaml.safe_load(f)["llm_variants"]
-    except Exception as e:
-        logger.warning(f"⚠️ Could not load llm_config.yaml, using defaults: {e}")
-        return {}
+    import os
+    config_paths = [
+        "llm_config.yaml",
+        "backend/llm_config.yaml", 
+        "backend/worker/llm_config.yaml"
+    ]
+    
+    for path in config_paths:
+        try:
+            with open(path, "r") as f:
+                return yaml.safe_load(f)["llm_variants"]
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            logger.warning(f"⚠️ Error loading {path}: {e}")
+            continue
+    
+    logger.warning(f"⚠️ Could not load llm_config.yaml from any path, using defaults")
+    return {}
 
 def get_llm_settings(function_name: str):
-    """Fetch model, reasoning, temperature, and token limit for a given function"""
+    """Fetch model, temperature, and token limit for a given function"""
     cfg = load_llm_config()
     return cfg.get(function_name, {
         "model": "gpt-5-mini",
-        "reasoning_effort": "low",
         "temperature": 0.3,
         "max_completion_tokens": 200
     })
@@ -107,18 +119,12 @@ EXAMPLES:
 - "asdfghj" → {"is_complete": false, "confidence": 0.95, "reasoning": "Garbled"}"""
 
         user = f'TRANSCRIBED TEXT: "{transcribed_text}"\nRespond in JSON only.'
-        params = {
-            "model": settings["model"],
-            "temperature": settings["temperature"],
-            "max_completion_tokens": settings["max_completion_tokens"],
-            "messages": [{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-        }
-        effort = settings.get("reasoning_effort")
-        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
-            params["reasoning"] = {"effort": effort}
-
-        resp = client.chat.completions.create(**params)
+        resp = client.chat.completions.create(
+            model=settings["model"],
+            temperature=settings["temperature"],
+            max_completion_tokens=settings["max_completion_tokens"],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
+        )
         text = resp.choices[0].message.content.strip()
         # Strip code fences if any
         if text.startswith("```"):
@@ -195,18 +201,12 @@ Q: "How many?" A:"uh the"
         user = f"""QUESTION: "{question_text}"
 USER RESPONSE: "{user_text}"
 Return ONLY JSON per the schema."""
-        params = {
-            "model": settings["model"],
-            "temperature": settings["temperature"],
-            "max_completion_tokens": settings["max_completion_tokens"],
-            "messages": [{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-        }
-        effort = settings.get("reasoning_effort")
-        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
-            params["reasoning"] = {"effort": effort}
-
-        resp = client.chat.completions.create(**params)
+        resp = client.chat.completions.create(
+            model=settings["model"],
+            temperature=settings["temperature"],
+            max_completion_tokens=settings["max_completion_tokens"],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
+        )
         text = resp.choices[0].message.content.strip()
         if text.startswith("```"):
             text = text.strip("`").replace("json", "").strip()
@@ -255,18 +255,12 @@ EXAMPLES:
 User: {user_response}
 Options: {keys}
 Return only the exact option key or "none"."""
-        params = {
-            "model": settings["model"],
-            "temperature": settings["temperature"],
-            "max_completion_tokens": settings["max_completion_tokens"],
-            "messages": [{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-        }
-        effort = settings.get("reasoning_effort")
-        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
-            params["reasoning"] = {"effort": effort}
-
-        resp = client.chat.completions.create(**params)
+        resp = client.chat.completions.create(
+            model=settings["model"],
+            temperature=settings["temperature"],
+            max_completion_tokens=settings["max_completion_tokens"],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
+        )
         result = resp.choices[0].message.content.strip().strip('"').strip("'")
         return result if result in keys else None
     except Exception as e:
@@ -306,18 +300,12 @@ EXAMPLES:
         user = f"""AVAILABLE INTENTS: {list(intent_mapping.keys())}
 USER: "{user_message}"
 Return exactly one: an intent key, or "greeting", or "speak_with_person", or "none"."""
-        params = {
-            "model": settings["model"],
-            "temperature": settings["temperature"],
-            "max_completion_tokens": settings["max_completion_tokens"],
-            "messages": [{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-        }
-        effort = settings.get("reasoning_effort")
-        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
-            params["reasoning"] = {"effort": effort}
-
-        resp = client.chat.completions.create(**params)
+        resp = client.chat.completions.create(
+            model=settings["model"],
+            temperature=settings["temperature"],
+            max_completion_tokens=settings["max_completion_tokens"],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
+        )
         detected = resp.choices[0].message.content.strip().lower()
         if detected in [i.lower() for i in intent_mapping.keys()]:
             return {"type": "intent", "intent": detected}
@@ -352,18 +340,12 @@ CERTAIN EXAMPLES:
 OUTPUT:
 Return only "uncertain" or "certain"."""
         user = f'Question: "{question_text}"\nUser: "{user_message}"'
-        params = {
-            "model": settings["model"],
-            "temperature": settings["temperature"],
-            "max_completion_tokens": settings["max_completion_tokens"],
-            "messages": [{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-        }
-        effort = settings.get("reasoning_effort")
-        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
-            params["reasoning"] = {"effort": effort}
-
-        resp = client.chat.completions.create(**params)
+        resp = client.chat.completions.create(
+            model=settings["model"],
+            temperature=settings["temperature"],
+            max_completion_tokens=settings["max_completion_tokens"],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
+        )
         verdict = resp.choices[0].message.content.strip().lower()
         return verdict == "uncertain"
     except Exception as e:
@@ -408,18 +390,12 @@ EXAMPLES:
 - "Budget is $50k; 25 campaigns running" →
   {"budget":"$50k","quantity":"25 campaigns"}"""
         user = f'MESSAGE: "{user_message}"\nReturn JSON with found keys only.'
-        params = {
-            "model": settings["model"],
-            "temperature": settings["temperature"],
-            "max_completion_tokens": settings["max_completion_tokens"],
-            "messages": [{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-        }
-        effort = settings.get("reasoning_effort")
-        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
-            params["reasoning"] = {"effort": effort}
-
-        resp = client.chat.completions.create(**params)
+        resp = client.chat.completions.create(
+            model=settings["model"],
+            temperature=settings["temperature"],
+            max_completion_tokens=settings["max_completion_tokens"],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
+        )
         text = resp.choices[0].message.content.strip()
         if text.startswith("```"):
             text = text.strip("`").replace("json", "").strip()
@@ -531,22 +507,16 @@ Recent history:
 USER MESSAGE: "{user_message}"
 
 IMPORTANT: This is a normal conversational response request. Do NOT add meta-commentary like "Here's a more conversational version" or "Sure!". Simply respond naturally to the user's message."""
-        logger.info(f"🔍 Sending conversational request to LLM with model: gpt-5")
+        logger.info(f"🔍 Sending conversational request to LLM with model: {settings['model']}")
         logger.info(f"🔍 System prompt length: {len(system)} characters")
         logger.info(f"🔍 User prompt length: {len(user)} characters")
         
-        params = {
-            "model": settings["model"],
-            "temperature": settings["temperature"],
-            "max_completion_tokens": settings["max_completion_tokens"],
-            "messages": [{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-        }
-        effort = settings.get("reasoning_effort")
-        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
-            params["reasoning"] = {"effort": effort}
-
-        resp = client.chat.completions.create(**params)
+        resp = client.chat.completions.create(
+            model=settings["model"],
+            temperature=settings["temperature"],
+            max_completion_tokens=settings["max_completion_tokens"],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
+        )
         
         logger.info(f"🔍 Conversational LLM response status: {resp}")
         logger.info(f"🔍 Conversational LLM response choices count: {len(resp.choices)}")
@@ -724,22 +694,16 @@ CRITICAL VALIDATION INSTRUCTIONS:
 
 Return ONLY the decision JSON (no markdown)."""
 
-        logger.info(f"🔍 Sending request to LLM with model: gpt-5-nano")
+        logger.info(f"🔍 Sending request to LLM with model: {settings['model']}")
         logger.info(f"🔍 System prompt length: {len(system)} characters")
         logger.info(f"🔍 User prompt length: {len(user)} characters")
         
-        params = {
-            "model": settings["model"],
-            "temperature": settings["temperature"],
-            "max_completion_tokens": settings["max_completion_tokens"],
-            "messages": [{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-        }
-        effort = settings.get("reasoning_effort")
-        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
-            params["reasoning"] = {"effort": effort}
-
-        resp = client.chat.completions.create(**params)
+        resp = client.chat.completions.create(
+            model=settings["model"],
+            temperature=settings["temperature"],
+            max_completion_tokens=settings["max_completion_tokens"],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
+        )
 
         logger.info(f"🔍 LLM response status: {resp}")
         logger.info(f"🔍 LLM response choices count: {len(resp.choices)}")
