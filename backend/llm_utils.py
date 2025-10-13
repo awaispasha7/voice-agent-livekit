@@ -89,8 +89,7 @@ EXAMPLES:
             model="gpt-5-mini",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.1,
-            max_tokens=200
+            max_completion_tokens=200
         )
         text = resp.choices[0].message.content.strip()
         # Strip code fences if any
@@ -171,8 +170,7 @@ Return ONLY JSON per the schema."""
             model="gpt-5-mini",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.1,
-            max_tokens=200
+            max_completion_tokens=200
         )
         text = resp.choices[0].message.content.strip()
         if text.startswith("```"):
@@ -225,8 +223,7 @@ Return only the exact option key or "none"."""
             model="gpt-5-nano",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.0,
-            max_tokens=50
+            max_completion_tokens=50
         )
         result = resp.choices[0].message.content.strip().strip('"').strip("'")
         return result if result in keys else None
@@ -270,8 +267,7 @@ Return exactly one: an intent key, or "greeting", or "speak_with_person", or "no
             model="gpt-5-nano",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.0,
-            max_tokens=30
+            max_completion_tokens=30
         )
         detected = resp.choices[0].message.content.strip().lower()
         if detected in [i.lower() for i in intent_mapping.keys()]:
@@ -310,8 +306,7 @@ Return only "uncertain" or "certain"."""
             model="gpt-5-nano",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.0,
-            max_tokens=5
+            max_completion_tokens=5
         )
         verdict = resp.choices[0].message.content.strip().lower()
         return verdict == "uncertain"
@@ -360,8 +355,7 @@ EXAMPLES:
             model="gpt-5-mini",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.1,
-            max_tokens=250
+            max_completion_tokens=250
         )
         text = resp.choices[0].message.content.strip()
         if text.startswith("```"):
@@ -477,8 +471,7 @@ IMPORTANT: This is a normal conversational response request. Do NOT add meta-com
             model="gpt-5-mini",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.7,
-            max_tokens=160
+            max_completion_tokens=160
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
@@ -625,8 +618,7 @@ Return ONLY the decision JSON (no markdown)."""
             model="gpt-5-nano",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.1,
-            max_tokens=500
+            max_completion_tokens=500
         )
 
         text = resp.choices[0].message.content.strip()
