@@ -67,7 +67,7 @@ class BackendLLM(llm.LLM):
     def set_room_name(self, room_name: str):
         self.room_name = room_name
 
-    async def chat(self, ctx: Optional[llm.ChatContext] = None, *, chat_ctx: Optional[llm.ChatContext] = None):
+    async def chat(self, ctx: Optional[llm.ChatContext] = None, *, chat_ctx: Optional[llm.ChatContext] = None, tools=None):
         ctx = ctx or chat_ctx
         try:
             user_message = None

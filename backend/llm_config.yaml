@@ -1,77 +1,72 @@
 # ──────────────────────────────────────────────────────────────
-# LLM Configuration for Voice Agent System
-# Centralized model & reasoning settings for all LLM Utilities
+# LLM Configuration for Voice Agent System (GPT-4o / GPT-4o-mini)
+# Temperature-optimized for reliability and natural tone
 # ──────────────────────────────────────────────────────────────
 
 llm_variants:
   # 1) Transcription Quality
   analyze_transcription_quality:
-    model: gpt-5-mini
-    temperature: 0.3
-    max_completion_tokens: 200
+    model: gpt-4o-mini
+    temperature: 0.2
+    max_tokens: 120
     notes: |
-      Used for quick text integrity checks.
-      Prioritizes low latency and acceptable confidence.
+      Quick, deterministic transcript quality evaluation.
 
   # 2) Answer Extraction
   extract_answer_with_llm:
-    model: gpt-5
+    model: gpt-4o-mini
     temperature: 0.2
-    max_completion_tokens: 200
+    max_tokens: 200
     notes: |
-      Structured parsing task; base model ensures JSON stability.
-      Minimal reasoning needed, strict schema enforcement.
+      Structured extraction; keep responses consistent and valid JSON.
 
   # 3) Answer Matching
   match_answer_with_llm:
-    model: gpt-5-mini
+    model: gpt-4o-mini
     temperature: 0.3
-    max_completion_tokens: 80
+    max_tokens: 80
     notes: |
-      Maps user free-text to predefined options.
-      Mini variant is faster and consistent for controlled lists.
+      Fuzzy classification with slight flexibility for phrasing.
 
   # 4) Intent Detection
   detect_intent_with_llm:
-    model: gpt-5
-    temperature: 0.3
-    max_completion_tokens: 60
+    model: gpt-4o-mini
+    temperature: 0.4
+    max_tokens: 100
     notes: |
-      Handles semantic intent disambiguation and routing logic.
-      Medium reasoning for conversational robustness.
+      Intent mapping with moderate flexibility for natural language.
 
   # 5) Uncertainty Detection
   detect_uncertainty_with_llm:
-    model: gpt-5-mini
-    temperature: 0.1
-    max_completion_tokens: 20
+    model: gpt-4o-mini
+    temperature: 0.2
+    max_tokens: 40
     notes: |
-      Binary classification task.
-      Fast and cheap; linguistic pattern matching only.
+      Binary certainty check; requires deterministic output.
 
   # 6) User Data Extraction
   extract_user_data_with_llm:
-    model: gpt-5
-    temperature: 0.2
-    max_completion_tokens: 250
+    model: gpt-4o-mini
+    temperature: 0.3
+    max_tokens: 250
     notes: |
-      Extracts structured fields like name, email, budget, etc.
-      Base GPT-5 improves accuracy on edge cases & JSON validity.
+      Extracts user data fields; allows slight variation to handle paraphrasing.
 
   # 7) Conversational Response
   generate_conversational_response:
-    model: gpt-5
-    temperature: 0.7
-    max_completion_tokens: 160
+    model: gpt-4o-mini
+    temperature: 0.6
+    max_tokens: 300
     notes: |
-      User-facing replies require warmth and coherence.
-      Balances natural tone with conversational fluidity.
+      Produces warm, natural replies for voice tone realism.
 
   # 8) Orchestrator Decision
   make_orchestrator_decision:
-    model: gpt-5-pro
-    temperature: 0.3
-    max_completion_tokens: 500
+    model: gpt-4o
+    temperature: 0.2
+    max_tokens: 1000
+    response_format:
+      type: json_object
     notes: |
-      Core decision-maker (flow vs FAQ vs human handoff).
-      Requires deep multi-step reasoning; slower but critical.
+      High-stakes decision routing; must output strict JSON.
+      Low temperature ensures consistency and validity.

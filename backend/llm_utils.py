@@ -60,13 +60,22 @@ def load_llm_config():
     return {}
 
 def get_llm_settings(function_name: str):
-    """Fetch model, temperature, and token limit for a given function"""
+    """Fetch model, token limit, temperature, and response format for a given function"""
     cfg = load_llm_config()
-    return cfg.get(function_name, {
-        "model": "gpt-5-mini",
-        "temperature": 0.3,
-        "max_completion_tokens": 200
-    })
+    default_settings = {
+        "model": "gpt-4o-mini",
+        "max_tokens": 200,
+        "temperature": 0.3
+    }
+    
+    settings = cfg.get(function_name, default_settings)
+    
+    # Ensure all required fields are present
+    for key, default_value in default_settings.items():
+        if key not in settings:
+            settings[key] = default_value
+    
+    return settings
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1) Transcription Quality (async)
@@ -122,7 +131,7 @@ EXAMPLES:
         resp = client.chat.completions.create(
             model=settings["model"],
             temperature=settings["temperature"],
-            max_completion_tokens=settings["max_completion_tokens"],
+            max_tokens=settings["max_tokens"],
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
         )
         text = resp.choices[0].message.content.strip()
@@ -204,7 +213,7 @@ Return ONLY JSON per the schema."""
         resp = client.chat.completions.create(
             model=settings["model"],
             temperature=settings["temperature"],
-            max_completion_tokens=settings["max_completion_tokens"],
+            max_tokens=settings["max_tokens"],
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
         )
         text = resp.choices[0].message.content.strip()
@@ -258,7 +267,7 @@ Return only the exact option key or "none"."""
         resp = client.chat.completions.create(
             model=settings["model"],
             temperature=settings["temperature"],
-            max_completion_tokens=settings["max_completion_tokens"],
+            max_tokens=settings["max_tokens"],
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
         )
         result = resp.choices[0].message.content.strip().strip('"').strip("'")
@@ -303,7 +312,7 @@ Return exactly one: an intent key, or "greeting", or "speak_with_person", or "no
         resp = client.chat.completions.create(
             model=settings["model"],
             temperature=settings["temperature"],
-            max_completion_tokens=settings["max_completion_tokens"],
+            max_tokens=settings["max_tokens"],
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
         )
         detected = resp.choices[0].message.content.strip().lower()
@@ -343,7 +352,7 @@ Return only "uncertain" or "certain"."""
         resp = client.chat.completions.create(
             model=settings["model"],
             temperature=settings["temperature"],
-            max_completion_tokens=settings["max_completion_tokens"],
+            max_tokens=settings["max_tokens"],
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
         )
         verdict = resp.choices[0].message.content.strip().lower()
@@ -393,7 +402,7 @@ EXAMPLES:
         resp = client.chat.completions.create(
             model=settings["model"],
             temperature=settings["temperature"],
-            max_completion_tokens=settings["max_completion_tokens"],
+            max_tokens=settings["max_tokens"],
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
         )
         text = resp.choices[0].message.content.strip()
@@ -507,32 +516,32 @@ Recent history:
 USER MESSAGE: "{user_message}"
 
 IMPORTANT: This is a normal conversational response request. Do NOT add meta-commentary like "Here's a more conversational version" or "Sure!". Simply respond naturally to the user's message."""
-        logger.info(f"🔍 Sending conversational request to LLM with model: {settings['model']}")
-        logger.info(f"🔍 System prompt length: {len(system)} characters")
-        logger.info(f"🔍 User prompt length: {len(user)} characters")
+        # logger.info(f"🔍 Sending conversational request to LLM with model: {settings['model']}")
+        # logger.info(f"🔍 System prompt length: {len(system)} characters")
+        # logger.info(f"🔍 User prompt length: {len(user)} characters")
         
         resp = client.chat.completions.create(
             model=settings["model"],
             temperature=settings["temperature"],
-            max_completion_tokens=settings["max_completion_tokens"],
+            max_tokens=settings["max_tokens"],
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
         )
         
-        logger.info(f"🔍 Conversational LLM response status: {resp}")
-        logger.info(f"🔍 Conversational LLM response choices count: {len(resp.choices)}")
+        # logger.info(f"🔍 Conversational LLM response status: {resp}")
+        # logger.info(f"🔍 Conversational LLM response choices count: {len(resp.choices)}")
         
         if not resp.choices:
             logger.error("No choices in conversational LLM response")
             return "Got it. How would you like to proceed?"
             
         choice = resp.choices[0]
-        logger.info(f"🔍 Conversational choice finish_reason: {choice.finish_reason}")
-        logger.info(f"🔍 Conversational choice message: {choice.message}")
+        # logger.info(f"🔍 Conversational choice finish_reason: {choice.finish_reason}")
+        # logger.info(f"🔍 Conversational choice message: {choice.message}")
         
         response_text = choice.message.content
-        logger.info(f"🔍 Raw conversational LLM response content: '{response_text}'")
-        logger.info(f"🔍 Raw conversational LLM response type: {type(response_text)}")
-        logger.info(f"🔍 Raw conversational LLM response length: {len(response_text) if response_text else 0}")
+        # logger.info(f"🔍 Raw conversational LLM response content: '{response_text}'")
+        # logger.info(f"🔍 Raw conversational LLM response type: {type(response_text)}")
+        # logger.info(f"🔍 Raw conversational LLM response length: {len(response_text) if response_text else 0}")
         
         if response_text is None:
             logger.error("Conversational LLM returned None content")
@@ -545,7 +554,7 @@ IMPORTANT: This is a normal conversational response request. Do NOT add meta-com
             logger.warning(f"Empty response from conversational LLM after processing. Original: '{choice.message.content}'")
             return "Got it. How would you like to proceed?"
             
-        logger.info(f"🔍 Processed conversational LLM response: '{response_text}'")
+        # logger.info(f"🔍 Processed conversational LLM response: '{response_text}'")
         return response_text
     except Exception as e:
         logger.error(f"Conversational response error: {e}")
@@ -698,12 +707,19 @@ Return ONLY the decision JSON (no markdown)."""
         logger.info(f"🔍 System prompt length: {len(system)} characters")
         logger.info(f"🔍 User prompt length: {len(user)} characters")
         
-        resp = client.chat.completions.create(
-            model=settings["model"],
-            temperature=settings["temperature"],
-            max_completion_tokens=settings["max_completion_tokens"],
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}]
-        )
+        # Build parameters for orchestrator decision
+        params = {
+            "model": settings["model"],
+            "temperature": settings["temperature"],
+            "max_tokens": settings["max_tokens"],
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        }
+        
+        # Add response_format if specified in config
+        if "response_format" in settings:
+            params["response_format"] = settings["response_format"]
+            
+        resp = client.chat.completions.create(**params)
 
         logger.info(f"🔍 LLM response status: {resp}")
         logger.info(f"🔍 LLM response choices count: {len(resp.choices)}")
