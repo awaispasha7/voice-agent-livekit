@@ -72,8 +72,7 @@ A5_BASE_URL   = os.getenv("A5_BASE_URL")
 A5_API_KEY    = os.getenv("A5_API_KEY")
 A5_TEMPLATE_URL = os.getenv("A5_TEMPLATE_URL", "/1.0/org-botchain/generate-template")
 A5_FAQ_URL    = os.getenv("A5_FAQ_URL", "/public/1.0/get-faq-bot-response-by-bot-id")
-A5_FAQ_CONCISE_URL = os.getenv("A5_FAQ_CONCISE_URL", "/public/1.0/get-faq-bot-response-by-bot-id")  # TODO: Replace with actual concise endpoint
-FAQ_BOT_ID    = os.getenv("FAQ_BOT_ID", "default-bot-id")
+FAQ_BOT_ID    = os.getenv("FAQ_BOT_ID", "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e")
 
 # --------------------------------------------------------------------
 # State
@@ -593,7 +592,7 @@ async def _progress_flow_with_user_input(state: FlowState, user_message: str, fa
     # 3) FAQ
     if node_type == "faq":
         # use FAQ for the user's question; stay on faq or advance if template specifies
-        faq = await get_faq_response(user_message, faq_verbose_mode)
+        faq = await get_faq_response(user_message, not faq_verbose_mode)
 
         # Check if FAQ node has answers (like in the complex flow structure)
         answers = node.get("answers") or {}
@@ -831,7 +830,7 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
         
         if not flow_container:
             logger.warning(f"Flow '{decision.flow_to_execute}' not found in available flows")
-            faq = await get_faq_response(msg, faq_verbose_mode)
+            faq = await get_faq_response(msg, not faq_verbose_mode)
             response_text = faq["response"]
         else:
 
@@ -951,7 +950,7 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
             "response":response_text,"flow_state":state.dict()}}
 
     elif decision.action == OrchestratorAction.USE_FAQ:
-        faq = await get_faq_response(msg, faq_verbose_mode)
+        faq = await get_faq_response(msg, not faq_verbose_mode)
         response_text = faq["response"]
         
         # Use conversational LLM to remove meta-commentary only
@@ -1293,7 +1292,7 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
 
         # fallback: if nothing to say, use FAQ to avoid "..."
         if not response_text:
-            faq = await get_faq_response(msg, faq_verbose_mode)
+            faq = await get_faq_response(msg, not faq_verbose_mode)
             response_text = faq["response"]
 
     flow_states[room] = state
@@ -1308,19 +1307,19 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
 # --------------------------------------------------------------------
 # FAQ Wrapper
 # --------------------------------------------------------------------
-async def get_faq_response(user_message: str, verbose: bool = True) -> Dict[str, Any]:
+async def get_faq_response(user_message: str, isVoice: bool = False) -> Dict[str, Any]:
     if not (A5_BASE_URL and A5_FAQ_URL and A5_API_KEY):
         logger.error("❌ FAQ call missing env: A5_BASE_URL/A5_FAQ_URL/A5_API_KEY")
         return {"response": "Sorry, FAQ service is not configured."}
     
-    # Use different API endpoints based on verbose mode
-    faq_url = A5_FAQ_URL if verbose else A5_FAQ_CONCISE_URL
+    # Use the same API endpoint - verbosity is handled by the isVoice flag
+    faq_url = A5_FAQ_URL
     
     async with httpx.AsyncClient(timeout=10.0) as client:
         payload = {
             "bot_id": FAQ_BOT_ID, 
             "faq_question": user_message,
-            "verbose": verbose  # Add verbose parameter to request
+            "isVoice": isVoice  # New isVoice flag structure
         }
         
         resp = await client.post(
