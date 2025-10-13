@@ -346,7 +346,7 @@ async def _emit_or_advance_and_emit(state: FlowState, enhance_with_llm: bool = F
     node = state.flow_data or {}
     node_type = (node.get("type") or "").lower()
     
-    logger.info(f"🔍 _emit_or_advance_and_emit: node_type='{node_type}', node={node}")
+    # logger.info(f"🔍 _emit_or_advance_and_emit: node_type='{node_type}', node={node}")
 
     # nodes that do not require user input -> auto-advance once before speaking (message -> next question, etc.)
     auto_advance_types = {"message", "intent_bot"}
@@ -915,9 +915,9 @@ async def process_flow_message(req: ProcessFlowMessageRequest):
                     state.flow_data = intent_node
                     is_fresh_flow_start = True
                 
-                logger.info(f"🔍 Flow execution: flow_container={flow_container}")
-                logger.info(f"🔍 Flow execution: intent_node={intent_node}")
-                logger.info(f"🔍 Flow execution: state.flow_data={state.flow_data}")
+                # logger.info(f"🔍 Flow execution: flow_container={flow_container}")
+                # logger.info(f"🔍 Flow execution: intent_node={intent_node}")
+                # logger.info(f"🔍 Flow execution: state.flow_data={state.flow_data}")
 
                 # advance once if intent node leads straight to a question/message
                 # Enhance with LLM if this is a fresh flow start

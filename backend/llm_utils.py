@@ -609,8 +609,7 @@ GLOBAL RULES:
 8) FLOW PROGRESSION: If user is responding to a flow question, handle appropriately:
    - If response is appropriate for the flow context → handle_conversationally with a response that acknowledges their choice and allows flow progression
    - If response is inappropriate or unclear → handle_conversationally with helpful correction
-   - For menu orders: acknowledge the order and provide confirmation response
-   - Available menu items: pasta, biryani, fried chicken, fried rice
+   - For flow-specific orders/requests: acknowledge appropriately based on the current flow context
 9) Always include brief reasoning and a reasonable confidence (0.0–1.0).
 10) Output STRICT JSON only.
 
@@ -688,7 +687,9 @@ User: "Hi there"
 EDGE CASES:
 - If both FAQ and flow seem plausible, prefer use_faq only if it is a direct factual question.
 - If user mid-flow asks a different intent, you MAY switch flows via execute_flow (with reasoning).
-- If user requests to speak with a specific person/role (manager, supervisor, etc.) and a specific intent flow exists, prefer execute_flow over speak_with_person."""
+- If user requests to speak with a specific person/role (manager, supervisor, etc.) and a specific intent flow exists, prefer execute_flow over speak_with_person.
+
+CRITICAL: The examples above are for DIFFERENT flow types (menu, sales, marketing, etc.). Only apply examples that match the CURRENT flow context. Do NOT apply menu examples to non-menu flows or vice versa. Always consider the current flow context when making decisions."""
 
         # Pass the entire context as JSON (so the model sees structured data)
         user = f"""CONTEXT:
@@ -731,13 +732,13 @@ Return ONLY the decision JSON (no markdown)."""
             raise ValueError("No choices in LLM response")
             
         choice = resp.choices[0]
-        logger.info(f"🔍 Choice finish_reason: {choice.finish_reason}")
-        logger.info(f"🔍 Choice message: {choice.message}")
+        # logger.info(f"🔍 Choice finish_reason: {choice.finish_reason}")
+        # logger.info(f"🔍 Choice message: {choice.message}")
         
         text = choice.message.content
-        logger.info(f"🔍 Raw LLM response content: '{text}'")
-        logger.info(f"🔍 Raw LLM response type: {type(text)}")
-        logger.info(f"🔍 Raw LLM response length: {len(text) if text else 0}")
+        # logger.info(f"🔍 Raw LLM response content: '{text}'")
+        # logger.info(f"🔍 Raw LLM response type: {type(text)}")
+        # logger.info(f"🔍 Raw LLM response length: {len(text) if text else 0}")
         
         if text is None:
             logger.error("LLM returned None content")
