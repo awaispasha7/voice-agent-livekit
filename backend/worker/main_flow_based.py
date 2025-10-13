@@ -96,43 +96,61 @@ class BackendLLM(llm.LLM):
     async def _execute_chat(self, ctx: Optional[llm.ChatContext] = None, **kwargs):
         """Execute the actual chat logic"""
         try:
+            # Extract user message from the context
             user_message = None
-            for msg in reversed(ctx.messages):
-                if msg.role == "user":
-                    user_message = msg.content
-                    break
+            if hasattr(ctx, 'messages') and ctx.messages:
+                for msg in reversed(ctx.messages):
+                    if msg.role == "user":
+                        user_message = msg.content
+                        break
+            elif hasattr(ctx, 'current_message') and ctx.current_message:
+                user_message = ctx.current_message.content
+            else:
+                # Fallback: try to get the last user message from context
+                user_message = getattr(ctx, 'user_message', None)
 
             if not user_message:
-                return llm.ChatCompletion(
-                    choices=[llm.ChatCompletionChoice(
-                        message=llm.ChatMessage(
-                            role="assistant",
-                            content="I didn't receive your message. Could you please repeat that?"
-                        )
-                    )]
-                )
+                # Create a simple response object
+                return {
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "I didn't receive your message. Could you please repeat that?"
+                        }
+                    }]
+                }
 
-            history = [
-                {"role": m.role, "content": m.content, "timestamp": datetime.now().isoformat()}
-                for m in ctx.messages if m.role in ["user", "assistant"]
-            ]
+            # Build history from context messages if available
+            history = []
+            if hasattr(ctx, 'messages') and ctx.messages:
+                history = [
+                    {"role": m.role, "content": m.content, "timestamp": datetime.now().isoformat()}
+                    for m in ctx.messages if m.role in ["user", "assistant"]
+                ]
 
             result = await self.call_backend(user_message, history)
             response = result.get("response", "Sorry, I'm having trouble. Let me connect you with a human agent.")
 
-            return llm.ChatCompletion(
-                choices=[llm.ChatCompletionChoice(
-                    message=llm.ChatMessage(role="assistant", content=response)
-                )]
-            )
+            # Return a simple response object
+            return {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": response
+                    }
+                }]
+            }
 
         except Exception as e:
             logger.error(f"Chat error: {e}")
-            return llm.ChatCompletion(
-                choices=[llm.ChatCompletionChoice(
-                    message=llm.ChatMessage(role="assistant", content="Sorry, I'm having trouble reaching the backend.")
-                )]
-            )
+            return {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Sorry, I'm having trouble reaching the backend."
+                    }
+                }]
+            }
 
 
     async def call_backend(self, msg: str, history: list) -> Dict[str,Any]:
@@ -232,7 +250,7 @@ class OrchestratorAssistant(Agent):
                 json.dumps(thinking_data).encode('utf-8'),
                 topic="lk.conversation.control"
             )
-            logger.info(f"🔍 Thinking indicator started")
+            # logger.info(f"🔍 Thinking indicator started")
         except Exception as e:
             logger.error(f"Failed to start thinking indicator: {e}")
         
@@ -250,7 +268,7 @@ class OrchestratorAssistant(Agent):
                 json.dumps(thinking_data).encode('utf-8'),
                 topic="lk.conversation.control"
             )
-            logger.info(f"🔍 Thinking indicator stopped")
+            # logger.info(f"🔍 Thinking indicator stopped")
         except Exception as e:
             logger.error(f"Failed to stop thinking indicator: {e}")
         

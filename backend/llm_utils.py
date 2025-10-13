@@ -440,7 +440,7 @@ STYLE:
 SPECIAL HANDLING:
 - Refusal (refusal_context=true):
   Acknowledge kindly ("No problem at all") and transition naturally to the next step.
-  If next_step_text is provided, incorporate it smoothly into your response.
+  If next_step_text is provided, you MUST ask the next question directly. Do NOT skip or avoid the next step.
 - Uncertainty (uncertainty_context=true):
   Reassure the user; simplify the next step or offer an alternative.
 - Self-identification: When asked "who are you", "what's this", etc., respond:
@@ -515,7 +515,9 @@ Recent history:
 
 USER MESSAGE: "{user_message}"
 
-IMPORTANT: This is a normal conversational response request. Do NOT add meta-commentary like "Here's a more conversational version" or "Sure!". Simply respond naturally to the user's message."""
+IMPORTANT: This is a normal conversational response request. Do NOT add meta-commentary like "Here's a more conversational version" or "Sure!". Simply respond naturally to the user's message.
+
+CRITICAL: If next_step_text is provided and refusal_context=true, you MUST ask the next question directly. Do NOT skip or avoid the next step."""
         # logger.info(f"🔍 Sending conversational request to LLM with model: {settings['model']}")
         # logger.info(f"🔍 System prompt length: {len(system)} characters")
         # logger.info(f"🔍 User prompt length: {len(user)} characters")
@@ -703,9 +705,9 @@ CRITICAL VALIDATION INSTRUCTIONS:
 
 Return ONLY the decision JSON (no markdown)."""
 
-        logger.info(f"🔍 Sending request to LLM with model: {settings['model']}")
-        logger.info(f"🔍 System prompt length: {len(system)} characters")
-        logger.info(f"🔍 User prompt length: {len(user)} characters")
+        # logger.info(f"🔍 Sending request to LLM with model: {settings['model']}")
+        # logger.info(f"🔍 System prompt length: {len(system)} characters")
+        # logger.info(f"🔍 User prompt length: {len(user)} characters")
         
         # Build parameters for orchestrator decision
         params = {
@@ -721,8 +723,8 @@ Return ONLY the decision JSON (no markdown)."""
             
         resp = client.chat.completions.create(**params)
 
-        logger.info(f"🔍 LLM response status: {resp}")
-        logger.info(f"🔍 LLM response choices count: {len(resp.choices)}")
+        # logger.info(f"🔍 LLM response status: {resp}")
+        # logger.info(f"🔍 LLM response choices count: {len(resp.choices)}")
         
         if not resp.choices:
             logger.error("No choices in LLM response")
