@@ -107,14 +107,18 @@ EXAMPLES:
 - "asdfghj" → {"is_complete": false, "confidence": 0.95, "reasoning": "Garbled"}"""
 
         user = f'TRANSCRIBED TEXT: "{transcribed_text}"\nRespond in JSON only.'
-        resp = client.chat.completions.create(
-            model=settings["model"],
-            reasoning={"effort": settings["reasoning_effort"]},
-            temperature=settings["temperature"],
-            messages=[{"role": "system", "content": system},
+        params = {
+            "model": settings["model"],
+            "temperature": settings["temperature"],
+            "max_completion_tokens": settings["max_completion_tokens"],
+            "messages": [{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=settings["max_completion_tokens"]
-        )
+        }
+        effort = settings.get("reasoning_effort")
+        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
+            params["reasoning"] = {"effort": effort}
+
+        resp = client.chat.completions.create(**params)
         text = resp.choices[0].message.content.strip()
         # Strip code fences if any
         if text.startswith("```"):
@@ -191,14 +195,18 @@ Q: "How many?" A:"uh the"
         user = f"""QUESTION: "{question_text}"
 USER RESPONSE: "{user_text}"
 Return ONLY JSON per the schema."""
-        resp = client.chat.completions.create(
-            model=settings["model"],
-            reasoning={"effort": settings["reasoning_effort"]},
-            temperature=settings["temperature"],
-            messages=[{"role": "system", "content": system},
+        params = {
+            "model": settings["model"],
+            "temperature": settings["temperature"],
+            "max_completion_tokens": settings["max_completion_tokens"],
+            "messages": [{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=settings["max_completion_tokens"]
-        )
+        }
+        effort = settings.get("reasoning_effort")
+        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
+            params["reasoning"] = {"effort": effort}
+
+        resp = client.chat.completions.create(**params)
         text = resp.choices[0].message.content.strip()
         if text.startswith("```"):
             text = text.strip("`").replace("json", "").strip()
@@ -247,14 +255,18 @@ EXAMPLES:
 User: {user_response}
 Options: {keys}
 Return only the exact option key or "none"."""
-        resp = client.chat.completions.create(
-            model=settings["model"],
-            reasoning={"effort": settings["reasoning_effort"]},
-            temperature=settings["temperature"],
-            messages=[{"role": "system", "content": system},
+        params = {
+            "model": settings["model"],
+            "temperature": settings["temperature"],
+            "max_completion_tokens": settings["max_completion_tokens"],
+            "messages": [{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=settings["max_completion_tokens"]
-        )
+        }
+        effort = settings.get("reasoning_effort")
+        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
+            params["reasoning"] = {"effort": effort}
+
+        resp = client.chat.completions.create(**params)
         result = resp.choices[0].message.content.strip().strip('"').strip("'")
         return result if result in keys else None
     except Exception as e:
@@ -294,14 +306,18 @@ EXAMPLES:
         user = f"""AVAILABLE INTENTS: {list(intent_mapping.keys())}
 USER: "{user_message}"
 Return exactly one: an intent key, or "greeting", or "speak_with_person", or "none"."""
-        resp = client.chat.completions.create(
-            model=settings["model"],
-            reasoning={"effort": settings["reasoning_effort"]},
-            temperature=settings["temperature"],
-            messages=[{"role": "system", "content": system},
+        params = {
+            "model": settings["model"],
+            "temperature": settings["temperature"],
+            "max_completion_tokens": settings["max_completion_tokens"],
+            "messages": [{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=settings["max_completion_tokens"]
-        )
+        }
+        effort = settings.get("reasoning_effort")
+        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
+            params["reasoning"] = {"effort": effort}
+
+        resp = client.chat.completions.create(**params)
         detected = resp.choices[0].message.content.strip().lower()
         if detected in [i.lower() for i in intent_mapping.keys()]:
             return {"type": "intent", "intent": detected}
@@ -336,14 +352,18 @@ CERTAIN EXAMPLES:
 OUTPUT:
 Return only "uncertain" or "certain"."""
         user = f'Question: "{question_text}"\nUser: "{user_message}"'
-        resp = client.chat.completions.create(
-            model=settings["model"],
-            reasoning={"effort": settings["reasoning_effort"]},
-            temperature=settings["temperature"],
-            messages=[{"role": "system", "content": system},
+        params = {
+            "model": settings["model"],
+            "temperature": settings["temperature"],
+            "max_completion_tokens": settings["max_completion_tokens"],
+            "messages": [{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=settings["max_completion_tokens"]
-        )
+        }
+        effort = settings.get("reasoning_effort")
+        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
+            params["reasoning"] = {"effort": effort}
+
+        resp = client.chat.completions.create(**params)
         verdict = resp.choices[0].message.content.strip().lower()
         return verdict == "uncertain"
     except Exception as e:
@@ -388,14 +408,18 @@ EXAMPLES:
 - "Budget is $50k; 25 campaigns running" →
   {"budget":"$50k","quantity":"25 campaigns"}"""
         user = f'MESSAGE: "{user_message}"\nReturn JSON with found keys only.'
-        resp = client.chat.completions.create(
-            model=settings["model"],
-            reasoning={"effort": settings["reasoning_effort"]},
-            temperature=settings["temperature"],
-            messages=[{"role": "system", "content": system},
+        params = {
+            "model": settings["model"],
+            "temperature": settings["temperature"],
+            "max_completion_tokens": settings["max_completion_tokens"],
+            "messages": [{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=settings["max_completion_tokens"]
-        )
+        }
+        effort = settings.get("reasoning_effort")
+        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
+            params["reasoning"] = {"effort": effort}
+
+        resp = client.chat.completions.create(**params)
         text = resp.choices[0].message.content.strip()
         if text.startswith("```"):
             text = text.strip("`").replace("json", "").strip()
@@ -511,14 +535,18 @@ IMPORTANT: This is a normal conversational response request. Do NOT add meta-com
         logger.info(f"🔍 System prompt length: {len(system)} characters")
         logger.info(f"🔍 User prompt length: {len(user)} characters")
         
-        resp = client.chat.completions.create(
-            model=settings["model"],
-            reasoning={"effort": settings["reasoning_effort"]},
-            temperature=settings["temperature"],
-            messages=[{"role": "system", "content": system},
+        params = {
+            "model": settings["model"],
+            "temperature": settings["temperature"],
+            "max_completion_tokens": settings["max_completion_tokens"],
+            "messages": [{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=settings["max_completion_tokens"]
-        )
+        }
+        effort = settings.get("reasoning_effort")
+        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
+            params["reasoning"] = {"effort": effort}
+
+        resp = client.chat.completions.create(**params)
         
         logger.info(f"🔍 Conversational LLM response status: {resp}")
         logger.info(f"🔍 Conversational LLM response choices count: {len(resp.choices)}")
@@ -700,14 +728,18 @@ Return ONLY the decision JSON (no markdown)."""
         logger.info(f"🔍 System prompt length: {len(system)} characters")
         logger.info(f"🔍 User prompt length: {len(user)} characters")
         
-        resp = client.chat.completions.create(
-            model=settings["model"],
-            reasoning={"effort": settings["reasoning_effort"]},
-            temperature=settings["temperature"],
-            messages=[{"role": "system", "content": system},
+        params = {
+            "model": settings["model"],
+            "temperature": settings["temperature"],
+            "max_completion_tokens": settings["max_completion_tokens"],
+            "messages": [{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=settings["max_completion_tokens"]
-        )
+        }
+        effort = settings.get("reasoning_effort")
+        if effort and not settings["model"].startswith("gpt-5-pro"):  # only for gpt-5 / gpt-5-mini, not gpt-5-pro
+            params["reasoning"] = {"effort": effort}
+
+        resp = client.chat.completions.create(**params)
 
         logger.info(f"🔍 LLM response status: {resp}")
         logger.info(f"🔍 LLM response choices count: {len(resp.choices)}")
