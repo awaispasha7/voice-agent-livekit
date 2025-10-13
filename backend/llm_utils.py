@@ -13,7 +13,7 @@ Covered functions:
 - detect_uncertainty_with_llm (sync)
 - extract_user_data_with_llm (sync)
 - generate_conversational_response (async)
-- make_orchestrator_decision (async)  ← includes speak_with_person action
+- make_orchestrator_decision (async)
 """
 
 import os
@@ -22,6 +22,8 @@ import logging
 from typing import Dict, Any, Optional
 import openai
 from dotenv import load_dotenv
+import yaml
+from functools import lru_cache
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Setup
@@ -34,6 +36,25 @@ def get_openai_client():
     """Return configured OpenAI client"""
     return openai.OpenAI(api_key=OPENAI_API_KEY)
 
+@lru_cache(maxsize=1)
+def load_llm_config():
+    """Load centralized model configuration from YAML"""
+    try:
+        with open("llm_config.yaml", "r") as f:
+            return yaml.safe_load(f)["llm_variants"]
+    except Exception as e:
+        logger.warning(f"⚠️ Could not load llm_config.yaml, using defaults: {e}")
+        return {}
+
+def get_llm_settings(function_name: str):
+    """Fetch model, reasoning, temperature, and token limit for a given function"""
+    cfg = load_llm_config()
+    return cfg.get(function_name, {
+        "model": "gpt-5-mini",
+        "reasoning_effort": "low",
+        "temperature": 0.3,
+        "max_completion_tokens": 200
+    })
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1) Transcription Quality (async)
@@ -51,6 +72,7 @@ async def analyze_transcription_quality(transcribed_text: str) -> Dict[str, Any]
     """
     try:
         client = get_openai_client()
+        settings = get_llm_settings("analyze_transcription_quality")
         system = """You are a speech transcription quality analyst.
 
 GOAL:
@@ -86,10 +108,12 @@ EXAMPLES:
 
         user = f'TRANSCRIBED TEXT: "{transcribed_text}"\nRespond in JSON only.'
         resp = client.chat.completions.create(
-            model="gpt-5-mini",
+            model=settings["model"],
+            reasoning={"effort": settings["reasoning_effort"]},
+            temperature=settings["temperature"],
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=200
+            max_completion_tokens=settings["max_completion_tokens"]
         )
         text = resp.choices[0].message.content.strip()
         # Strip code fences if any
@@ -118,6 +142,7 @@ def extract_answer_with_llm(question_text: str, user_text: str) -> Dict[str, Any
     """
     try:
         client = get_openai_client()
+        settings = get_llm_settings("extract_answer_with_llm")
         system = """You are an expert at extracting structured answers from natural language.
 
 TASK:
@@ -167,10 +192,12 @@ Q: "How many?" A:"uh the"
 USER RESPONSE: "{user_text}"
 Return ONLY JSON per the schema."""
         resp = client.chat.completions.create(
-            model="gpt-5-mini",
+            model=settings["model"],
+            reasoning={"effort": settings["reasoning_effort"]},
+            temperature=settings["temperature"],
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=200
+            max_completion_tokens=settings["max_completion_tokens"]
         )
         text = resp.choices[0].message.content.strip()
         if text.startswith("```"):
@@ -194,6 +221,7 @@ def match_answer_with_llm(question_text: str, user_response: str, available_answ
     """
     try:
         client = get_openai_client()
+        settings = get_llm_settings("match_answer_with_llm")
         keys = list(available_answers.keys())
         system = f"""You map a user's response to a single option from a predefined list.
 
@@ -220,10 +248,12 @@ User: {user_response}
 Options: {keys}
 Return only the exact option key or "none"."""
         resp = client.chat.completions.create(
-            model="gpt-5-nano",
+            model=settings["model"],
+            reasoning={"effort": settings["reasoning_effort"]},
+            temperature=settings["temperature"],
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=50
+            max_completion_tokens=settings["max_completion_tokens"]
         )
         result = resp.choices[0].message.content.strip().strip('"').strip("'")
         return result if result in keys else None
@@ -244,6 +274,7 @@ async def detect_intent_with_llm(user_message: str, intent_mapping: Dict[str, st
     """
     try:
         client = get_openai_client()
+        settings = get_llm_settings("detect_intent_with_llm")
         system = """You are an intent detector constrained to a known list.
 
 RULES:
@@ -264,10 +295,12 @@ EXAMPLES:
 USER: "{user_message}"
 Return exactly one: an intent key, or "greeting", or "speak_with_person", or "none"."""
         resp = client.chat.completions.create(
-            model="gpt-5-nano",
+            model=settings["model"],
+            reasoning={"effort": settings["reasoning_effort"]},
+            temperature=settings["temperature"],
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=30
+            max_completion_tokens=settings["max_completion_tokens"]
         )
         detected = resp.choices[0].message.content.strip().lower()
         if detected in [i.lower() for i in intent_mapping.keys()]:
@@ -291,6 +324,7 @@ def detect_uncertainty_with_llm(user_message: str, question_text: str) -> bool:
     """
     try:
         client = get_openai_client()
+        settings = get_llm_settings("detect_uncertainty_with_llm")
         system = """You detect if a response expresses uncertainty/inability.
 
 UNCERTAINTY EXAMPLES:
@@ -303,10 +337,12 @@ OUTPUT:
 Return only "uncertain" or "certain"."""
         user = f'Question: "{question_text}"\nUser: "{user_message}"'
         resp = client.chat.completions.create(
-            model="gpt-5-nano",
+            model=settings["model"],
+            reasoning={"effort": settings["reasoning_effort"]},
+            temperature=settings["temperature"],
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=5
+            max_completion_tokens=settings["max_completion_tokens"]
         )
         verdict = resp.choices[0].message.content.strip().lower()
         return verdict == "uncertain"
@@ -329,6 +365,7 @@ def extract_user_data_with_llm(user_message: str) -> Dict[str, Any]:
     """
     try:
         client = get_openai_client()
+        settings = get_llm_settings("extract_user_data_with_llm")
         system = """You are an expert in extracting structured user information from natural language.
 
 TARGET KEYS:
@@ -352,10 +389,12 @@ EXAMPLES:
   {"budget":"$50k","quantity":"25 campaigns"}"""
         user = f'MESSAGE: "{user_message}"\nReturn JSON with found keys only.'
         resp = client.chat.completions.create(
-            model="gpt-5-mini",
+            model=settings["model"],
+            reasoning={"effort": settings["reasoning_effort"]},
+            temperature=settings["temperature"],
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=250
+            max_completion_tokens=settings["max_completion_tokens"]
         )
         text = resp.choices[0].message.content.strip()
         if text.startswith("```"):
@@ -381,6 +420,7 @@ async def generate_conversational_response(user_message: str, context: Dict[str,
     """
     try:
         client = get_openai_client()
+        settings = get_llm_settings("generate_conversational_response")
         system = """You are a warm, professional Alive5 Agent - an AI assistant for Alive5's voice support line.
 STYLE:
 - Friendly, concise, and natural (use contractions).
@@ -467,13 +507,48 @@ Recent history:
 USER MESSAGE: "{user_message}"
 
 IMPORTANT: This is a normal conversational response request. Do NOT add meta-commentary like "Here's a more conversational version" or "Sure!". Simply respond naturally to the user's message."""
+        logger.info(f"🔍 Sending conversational request to LLM with model: gpt-5")
+        logger.info(f"🔍 System prompt length: {len(system)} characters")
+        logger.info(f"🔍 User prompt length: {len(user)} characters")
+        
         resp = client.chat.completions.create(
-            model="gpt-5-mini",
+            model=settings["model"],
+            reasoning={"effort": settings["reasoning_effort"]},
+            temperature=settings["temperature"],
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=160
+            max_completion_tokens=settings["max_completion_tokens"]
         )
-        return resp.choices[0].message.content.strip()
+        
+        logger.info(f"🔍 Conversational LLM response status: {resp}")
+        logger.info(f"🔍 Conversational LLM response choices count: {len(resp.choices)}")
+        
+        if not resp.choices:
+            logger.error("No choices in conversational LLM response")
+            return "Got it. How would you like to proceed?"
+            
+        choice = resp.choices[0]
+        logger.info(f"🔍 Conversational choice finish_reason: {choice.finish_reason}")
+        logger.info(f"🔍 Conversational choice message: {choice.message}")
+        
+        response_text = choice.message.content
+        logger.info(f"🔍 Raw conversational LLM response content: '{response_text}'")
+        logger.info(f"🔍 Raw conversational LLM response type: {type(response_text)}")
+        logger.info(f"🔍 Raw conversational LLM response length: {len(response_text) if response_text else 0}")
+        
+        if response_text is None:
+            logger.error("Conversational LLM returned None content")
+            return "Got it. How would you like to proceed?"
+            
+        response_text = response_text.strip()
+        
+        # Handle empty response
+        if not response_text or response_text.isspace():
+            logger.warning(f"Empty response from conversational LLM after processing. Original: '{choice.message.content}'")
+            return "Got it. How would you like to proceed?"
+            
+        logger.info(f"🔍 Processed conversational LLM response: '{response_text}'")
+        return response_text
     except Exception as e:
         logger.error(f"Conversational response error: {e}")
         return "Got it. How would you like to proceed?"
@@ -494,6 +569,7 @@ async def make_orchestrator_decision(context: Dict[str, Any]) -> Any:
     from backend.conversational_orchestrator import OrchestratorDecision, OrchestratorAction
     try:
         client = get_openai_client()
+        settings = get_llm_settings("make_orchestrator_decision")
         system = """You are the CONVERSATIONAL ORCHESTRATOR above all components.
 
 GOAL:
@@ -525,6 +601,7 @@ GLOBAL RULES:
    - If response is appropriate for the flow context → handle_conversationally with a response that acknowledges their choice and allows flow progression
    - If response is inappropriate or unclear → handle_conversationally with helpful correction
    - For menu orders: acknowledge the order and provide confirmation response
+   - Available menu items: pasta, biryani, fried chicken, fried rice
 9) Always include brief reasoning and a reasonable confidence (0.0–1.0).
 10) Output STRICT JSON only.
 
@@ -578,6 +655,11 @@ Current Flow: "menu" asking for order
 User: "Can I get one fried rice, please?"
 → {"action":"handle_conversationally","reasoning":"User ordered valid menu item with quantity","response":"Perfect! One fried rice will be prepared for you.","confidence":0.95}
 
+C6) Conversational (menu order - fried chicken)
+Current Flow: "menu" asking for order
+User: "Oh, can I get one fried chicken?"
+→ {"action":"handle_conversationally","reasoning":"User ordered fried chicken from menu","response":"Excellent choice! One fried chicken coming right up.","confidence":0.95}
+
 D) Refusal (in flow)
 User: "I'd rather not share my name"
 → {"action":"handle_refusal","reasoning":"Refusal detected for 'name'","skip_fields":["name"],"confidence":0.97}
@@ -614,18 +696,51 @@ CRITICAL VALIDATION INSTRUCTIONS:
 
 Return ONLY the decision JSON (no markdown)."""
 
+        logger.info(f"🔍 Sending request to LLM with model: gpt-5-nano")
+        logger.info(f"🔍 System prompt length: {len(system)} characters")
+        logger.info(f"🔍 User prompt length: {len(user)} characters")
+        
         resp = client.chat.completions.create(
-            model="gpt-5-nano",
+            model=settings["model"],
+            reasoning={"effort": settings["reasoning_effort"]},
+            temperature=settings["temperature"],
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            max_completion_tokens=500
+            max_completion_tokens=settings["max_completion_tokens"]
         )
 
-        text = resp.choices[0].message.content.strip()
+        logger.info(f"🔍 LLM response status: {resp}")
+        logger.info(f"🔍 LLM response choices count: {len(resp.choices)}")
+        
+        if not resp.choices:
+            logger.error("No choices in LLM response")
+            raise ValueError("No choices in LLM response")
+            
+        choice = resp.choices[0]
+        logger.info(f"🔍 Choice finish_reason: {choice.finish_reason}")
+        logger.info(f"🔍 Choice message: {choice.message}")
+        
+        text = choice.message.content
+        logger.info(f"🔍 Raw LLM response content: '{text}'")
+        logger.info(f"🔍 Raw LLM response type: {type(text)}")
+        logger.info(f"🔍 Raw LLM response length: {len(text) if text else 0}")
+        
+        if text is None:
+            logger.error("LLM returned None content")
+            raise ValueError("LLM returned None content")
+            
+        text = text.strip()
+        
         # Strip markdown fences if present
         if text.startswith("```"):
             text = text.strip("`").replace("json", "").strip()
+        
+        # Handle empty response
+        if not text or text.isspace():
+            logger.error(f"Empty response from LLM after processing. Original: '{choice.message.content}'")
+            raise ValueError("Empty response from LLM")
 
+        logger.info(f"🔍 Processed LLM response: '{text}'")
         data = json.loads(text)
 
         return OrchestratorDecision(

@@ -1,0 +1,85 @@
+# ──────────────────────────────────────────────────────────────
+# LLM Configuration for Voice Agent System
+# Centralized model & reasoning settings for all LLM Utilities
+# ──────────────────────────────────────────────────────────────
+
+llm_variants:
+  # 1) Transcription Quality
+  analyze_transcription_quality:
+    model: gpt-5-mini
+    reasoning_effort: low
+    temperature: 0.3
+    max_completion_tokens: 200
+    notes: |
+      Used for quick text integrity checks.
+      Prioritizes low latency and acceptable confidence.
+
+  # 2) Answer Extraction
+  extract_answer_with_llm:
+    model: gpt-5
+    reasoning_effort: low
+    temperature: 0.2
+    max_completion_tokens: 200
+    notes: |
+      Structured parsing task; base model ensures JSON stability.
+      Minimal reasoning needed, strict schema enforcement.
+
+  # 3) Answer Matching
+  match_answer_with_llm:
+    model: gpt-5-mini
+    reasoning_effort: medium
+    temperature: 0.3
+    max_completion_tokens: 80
+    notes: |
+      Maps user free-text to predefined options.
+      Mini variant is faster and consistent for controlled lists.
+
+  # 4) Intent Detection
+  detect_intent_with_llm:
+    model: gpt-5
+    reasoning_effort: medium
+    temperature: 0.3
+    max_completion_tokens: 60
+    notes: |
+      Handles semantic intent disambiguation and routing logic.
+      Medium reasoning for conversational robustness.
+
+  # 5) Uncertainty Detection
+  detect_uncertainty_with_llm:
+    model: gpt-5-mini
+    reasoning_effort: low
+    temperature: 0.1
+    max_completion_tokens: 20
+    notes: |
+      Binary classification task.
+      Fast and cheap; linguistic pattern matching only.
+
+  # 6) User Data Extraction
+  extract_user_data_with_llm:
+    model: gpt-5
+    reasoning_effort: low
+    temperature: 0.2
+    max_completion_tokens: 250
+    notes: |
+      Extracts structured fields like name, email, budget, etc.
+      Base GPT-5 improves accuracy on edge cases & JSON validity.
+
+  # 7) Conversational Response
+  generate_conversational_response:
+    model: gpt-5
+    reasoning_effort: medium
+    temperature: 0.7
+    max_completion_tokens: 160
+    notes: |
+      User-facing replies require warmth and coherence.
+      Balances natural tone with conversational fluidity.
+
+  # 8) Orchestrator Decision
+  make_orchestrator_decision:
+    model: gpt-5-pro
+    reasoning_effort: high
+    temperature: 0.3
+    max_completion_tokens: 500
+    notes: |
+      Core decision-maker (flow vs FAQ vs human handoff).
+      Requires deep multi-step reasoning; slower but critical.
