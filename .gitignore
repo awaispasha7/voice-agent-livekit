@@ -1,0 +1,56 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Logs
+logs/
+*.log
+*.log.*
+KMS/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Python virtual environment
+venv/
+env/
+.venv/
+.env/
+
+# Build output
+dist/
+build/
+out/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Git files
+.git/
+.gitignore
+
+# docs
+docs/
+
+# Deployment files (keep local, don't commit to repo)
+*.sh
+*.ps1
+alive5-voice-ai-agent.pem
+.vercel
+
+
+# worker previous and backend previous and llm utils previous
+main_dynamic copy.py
+llm_utils copy.py
+main_flow_based copy.py
