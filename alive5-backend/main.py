@@ -60,6 +60,7 @@ class ConnectionDetailsRequest(BaseModel):
     botchain_name: str = "voice-1"
     org_name: str = "alive5stage0"
     faq_isVoice: bool = True
+    selected_voice: Optional[str] = None
 
 class SessionUpdateRequest(BaseModel):
     room_name: str
@@ -121,6 +122,9 @@ async def get_connection_details(request: ConnectionDetailsRequest):
         # Create or get room
         room_name = request.room_name
         
+        # Use selected voice or default to first available voice
+        selected_voice = request.selected_voice or list(AVAILABLE_VOICES.keys())[0]
+        
         # Store session data
         sessions[room_name] = {
             "room_name": room_name,
@@ -129,8 +133,10 @@ async def get_connection_details(request: ConnectionDetailsRequest):
                 "botchain_name": request.botchain_name,
                 "org_name": request.org_name,
                 "faq_isVoice": request.faq_isVoice,
-                "selected_voice": list(AVAILABLE_VOICES.keys())[0]  # Default voice
+                "selected_voice": selected_voice
             },
+            "selected_voice": selected_voice,
+            "voice_id": selected_voice,
             "created_at": datetime.now().isoformat()
         }
         

@@ -359,7 +359,8 @@ class DynamicVoiceAgent {
                     user_name: this.participantName,
                     botchain_name: botchainName,
                     org_name: orgName,
-                    faq_isVoice: faqVerboseMode
+                    faq_isVoice: faqVerboseMode,
+                    selected_voice: selectedVoice
                 })
             });
             
@@ -1796,25 +1797,17 @@ class DynamicVoiceAgent {
         }
     }
 
-    async sendVoiceChangeRequest(roomName, voiceId) {
-        const url = this.config.API_BASE_URL + this.config.ENDPOINTS.CHANGE_VOICE;
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                room_name: roomName,
-                voice_id: voiceId
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`Voice change request failed: ${response.status}`);
+    async changeVoice(voiceId) {
+        // Just update the selected voice for next session
+        this.selectedVoice = voiceId;
+        localStorage.setItem('alive5.defaultVoice', voiceId);
+        console.log(`🎤 Voice selection updated to: ${this.getVoiceName(voiceId)} (${voiceId})`);
+        
+        if (this.isConnected) {
+            this.showToast(`Voice will be updated on next connection: ${this.getVoiceName(voiceId)}`, 'info');
         }
-
-        return await response.json();
     }
+
 
 
 
