@@ -86,24 +86,17 @@ def load_available_voices():
         try:
             with open(voices_path, "r") as f:
                 voices_dict = json.load(f)
-            # Convert to list format for frontend
-            voices = []
-            for voice_id, voice_name in voices_dict.items():
-                voices.append({
-                    "id": voice_id,
-                    "name": voice_name,
-                    "description": voice_name
-                })
-            return voices
+            # Return as dictionary format for frontend compatibility
+            return voices_dict
         except Exception as e:
             logger.error(f"Failed to load cached_voices.json: {e}")
     
-    # Fallback minimal voices
-    return [
-        {"id": "f114a467-c40a-4db8-964d-aaba89cd08fa", "name": "Miles - Yogi", "description": "Male, friendly"},
-        {"id": "98a34ef2-2140-4c28-9c71-663dc4dd7022", "name": "Clyde - Calm Narrator", "description": "Male, calm"},
-        {"id": "c99d36f3-5ffd-4253-803a-535c1bc9c306", "name": "Griffin - Narrator", "description": "Male, narrator"},
-    ]
+    # Fallback minimal voices as dictionary
+    return {
+        "f114a467-c40a-4db8-964d-aaba89cd08fa": "Miles - Yogi",
+        "98a34ef2-2140-4c28-9c71-663dc4dd7022": "Clyde - Calm Narrator", 
+        "c99d36f3-5ffd-4253-803a-535c1bc9c306": "Griffin - Narrator",
+    }
 
 AVAILABLE_VOICES = load_available_voices()
 
