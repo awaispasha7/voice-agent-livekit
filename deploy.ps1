@@ -1,334 +1,235 @@
-# Smart deployment script with interactive deployment choice
-Write-Host "Alive5 Voice Agent - Interactive Smart Deployment" -ForegroundColor Green
-Write-Host "===============================================" -ForegroundColor Green
-Write-Host "Server: 18.210.238.67" -ForegroundColor Yellow
-Write-Host "User: ubuntu" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "SPEED OPTIMIZATION: Options 1-3 skip persistence sync for faster deployment" -ForegroundColor Cyan
-Write-Host ""
+#!/usr/bin/env pwsh
 
-# Ask user what they want to deploy
-Write-Host "What would you like to deploy?" -ForegroundColor Cyan
-Write-Host "1. Backend only (backend/ directory)" -ForegroundColor White
-Write-Host "2. Worker only (backend/worker/ directory)" -ForegroundColor White
-Write-Host "3. Backend + Worker (backend/ directory including worker)" -ForegroundColor White
-Write-Host "4. Full directory (all files and directories)" -ForegroundColor White
-Write-Host "5. Full directory with new virtual environment and packages" -ForegroundColor White
+# Alive5 Voice Agent Deployment Script
+# Unified deployment script with user selection
+
+param(
+    [switch]$Force
+)
+
+# Set UTF-8 encoding for emoji support
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
+# Colors for output
+$ErrorColor = "Red"
+$SuccessColor = "Green"
+$InfoColor = "Cyan"
+$WarningColor = "Yellow"
+
+Write-Host "================================================================================" -ForegroundColor $InfoColor
+Write-Host "Alive5 Voice Agent Deployment" -ForegroundColor $InfoColor
+Write-Host "================================================================================" -ForegroundColor $InfoColor
+
+# Check if key file exists
+if (-not (Test-Path "alive5-voice-ai-agent.pem")) {
+    Write-Host "Error: alive5-voice-ai-agent.pem not found!" -ForegroundColor $ErrorColor
+    Write-Host "Please ensure the SSH key is in the current directory." -ForegroundColor $ErrorColor
+    return
+}
+
+# Check if .env file exists
+if (-not (Test-Path ".env")) {
+    Write-Host "Error: .env file not found!" -ForegroundColor $ErrorColor
+    Write-Host "Please ensure the .env file is in the current directory." -ForegroundColor $ErrorColor
+    return
+}
+
+Write-Host ".env file found - will be deployed to server" -ForegroundColor $SuccessColor
+
+# Server details
+$SERVER = "18.210.238.67"
+$USER = "ubuntu"
+$KEY = "alive5-voice-ai-agent.pem"
+
+# Deployment options
+Write-Host ""
+Write-Host "Select deployment option:" -ForegroundColor $InfoColor
+Write-Host "1. Deploy worker only (alive5-worker directory)" -ForegroundColor White
+Write-Host "2. Deploy full backend (backend + worker)" -ForegroundColor White
 Write-Host ""
 
 do {
-    $choice = Read-Host "Enter your choice (1-5)"
-} while ($choice -notmatch '^[1-5]$')
-
-$deployChoice = switch ($choice) {
-    "1" { "backend" }
-    "2" { "worker" }
-    "3" { "backend_worker" }
-    "4" { "full" }
-    "5" { "full_with_venv" }
-}
+    $choice = Read-Host "Enter your choice (1 or 2)"
+} while ($choice -notin @("1", "2"))
 
 Write-Host ""
-Write-Host "Selected deployment: $deployChoice" -ForegroundColor Green
-Write-Host ""
 
-# Check if SSH key exists
-if (-not (Test-Path "alive5-voice-ai-agent.pem")) {
-    Write-Host "SSH key file 'alive5-voice-ai-agent.pem' not found!" -ForegroundColor Red
-    Write-Host "Please ensure the SSH key is in the current directory." -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "SSH key found" -ForegroundColor Green
-
-# Fix SSH key permissions
-Write-Host "Setting SSH key permissions..." -ForegroundColor Cyan
-icacls alive5-voice-ai-agent.pem /inheritance:r | Out-Null
-icacls alive5-voice-ai-agent.pem /grant:r "$($env:USERNAME):(R)" | Out-Null
-Write-Host "SSH key permissions set" -ForegroundColor Green
-
-# Simple deployment without change tracking for speed
-
-# Ensure server directory exists
-Write-Host "Ensuring server directory exists..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "mkdir -p /home/ubuntu/alive5-voice-agent"
-
-# Function to sync directory (fast, no change tracking)
-function Sync-Directory {
-    param($LocalPath, $RemotePath, $Description)
+if ($choice -eq "1") {
+    Write-Host "Deploying worker only..." -ForegroundColor $InfoColor
     
-    Write-Host "Syncing $Description..." -ForegroundColor Cyan
+    # Create directory on server
+    Write-Host "  - Creating directory structure..." -ForegroundColor White
+    & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/simple-agent"
     
-    if (Test-Path $LocalPath) {
-        # Copy directory recursively, overwriting existing files
-        scp -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 -r $LocalPath ubuntu@18.210.238.67:$RemotePath
-        Write-Host "$Description synced" -ForegroundColor Green
-    } else {
-        Write-Host "$Description not found locally, skipping..." -ForegroundColor Yellow
-    }
-}
-
-# Function to sync file (fast, no change tracking)
-function Sync-File {
-    param($LocalPath, $RemotePath, $Description)
+    # Deploy worker files
+    $scpTarget = "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/backend/simple-agent/"
+    Write-Host "  - Deploying worker.py..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/worker.py $scpTarget
     
-    Write-Host "Syncing $Description..." -ForegroundColor Cyan
+    Write-Host "  - Deploying functions.py..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/functions.py $scpTarget
     
-    if (Test-Path $LocalPath) {
-        scp -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 $LocalPath ubuntu@18.210.238.67:$RemotePath
-        Write-Host "$Description synced" -ForegroundColor Green
-    } else {
-        Write-Host "$Description not found locally, skipping..." -ForegroundColor Yellow
-    }
-}
-
-# Deploy based on user choice
-Write-Host "Starting deployment based on choice: $deployChoice" -ForegroundColor Cyan
-
-switch ($deployChoice) {
-    "backend" {
-        Write-Host "Deploying Backend Only..." -ForegroundColor Cyan
-        Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory"
-        Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
-        Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
-    }
+    Write-Host "  - Deploying system_prompt.py..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/system_prompt.py $scpTarget
     
-    "worker" {
-        Write-Host "Deploying Worker Only..." -ForegroundColor Cyan
-        # For worker only, we need to sync the entire backend directory since worker depends on it
-        Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory (including worker)"
-        Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
-        Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
-    }
+    Write-Host "  - Deploying .env file..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no .env "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/"
     
-    "backend_worker" {
-        Write-Host "Deploying Backend + Worker..." -ForegroundColor Cyan
-        Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory (including worker)"
-        Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
-        Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
-    }
+    Write-Host "Worker files deployed successfully!" -ForegroundColor $SuccessColor
     
-    "full" {
-        Write-Host "Deploying Full Directory..." -ForegroundColor Cyan
-        # Core application files
-        Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory"
-        Sync-Directory "frontend" "/home/ubuntu/alive5-voice-agent/" "Frontend directory"
-        
-        # Ask if user wants to sync persistence data (can be slow)
-        Write-Host ""
-        $syncPersistence = Read-Host "Sync persistence data from server? (y/n) - This can be slow"
-        if ($syncPersistence -eq "y" -or $syncPersistence -eq "Y") {
-            Sync-Directory "flow_states" "/home/ubuntu/alive5-voice-agent/" "Flow states directory"
-        } else {
-            Write-Host "Skipping persistence data sync for faster deployment" -ForegroundColor Yellow
-        }
-        
-        # Configuration files
-        Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
-        Sync-File "README.md" "/home/ubuntu/alive5-voice-agent/" "README file"
-        Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
-        
-        # Optional directories (if they exist)
-        Sync-Directory "docs" "/home/ubuntu/alive5-voice-agent/" "Documentation directory"
-        Sync-Directory "KMS" "/home/ubuntu/alive5-voice-agent/" "KMS directory"
-    }
+    # Create/update worker service
+    Write-Host "Creating/updating worker service..." -ForegroundColor $InfoColor
     
-    "full_with_venv" {
-        Write-Host "Deploying Full Directory with Virtual Environment Setup..." -ForegroundColor Cyan
-        # Core application files
-        Sync-Directory "backend" "/home/ubuntu/alive5-voice-agent/" "Backend directory"
-        Sync-Directory "frontend" "/home/ubuntu/alive5-voice-agent/" "Frontend directory"
-        
-        # Ask if user wants to sync persistence data (can be slow)
-        Write-Host ""
-        $syncPersistence = Read-Host "Sync persistence data from server? (y/n) - This can be slow"
-        if ($syncPersistence -eq "y" -or $syncPersistence -eq "Y") {
-            Sync-Directory "flow_states" "/home/ubuntu/alive5-voice-agent/" "Flow states directory"
-        } else {
-            Write-Host "Skipping persistence data sync for faster deployment" -ForegroundColor Yellow
-        }
-        
-        # Configuration files
-        Sync-File "requirements.txt" "/home/ubuntu/alive5-voice-agent/" "Requirements file"
-        Sync-File "README.md" "/home/ubuntu/alive5-voice-agent/" "README file"
-        Sync-File ".env" "/home/ubuntu/alive5-voice-agent/" "Environment file"
-        
-        # Optional directories (if they exist)
-        Sync-Directory "docs" "/home/ubuntu/alive5-voice-agent/" "Documentation directory"
-        Sync-Directory "KMS" "/home/ubuntu/alive5-voice-agent/" "KMS directory"
-    }
-}
-
-Write-Host "File synchronization completed!" -ForegroundColor Green
-
-# Download persistence data from server to local directory (optional for fast deployments)
-if ($deployChoice -eq "full" -or $deployChoice -eq "full_with_venv") {
-    Write-Host ""
-    $downloadPersistence = Read-Host "Download persistence data from server to local? (y/n) - This can be slow"
-    if ($downloadPersistence -eq "y" -or $downloadPersistence -eq "Y") {
-        Write-Host "Downloading persistence data from server..." -ForegroundColor Cyan
-        try {
-            # Create local persistence directories if they don't exist
-            if (-not (Test-Path "backend/persistence")) {
-                New-Item -ItemType Directory -Path "backend/persistence" -Force | Out-Null
-            }
-            if (-not (Test-Path "backend/persistence/flow_states")) {
-                New-Item -ItemType Directory -Path "backend/persistence/flow_states" -Force | Out-Null
-            }
-            if (-not (Test-Path "backend/persistence/user_profiles")) {
-                New-Item -ItemType Directory -Path "backend/persistence/user_profiles" -Force | Out-Null
-            }
-            if (-not (Test-Path "backend/persistence/debug_logs")) {
-                New-Item -ItemType Directory -Path "backend/persistence/debug_logs" -Force | Out-Null
-            }
-            
-            # Download persistence data
-            scp -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 -r ubuntu@18.210.238.67:/home/ubuntu/alive5-voice-agent/backend/persistence/* backend/persistence/ 2>$null
-            Write-Host "Persistence data downloaded successfully" -ForegroundColor Green
-        } catch {
-            Write-Host "Warning: Could not download persistence data (server may not have data yet)" -ForegroundColor Yellow
-        }
-    } else {
-        Write-Host "Skipping persistence data download for faster deployment" -ForegroundColor Yellow
-    }
+    # Build simplified service content - applications will load .env file themselves
+    $serviceLines = @(
+        "[Unit]",
+        "Description=Alive5 Voice Agent Worker",
+        "After=network.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        "User=ubuntu",
+        "WorkingDirectory=/home/ubuntu/alive5-voice-agent",
+        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin`"",
+        "ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python backend/simple-agent/worker.py dev",
+        "Restart=always",
+        "RestartSec=10",
+        "",
+        "[Install]",
+        "WantedBy=multi-user.target"
+    )
+    $serviceContent = $serviceLines -join "`n"
+    
+    # Write service file to server
+    $sshTarget = "$USER@$SERVER"
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    $serviceContent | Out-File -FilePath $tempFile -Encoding UTF8
+    $scpTempTarget = "${sshTarget}:/tmp/service.tmp"
+    & scp -i $KEY -o StrictHostKeyChecking=no $tempFile $scpTempTarget
+    & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo mv /tmp/service.tmp /etc/systemd/system/alive5-worker.service"
+    if (Test-Path $tempFile) { Remove-Item $tempFile }
+    
+    # Reload systemd and restart service
+    & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl daemon-reload"
+    & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl enable alive5-worker"
+    & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl restart alive5-worker"
+    
+    Write-Host "Worker service updated and restarted!" -ForegroundColor $SuccessColor
+    
 } else {
-    Write-Host "Skipping persistence data download (not needed for backend/worker only deployments)" -ForegroundColor Yellow
-}
-
-# Virtual environment setup (only for full_with_venv option)
-if ($deployChoice -eq "full_with_venv") {
-    Write-Host "Setting up virtual environment and packages..." -ForegroundColor Cyan
+    Write-Host "Deploying full backend..." -ForegroundColor $InfoColor
     
-    # Install the missing package
-    Write-Host "Installing python3.12-venv package..." -ForegroundColor Cyan
-    ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 ubuntu@18.210.238.67 "sudo apt install -y python3.12-venv"
+    # Create directories on server
+    Write-Host "  - Creating directory structure..." -ForegroundColor White
+    & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/simple-agent"
     
-    # Stop services
-    Write-Host "Stopping services..." -ForegroundColor Cyan
-    ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl stop alive5-backend alive5-worker 2>/dev/null || true"
+    # Deploy backend files
+    $backendTarget = "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/backend/"
+    Write-Host "  - Deploying backend/main.py..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/main.py $backendTarget
     
-    # Remove old virtual environment
-    Write-Host "Removing old virtual environment..." -ForegroundColor Cyan
-    ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "cd /home/ubuntu/alive5-voice-agent && rm -rf venv"
+    Write-Host "  - Deploying cached_voices.json..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/cached_voices.json $backendTarget
     
-    # Create new virtual environment
-    Write-Host "Creating new virtual environment..." -ForegroundColor Cyan
-    ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=60 ubuntu@18.210.238.67 "cd /home/ubuntu/alive5-voice-agent && python3.12 -m venv venv"
+    Write-Host "  - Deploying .env file..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no .env "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/"
     
-    # Install packages
-    Write-Host "Installing packages..." -ForegroundColor Cyan
-    ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=120 ubuntu@18.210.238.67 "cd /home/ubuntu/alive5-voice-agent && venv/bin/pip install -r requirements.txt"
-} else {
-    Write-Host "Skipping virtual environment setup (not needed for this deployment type)" -ForegroundColor Yellow
-}
-
-# Create and install service files
-Write-Host "Creating service files..." -ForegroundColor Cyan
-
-# Backend service (running as root for port 80)
-$backendService = @"
-[Unit]
-Description=Alive5 Voice Agent Backend
-After=network.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=/home/ubuntu/alive5-voice-agent
-Environment=PATH=/home/ubuntu/alive5-voice-agent/venv/bin
-ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python -m uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=8000
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-"@
-
-# Worker service (with correct start command)
-$workerService = @"
-[Unit]
-Description=Alive5 Voice Agent Worker
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-Group=ubuntu
-WorkingDirectory=/home/ubuntu/alive5-voice-agent
-Environment=PATH=/home/ubuntu/alive5-voice-agent/venv/bin
-ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python backend/worker/main_flow_based.py start
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-"@
-
-# Install service files
-echo $backendService | ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo tee /etc/systemd/system/alive5-backend.service > /dev/null"
-echo $workerService | ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo tee /etc/systemd/system/alive5-worker.service > /dev/null"
-
-# Restart services based on deployment choice
-Write-Host "Restarting services based on deployment..." -ForegroundColor Cyan
-
-$servicesToRestart = switch ($deployChoice) {
-    "backend" { "alive5-backend" }
-    "worker" { "alive5-worker" }
-    "backend_worker" { "alive5-backend alive5-worker" }
-    "full" { "alive5-backend alive5-worker" }
-    "full_with_venv" { "alive5-backend alive5-worker" }
-}
-
-Write-Host "Restarting services: $servicesToRestart" -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl daemon-reload && sudo systemctl enable $servicesToRestart && sudo systemctl restart $servicesToRestart"
-
-# Wait and check
-Write-Host "Waiting for services to restart..." -ForegroundColor Cyan
-Start-Sleep -Seconds 15
-
-Write-Host "Checking service status..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "sudo systemctl status $servicesToRestart --no-pager -l"
-
-# Verify files on server
-Write-Host "Verifying files on server..." -ForegroundColor Cyan
-ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=30 ubuntu@18.210.238.67 "ls -la /home/ubuntu/alive5-voice-agent/"
-
-Write-Host ""
-Write-Host "Smart deployment completed!" -ForegroundColor Green
-Write-Host "Deployed: $deployChoice" -ForegroundColor Cyan
-Write-Host "Backend: http://18.210.238.67" -ForegroundColor Yellow
-Write-Host "Health: http://18.210.238.67/health" -ForegroundColor Yellow
-
-# Show what was deployed
-$deployedItems = switch ($deployChoice) {
-    "backend" { "  - backend/ directory (main backend application)" }
-    "worker" { "  - backend/ directory (including worker)" }
-    "backend_worker" { "  - backend/ directory (including worker)" }
-    "full" { 
-        "  - backend/ directory (main backend application)`n" +
-        "  - frontend/ directory (web interface)`n" +
-        "  - Optional directories (docs/, KMS/)`n" +
-        "  - Persistence data sync (optional, can be skipped for speed)"
-    }
-    "full_with_venv" { 
-        "  - backend/ directory (main backend application)`n" +
-        "  - frontend/ directory (web interface)`n" +
-        "  - Optional directories (docs/, KMS/)`n" +
-        "  - Persistence data sync (optional, can be skipped for speed)`n" +
-        "  - NEW virtual environment created`n" +
-        "  - All packages installed from requirements.txt"
-    }
+    Write-Host "Backend files deployed successfully!" -ForegroundColor $SuccessColor
+    
+    # Deploy worker files
+    Write-Host "Deploying worker files..." -ForegroundColor $InfoColor
+    
+    $scpTarget = "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/backend/simple-agent/"
+    Write-Host "  - Deploying worker.py..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/worker.py $scpTarget
+    
+    Write-Host "  - Deploying functions.py..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/functions.py $scpTarget
+    
+    Write-Host "  - Deploying system_prompt.py..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/system_prompt.py $scpTarget
+    
+    Write-Host "Worker files deployed successfully!" -ForegroundColor $SuccessColor
+    
+    # Create backend service
+    Write-Host "Creating backend service..." -ForegroundColor $InfoColor
+    
+    # Build simplified backend service content - applications will load .env file themselves
+    $backendServiceLines = @(
+        "[Unit]",
+        "Description=Alive5 Voice Agent Backend",
+        "After=network.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        "User=ubuntu",
+        "WorkingDirectory=/home/ubuntu/alive5-voice-agent",
+        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin`"",
+        "ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python backend/main.py",
+        "Restart=always",
+        "RestartSec=10",
+        "",
+        "[Install]",
+        "WantedBy=multi-user.target"
+    )
+    $backendServiceContent = $backendServiceLines -join "`n"
+    
+    # Write backend service file to server
+    $sshTarget = "$USER@$SERVER"
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    $backendServiceContent | Out-File -FilePath $tempFile -Encoding UTF8
+    $scpTempTarget = "${sshTarget}:/tmp/backend-service.tmp"
+    & scp -i $KEY -o StrictHostKeyChecking=no $tempFile $scpTempTarget
+    & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo mv /tmp/backend-service.tmp /etc/systemd/system/alive5-backend.service"
+    if (Test-Path $tempFile) { Remove-Item $tempFile }
+    
+    # Create worker service
+    Write-Host "Creating worker service..." -ForegroundColor $InfoColor
+    
+    # Build simplified worker service content - applications will load .env file themselves
+    $workerServiceLines = @(
+        "[Unit]",
+        "Description=Alive5 Voice Agent Worker",
+        "After=network.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        "User=ubuntu",
+        "WorkingDirectory=/home/ubuntu/alive5-voice-agent",
+        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin`"",
+        "ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python backend/simple-agent/worker.py dev",
+        "Restart=always",
+        "RestartSec=10",
+        "",
+        "[Install]",
+        "WantedBy=multi-user.target"
+    )
+    $workerServiceContent = $workerServiceLines -join "`n"
+    
+    # Write worker service file to server
+    $sshTarget = "$USER@$SERVER"
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    $workerServiceContent | Out-File -FilePath $tempFile -Encoding UTF8
+    $scpTempTarget = "${sshTarget}:/tmp/worker-service.tmp"
+    & scp -i $KEY -o StrictHostKeyChecking=no $tempFile $scpTempTarget
+    & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo mv /tmp/worker-service.tmp /etc/systemd/system/alive5-worker.service"
+    if (Test-Path $tempFile) { Remove-Item $tempFile }
+    
+    # Reload systemd and restart services
+    & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl daemon-reload"
+    & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl enable alive5-backend alive5-worker"
+    & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl restart alive5-backend alive5-worker"
+    
+    Write-Host "All services updated and restarted!" -ForegroundColor $SuccessColor
 }
 
 Write-Host ""
-Write-Host "This deployment included:" -ForegroundColor Yellow
-Write-Host $deployedItems -ForegroundColor Yellow
-Write-Host "  - Configuration files (requirements.txt, .env, README.md)" -ForegroundColor Yellow
-
-# Show deployment summary
+Write-Host "================================================================================" -ForegroundColor $InfoColor
+Write-Host "Deployment completed successfully!" -ForegroundColor $SuccessColor
+Write-Host "================================================================================" -ForegroundColor $InfoColor
 Write-Host ""
-Write-Host "=== DEPLOYMENT SUMMARY ===" -ForegroundColor Cyan
-Write-Host "Deployment Choice: $deployChoice" -ForegroundColor White
-Write-Host "Status: Completed Successfully" -ForegroundColor Green
-Write-Host "=========================" -ForegroundColor Cyan
+Write-Host "Next steps:" -ForegroundColor $InfoColor
+Write-Host "  - Run './check-services.ps1' to verify services are running" -ForegroundColor White
+Write-Host "  - Run './logs-worker.ps1' to monitor worker logs" -ForegroundColor White
+Write-Host "  - Run './logs-backend.ps1' to monitor backend logs" -ForegroundColor White
