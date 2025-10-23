@@ -1,6 +1,6 @@
 # 🎙️ Alive5 Voice Agent
 
-AI-powered voice agent with intelligent conversation flows, intent detection, and seamless agent transfers.
+AI-powered voice agent with intelligent conversation flows, intent detection, and seamless FAQ integration.
 
 ## 🚀 Quick Start
 
@@ -12,18 +12,20 @@ AI-powered voice agent with intelligent conversation flows, intent detection, an
 ### Local Development
 ```bash
 git clone <repository-url>
-cd voice-agent-livekit-affan
+cd voice-agent-livekit
+python -m venv venv
+venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 # Create .env file with your credentials
 ```
 
 ### Run Services Locally
 ```bash
-# Backend API (runs on port 8000, proxied by Nginx on port 80)
-uvicorn backend.main_dynamic:app --host=0.0.0.0 --port=8000
+# Backend API (runs on port 8000)
+uvicorn alive5-backend.main:app --host=0.0.0.0 --port=8000
 
-# Worker
-python backend/worker/main_flow_based.py start
+# Worker (in separate terminal)
+python alive5-backend/alive5-worker/worker.py dev
 ```
 
 ## 🌐 Production Deployment
@@ -32,22 +34,25 @@ python backend/worker/main_flow_based.py start
 
 #### Smart Deployment (PowerShell)
 ```powershell
-# Deploy with intelligent file synchronization
+# Deploy with interactive menu
 .\deploy.ps1
 
-# Test deployment
-.\test-deployment.ps1
+# Check service status
+.\check-services.ps1
 
 # View logs
 .\logs-backend.ps1    # Backend logs
 .\logs-worker.ps1     # Worker logs
+
+# Restart services
+.\restart-services.ps1
 ```
 
 ### Service URLs
 - **Frontend**: https://voice-agent-livekit.vercel.app
 - **Backend API**: https://18.210.238.67.nip.io
 - **Health Check**: https://18.210.238.67.nip.io/health
-- **Template Status**: https://18.210.238.67.nip.io/api/template_status
+- **Available Voices**: https://18.210.238.67.nip.io/api/available_voices
 
 ## 🔧 Management
 
@@ -69,27 +74,27 @@ ssh -i alive5-voice-ai-agent.pem ubuntu@18.210.238.67 'sudo systemctl restart al
 
 ## 📁 Project Structure
 ```
-voice-agent-livekit-affan/
-├── deploy.ps1              # 🚀 Smart deployment script
-├── test-deployment.ps1     # 🧪 Test deployment
+voice-agent-livekit/
+├── deploy.ps1              # 🚀 Interactive deployment script
+├── check-services.ps1      # 📊 Service status checker
 ├── logs-backend.ps1        # 📊 Backend logs
 ├── logs-worker.ps1         # 📊 Worker logs
-├── backend/                # Backend API application
-│   ├── main_dynamic.py     # FastAPI backend with orchestrator
-│   ├── llm_utils.py        # Centralized LLM functions
-│   ├── conversational_orchestrator.py  # Intelligent conversation routing
-│   ├── persistence/        # 📊 Local data persistence
-│   │   ├── flow_states/    # Flow state JSON files
-│   │   ├── user_profiles/  # User profile JSON files
-│   │   └── debug_logs/     # Debug logs for analysis
-│   └── worker/             # LiveKit worker
-├── frontend/               # Frontend UI
-│   ├── index.html          # Main HTML
-│   └── main_dynamic.js     # JavaScript client
-├── docs/                   # Documentation
-├── KMS/                    # KMS logs
-├── README.md               # This file
-└── requirements.txt        # Python dependencies
+├── restart-services.ps1    # 🔄 Service restart script
+├── alive5-backend/         # Backend API application
+│   ├── main.py            # FastAPI backend (simplified)
+│   ├── cached_voices.json # Voice configuration
+│   └── alive5-worker/     # LiveKit worker
+│       ├── worker.py      # Main worker entry point
+│       ├── functions.py   # Business logic (flows, FAQ)
+│       └── system_prompt.py # LLM system prompt
+├── alive5-frontend/        # Frontend UI
+│   ├── index.html         # Main HTML
+│   ├── style.css          # Styling
+│   └── main_dynamic.js    # JavaScript client
+├── .env                   # Environment variables
+├── .gitignore            # Git ignore rules
+├── README.md             # This file
+└── requirements.txt      # Python dependencies
 ```
 
 ## 🔑 Environment Variables
@@ -101,61 +106,60 @@ LIVEKIT_API_SECRET=your-livekit-secret
 A5_API_KEY=your-alive5-key
 A5_BASE_URL=https://api-v2-stage.alive5.com
 BACKEND_URL=https://18.210.238.67.nip.io
+DEEPGRAM_API_KEY=your-deepgram-key
+CARTESIA_API_KEY=your-cartesia-key
 ```
 
 ## 🎯 Key Features
 
-- **Smart Deployment**: Only syncs missing/changed files
+- **Simplified Architecture**: Clean, maintainable codebase
+- **Smart Deployment**: Interactive deployment with file synchronization
 - **HTTPS Support**: Secure communication with SSL certificates
-- **Auto-Renewal**: SSL certificates automatically renew via Let's Encrypt
 - **Service Management**: Systemd services with auto-restart
 - **Real-time Logs**: Easy log monitoring with PowerShell scripts
 - **Health Monitoring**: Built-in health checks and status endpoints
-- **🧠 Intelligent Orchestrator**: GPT-4 powered conversation routing with context awareness
-- **📊 Local Persistence**: User profiles and flow states saved to JSON files for debugging
-- **🐛 Debug System**: Comprehensive logging and API endpoints for testing and analysis
+- **🧠 Intelligent Agent**: GPT-4 powered conversation with function calling
+- **📊 Voice Management**: 291+ available voices with dynamic switching
+- **🔄 FAQ Integration**: Seamless FAQ bot integration with verbose mode
+- **🎤 Voice Activity Detection**: Smart VAD with noise cancellation
 
-## 🐛 Debug & Testing System
+## 🎤 Voice Features
 
-### Local Persistence
-The system automatically saves conversation data to JSON files for debugging and testing:
+### Available Voices
+The system includes 291+ voices from Cartesia, accessible via:
+- **API Endpoint**: `/api/available_voices`
+- **Dynamic Switching**: Change voices during conversation
+- **Voice Categories**: Different voice types and languages
 
-- **User Profiles**: `backend/persistence/user_profiles/` - Extracted user information, preferences, refused fields
-- **Flow States**: `backend/persistence/flow_states/` - Current conversation flow and progress
-- **Debug Logs**: `backend/persistence/debug_logs/` - Orchestrator decisions and reasoning
-
-### Debug API Endpoints
-
-#### View Room Data
+### Voice Configuration
 ```bash
-# List all rooms with saved data
-curl https://18.210.238.67.nip.io/api/debug/rooms
-
-# View specific room data (flow state, user profile, debug logs)
-curl https://18.210.238.67.nip.io/api/debug/room/{room_name}
+# Default voice (can be changed via API)
+DEFAULT_VOICE_ID=f114a467-c40a-4db8-964d-aaba89cd08fa  # Miles - Yogi
 ```
 
-#### Clear Room Data
-```bash
-# Clear all debug data for a specific room
-curl -X DELETE https://18.210.238.67.nip.io/api/debug/room/{room_name}
-```
+## 🔧 API Endpoints
 
-### What You Can Debug
-- **User Data Extraction**: See what information was extracted from user messages
-- **Orchestrator Decisions**: Understand why the system made specific routing decisions
-- **Flow Progression**: Track how conversations flow through different steps
-- **Refusal Handling**: See how the system handles user refusals and preferences
-- **Context Preservation**: Verify that conversation context is maintained
+### Core Endpoints
+- `GET /health` - Health check
+- `GET /api/available_voices` - List all available voices
+- `GET /api/connection_details` - LiveKit connection details
+- `POST /api/change_voice` - Change agent voice
+- `GET /api/sessions/{room_name}` - Get session data
+- `POST /api/sessions/update` - Update session data
+
+### Compatibility Endpoints
+- `POST /api/process_flow_message` - Process flow messages
+- `GET /api/refresh_template` - Refresh templates
+- `GET /api/template_status` - Template status
+- `POST /api/force_template_update` - Force template update
 
 ## 📞 Troubleshooting
 
 ### Common Issues
-1. **External Access Failed**: Check AWS Security Group (port 80)
-2. **Service Won't Start**: Check logs with `.\logs-backend.ps1`
-3. **Missing Files**: Re-run `.\deploy.ps1` to sync files
-4. **Flow Not Progressing**: Check debug logs to see orchestrator decisions
-5. **User Data Not Extracted**: Review user profile persistence files
+1. **Service Won't Start**: Check logs with `.\logs-backend.ps1`
+2. **Missing Files**: Re-run `.\deploy.ps1` to sync files
+3. **Voice Issues**: Check voice ID in logs and API responses
+4. **Connection Issues**: Verify LiveKit credentials in `.env`
 
 ### Log Commands
 ```powershell
@@ -163,15 +167,43 @@ curl -X DELETE https://18.210.238.67.nip.io/api/debug/room/{room_name}
 .\logs-backend.ps1
 .\logs-worker.ps1
 
-# Test deployment
-.\test-deployment.ps1
+# Check service status
+.\check-services.ps1
+
+# Restart services
+.\restart-services.ps1
 ```
 
 ### Debug Commands
 ```bash
-# Check orchestrator decisions
-curl https://18.210.238.67.nip.io/api/debug/room/{room_name}
+# Check health
+curl https://18.210.238.67.nip.io/health
 
-# View all active rooms
-curl https://18.210.238.67.nip.io/api/debug/rooms
+# List available voices
+curl https://18.210.238.67.nip.io/api/available_voices
+
+# Get connection details
+curl https://18.210.238.67.nip.io/api/connection_details
 ```
+
+## 🚀 Deployment Options
+
+The `deploy.ps1` script offers interactive deployment:
+
+1. **Worker Only**: Deploy just the worker files
+2. **Full Backend**: Deploy backend + worker
+3. **Environment**: Automatically syncs `.env` file
+
+## 📋 Development Workflow
+
+1. **Local Development**: Test changes locally with `uvicorn` and `worker.py dev`
+2. **Deploy**: Use `.\deploy.ps1` to deploy to server
+3. **Monitor**: Use `.\check-services.ps1` and `.\logs-*.ps1` to monitor
+4. **Debug**: Check logs and API endpoints for issues
+
+## 🔒 Security
+
+- **Environment Variables**: All sensitive data in `.env` file
+- **HTTPS**: SSL certificates for secure communication
+- **SSH Keys**: Secure server access with key-based authentication
+- **Service Isolation**: Separate systemd services for backend and worker
