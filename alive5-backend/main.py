@@ -69,10 +69,6 @@ class VoiceChangeRequest(BaseModel):
     room_name: str
     voice_id: str
 
-class FlowMessageRequest(BaseModel):
-    room_name: str
-    message: str
-    user_data: Dict[str, Any] = {}
 
 # In-memory storage (simple approach)
 sessions: Dict[str, Dict[str, Any]] = {}
@@ -133,7 +129,7 @@ async def get_connection_details(request: ConnectionDetailsRequest):
                 "botchain_name": request.botchain_name,
                 "org_name": request.org_name,
                 "faq_isVoice": request.faq_isVoice,
-                "selected_voice": AVAILABLE_VOICES[0]["id"]  # Default voice
+                "selected_voice": list(AVAILABLE_VOICES.keys())[0]  # Default voice
             },
             "created_at": datetime.now().isoformat()
         }
@@ -195,33 +191,16 @@ async def change_voice(request: VoiceChangeRequest):
     if request.room_name not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     
+    # Validate voice_id exists
+    if request.voice_id not in AVAILABLE_VOICES:
+        raise HTTPException(status_code=400, detail="Invalid voice ID")
+    
     sessions[request.room_name]["user_data"]["selected_voice"] = request.voice_id
     sessions[request.room_name]["selected_voice"] = request.voice_id
     sessions[request.room_name]["voice_id"] = request.voice_id
     sessions[request.room_name]["updated_at"] = datetime.now().isoformat()
     
-    return {"status": "success", "voice_name": request.voice_id}
-
-@app.post("/api/process_flow_message")
-async def process_flow_message(request: FlowMessageRequest):
-    """Process flow message (simplified for simple-agent compatibility)"""
-    # For simple-agent, this is mostly a passthrough
-    # The actual processing happens in the worker
-    return {
-        "status": "processed",
-        "message": "Message processed by simple-agent worker",
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.post("/api/refresh_template")
-async def refresh_template():
-    """Refresh template (simplified for simple-agent compatibility)"""
-    # For simple-agent, templates are loaded dynamically
-    return {
-        "status": "refreshed",
-        "message": "Template refresh handled by simple-agent worker",
-        "timestamp": datetime.now().isoformat()
-    }
+    return {"status": "success", "voice_name": AVAILABLE_VOICES[request.voice_id]}
 
 @app.delete("/api/rooms/{room_name}")
 async def delete_room(room_name: str):
@@ -233,67 +212,7 @@ async def delete_room(room_name: str):
     
     return {"status": "deleted", "room_name": room_name}
 
-@app.get("/api/template_status")
-async def get_template_status():
-    """Get template status (simplified for simple-agent compatibility)"""
-    return {
-        "status": "active",
-        "message": "Simple-agent worker handles template loading dynamically",
-        "timestamp": datetime.now().isoformat()
-    }
 
-@app.post("/api/force_template_update")
-async def force_template_update():
-    """Force template update (simplified for simple-agent compatibility)"""
-    return {
-        "status": "updated",
-        "message": "Template update handled by simple-agent worker",
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.get("/api/sessions")
-async def get_all_sessions():
-    """Get all active sessions"""
-    return {
-        "sessions": list(sessions.keys()),
-        "count": len(sessions),
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.post("/api/cleanup_persistence")
-async def cleanup_persistence():
-    """Clean up persistence data (simplified for simple-agent compatibility)"""
-    # For simple-agent, we don't have complex persistence
-    return {
-        "status": "cleaned",
-        "message": "Simple-agent uses in-memory storage",
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.get("/api/persistence_stats")
-async def get_persistence_stats():
-    """Get persistence statistics (simplified for simple-agent compatibility)"""
-    return {
-        "active_sessions": len(sessions),
-        "active_rooms": len(rooms),
-        "storage_type": "in-memory",
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.get("/admin/{path:path}")
-async def admin_endpoint(path: str):
-    """Admin endpoint (simplified)"""
-    return {"message": f"Admin endpoint {path} - simplified for simple-agent"}
-
-@app.get("/config/{path:path}")
-async def config_endpoint(path: str):
-    """Config endpoint (simplified)"""
-    return {"message": f"Config endpoint {path} - simplified for simple-agent"}
-
-@app.get("/.env")
-async def get_env():
-    """Get environment variables (simplified)"""
-    return {"message": "Environment variables not exposed in simple-agent"}
 
 if __name__ == "__main__":
     uvicorn.run(

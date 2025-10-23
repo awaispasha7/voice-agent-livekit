@@ -147,11 +147,6 @@ DEFAULT_VOICE_ID=f114a467-c40a-4db8-964d-aaba89cd08fa  # Miles - Yogi
 - `GET /api/sessions/{room_name}` - Get session data
 - `POST /api/sessions/update` - Update session data
 
-### Compatibility Endpoints
-- `POST /api/process_flow_message` - Process flow messages
-- `GET /api/refresh_template` - Refresh templates
-- `GET /api/template_status` - Template status
-- `POST /api/force_template_update` - Force template update
 
 ## 📞 Troubleshooting
 

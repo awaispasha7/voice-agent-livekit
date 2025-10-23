@@ -50,11 +50,9 @@ class DynamicVoiceAgent {
             API_BASE_URL: window.API_BASE_URL || window.BACKEND_URL || 'http://localhost:8000',
             ENDPOINTS: {
                 CONNECTION_DETAILS: '/api/connection_details',
-                PROCESS_FLOW_MESSAGE: '/api/process_flow_message',
                 UPDATE_SESSION: '/api/sessions/update',
                 DELETE_ROOM: '/api/rooms',
-                CHANGE_VOICE: '/api/change_voice',
-                REFRESH_TEMPLATE: '/api/refresh_template'
+                CHANGE_VOICE: '/api/change_voice'
             },
             CONNECTION: {
                 MAX_ATTEMPTS: 3,
@@ -345,41 +343,7 @@ class DynamicVoiceAgent {
             this.showStatus('Loading bot configuration...', 'connecting');
             document.getElementById('joinBtn').disabled = true;
             
-            // Step 1: Validate and load template
-            const templateResponse = await this.fetchWithFallback(this.config.ENDPOINTS.REFRESH_TEMPLATE, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    botchain_name: botchainName,
-                    org_name: orgName || 'alive5stage0'
-                })
-            });
-            
-            if (!templateResponse.ok) {
-                throw new Error('Failed to validate bot configuration');
-            }
-            
-            const templateResult = await templateResponse.json();
-            
-            if (templateResult.status !== 'success') {
-                // Handle different error types
-                let errorMessage = templateResult.message;
-                if (templateResult.error_type === 'not_found') {
-                    errorMessage = `Bot "${botchainName}" not found. Please check the bot name and try again.`;
-                } else if (templateResult.error_type === 'timeout') {
-                    errorMessage = `Timeout loading bot "${botchainName}". Please check your connection and try again.`;
-                } else if (templateResult.error_type === 'missing_parameter') {
-                    errorMessage = 'Please enter a bot name to continue.';
-                }
-                
-                this.showStatus(errorMessage, 'error');
-                document.getElementById('joinBtn').disabled = false;
-                return;
-            }
-            
-            // Template loaded successfully
+            // Update UI for connection
             this.updateChatHeader(botchainName, 'Connecting...');
             this.updateStatusIndicator('connecting');
             this.updateConnectionStatus('connecting', `Loading ${botchainName}...`);
