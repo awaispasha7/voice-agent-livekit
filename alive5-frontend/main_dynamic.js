@@ -355,14 +355,11 @@ class DynamicVoiceAgent {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    participant_name: this.participantName,
-                    user_data: {
-                        session_start: new Date().toISOString(),
-                        botchain_name: botchainName,
-                        org_name: orgName,
-                        selected_voice: selectedVoice,
-                        faq_verbose_mode: faqVerboseMode
-                    }
+                    room_name: `room_${this.participantName}`,
+                    user_name: this.participantName,
+                    botchain_name: botchainName,
+                    org_name: orgName,
+                    faq_isVoice: faqVerboseMode
                 })
             });
             
@@ -370,7 +367,7 @@ class DynamicVoiceAgent {
             const connectionDetails = await response.json();
             // Connection details received
             
-            this.currentRoomName = connectionDetails.roomName;
+            this.currentRoomName = connectionDetails.room_name;
             
             // Create room with proper configuration
             this.room = new LivekitClient.Room({
@@ -392,29 +389,15 @@ class DynamicVoiceAgent {
             this.setupRoomEvents();
             
             // Connect to room
-            await this.room.connect(connectionDetails.serverUrl, connectionDetails.participantToken);
+            await this.room.connect(connectionDetails.url, connectionDetails.token);
             await this.enableMicrophone();
             
             this.isConnected = true;
             this.connectionAttempts = 0;
             
-            this.selectedVoice = connectionDetails.selectedVoice || selectedVoice || this.selectedVoice;
+            // Store the selected voice for later use
+            this.selectedVoice = selectedVoice;
             localStorage.setItem('alive5.defaultVoice', this.selectedVoice);
-
-            // pre-session voice update if voice differs from default returned value
-            if (connectionDetails.selectedVoice && connectionDetails.selectedVoice !== this.selectedVoice) {
-                this.selectedVoice = connectionDetails.selectedVoice;
-                localStorage.setItem('alive5.defaultVoice', this.selectedVoice);
-            }
-
-            // ensure the backend/worker know our desired voice before joining
-            if (connectionDetails.roomName && this.selectedVoice) {
-                try {
-                    await this.sendVoiceChangeRequest(connectionDetails.roomName, this.selectedVoice);
-                } catch (err) {
-                    console.warn('Pre-session voice sync failed', err);
-                }
-            }
 
             
             // Switch to chat interface
@@ -813,26 +796,12 @@ class DynamicVoiceAgent {
                 conversation_history: this.conversationHistory
             });
             
-            const response = await this.fetchWithFallback(this.config.ENDPOINTS.PROCESS_FLOW_MESSAGE, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestData)
+            // Note: Flow processing is now handled by the simple-agent worker
+            // No need to send to backend for processing
+            console.log('📤 Flow processing handled by worker:', {
+                user_message: transcript,
+                conversation_history_length: this.conversationHistory.length
             });
-            
-            if (response.ok) {
-                const result = await response.json();
-                console.log('Flow processing result:', result);
-                
-                // Clear worker timeout since backend is responding
-                this.clearWorkerTimeoutError();
-                
-                // Handle flow result
-                if (result.flow_result) {
-                    this.handleFlowResult(result.flow_result);
-                }
-            }
         } catch (error) {
             console.warn('Failed to send transcript for flow processing:', error);
         }
