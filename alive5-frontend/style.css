@@ -31,8 +31,8 @@ body {
     box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
     width: 100%;
     max-width: 550px;
-    height: 95vh;
-    max-height: 95vh;
+    height: auto;
+    max-height: 1162px;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
@@ -41,8 +41,8 @@ body {
 
 @media (max-width: 768px) {
     .container {
-        height: 95vh;
-        max-height: 95vh;
+        height: auto;
+        max-height: 1162px;
         border-radius: 15px;
         margin: 0;
     }
