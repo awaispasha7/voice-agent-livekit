@@ -4,7 +4,7 @@
 # Clean, real-time backend service logs
 
 Write-Host "================================================================================" -ForegroundColor Cyan
-Write-Host "📊 Alive5 Backend Logs" -ForegroundColor Cyan
+Write-Host "Alive5 Backend Logs" -ForegroundColor Cyan
 Write-Host "================================================================================" -ForegroundColor Cyan
 Write-Host "Press Ctrl+C to exit" -ForegroundColor Yellow
 Write-Host ""
@@ -15,7 +15,7 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 
 # Check if key file exists
 if (-not (Test-Path "alive5-voice-ai-agent.pem")) {
-    Write-Host "❌ Error: alive5-voice-ai-agent.pem not found!" -ForegroundColor Red
+    Write-Host "Error: alive5-voice-ai-agent.pem not found!" -ForegroundColor Red
     Write-Host "Please ensure the SSH key is in the current directory." -ForegroundColor Red
     exit 1
 }
@@ -30,6 +30,6 @@ try {
         }
     }
 } catch {
-    Write-Host "❌ Error connecting to server or service not found" -ForegroundColor Red
+    Write-Host "Error connecting to server or service not found" -ForegroundColor Red
     Write-Host "Make sure the backend service is running: ./check-services.ps1" -ForegroundColor Yellow
 }

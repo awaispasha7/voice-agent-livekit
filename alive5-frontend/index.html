@@ -62,7 +62,8 @@
                             </div>
                             <div class="form-group-content">
                                 <input type="text" id="orgName" name="orgName" 
-                                       placeholder="e.g., alive5stage0, your-org-name">
+                                       placeholder="e.g., alive5stage0, your-org-name"
+                                       value="alive5stage0">
                                 <small>Leave empty to use default configuration</small>
                             </div>
                         </div>
@@ -76,6 +77,29 @@
                                     <option value="">Loading voices...</option>
                                 </select>
                                 <small>Choose the voice for your AI assistant</small>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <div class="form-group-label">
+                                <label for="faqBotId">FAQ Bot ID:</label>
+                            </div>
+                            <div class="form-group-content">
+                                <input type="text" id="faqBotId" name="faqBotId" 
+                                       placeholder="e.g., faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"
+                                       value="faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e">
+                                <small>Enter the FAQ bot ID to use for company questions</small>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <div class="form-group-label">
+                                <label for="specialInstructions">Special Instructions:</label>
+                            </div>
+                            <div class="form-group-content">
+                                <textarea id="specialInstructions" name="specialInstructions" rows="3" 
+                                          placeholder="e.g., Always be extra polite, Focus on technical details, etc."></textarea>
+                                <small>Optional: Add specific instructions to guide the agent's behavior</small>
                             </div>
                         </div>
 

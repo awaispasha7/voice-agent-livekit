@@ -326,9 +326,11 @@ class DynamicVoiceAgent {
         
         // Get botchain and org info from form
         const botchainName = document.getElementById('botchainName')?.value?.trim() || null;
-        const orgName = document.getElementById('orgName')?.value?.trim() || null;
+        const orgName = document.getElementById('orgName')?.value?.trim() || "alive5stage0";
         const selectedVoice = document.getElementById('voiceSelect')?.value || this.selectedVoice;
         const faqVerboseMode = document.getElementById('faqVerboseMode')?.checked ?? true;
+        const faqBotId = document.getElementById('faqBotId')?.value?.trim() || 'faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e';
+        const specialInstructions = document.getElementById('specialInstructions')?.value?.trim() || '';
         
         if (!botchainName) {
             this.showStatus('Please enter a bot name (botchain)', 'error');
@@ -360,7 +362,9 @@ class DynamicVoiceAgent {
                     botchain_name: botchainName,
                     org_name: orgName,
                     faq_isVoice: faqVerboseMode,
-                    selected_voice: selectedVoice
+                    selected_voice: selectedVoice,
+                    faq_bot_id: faqBotId,
+                    special_instructions: specialInstructions
                 })
             });
             

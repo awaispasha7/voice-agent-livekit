@@ -94,8 +94,8 @@ class SimpleVoiceAgent(Agent):
         # Create OpenAI LLM instance
         llm_instance = openai.LLM(model="gpt-4o", temperature=0.7)
         
-        # Initialize the base Agent class
-        system_prompt = get_system_prompt(botchain_name, org_name)
+        # Initialize the base Agent class (special instructions will be loaded later)
+        system_prompt = get_system_prompt(botchain_name, org_name, "")
         super().__init__(instructions=system_prompt, llm=llm_instance)
         
     
@@ -112,15 +112,19 @@ class SimpleVoiceAgent(Agent):
     
     
     @function_tool()
-    async def faq_bot_request(self, context: RunContext, faq_question: str, bot_id: str = "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e", isVoice: bool = None) -> Dict[str, Any]:
+    async def faq_bot_request(self, context: RunContext, faq_question: str, bot_id: str = None, isVoice: bool = None) -> Dict[str, Any]:
         """Call the Alive5 FAQ bot API to get answers about Alive5 services, pricing, features, or company information.
         
         Args:
             faq_question: The user's question about Alive5
-            bot_id: The FAQ bot ID (default: faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e)
+            bot_id: The FAQ bot ID (if None, uses session data)
             isVoice: Whether this is a voice interaction (if None, uses agent's faq_isVoice setting)
         """
         # logger.info(f"🔧 FAQ bot request: {faq_question}")
+        
+        # Use dynamic FAQ bot ID from session data if not provided
+        if bot_id is None:
+            bot_id = await self._get_faq_bot_id()
         
         # Use agent's faq_isVoice if isVoice not specified
         if isVoice is None:
@@ -149,17 +153,63 @@ class SimpleVoiceAgent(Agent):
                 response = await client.get(f"{backend_url}/api/sessions/{self.room_name}")
                 if response.status_code == 200:
                     data = response.json()
-                    voice = (data.get("user_data", {}).get("selected_voice") or 
-                            data.get("selected_voice") or 
-                            data.get("voice_id"))
-                    if voice:
-                        return voice
+                    voice_id = data.get("user_data", {}).get("selected_voice")
+                    voice_name = data.get("user_data", {}).get("selected_voice_name", "Unknown")
+                    if voice_id:
+                        logger.info(f"🎤 Using voice: {voice_name} ({voice_id})")
+                        return voice_id
         except Exception as e:
             logger.error(f"Failed to get voice: {e}")
         return "f114a467-c40a-4db8-964d-aaba89cd08fa"  # Miles - Yogi (same as working system)
     
+    async def _get_faq_bot_id(self):
+        """Get FAQ bot ID from session data"""
+        try:
+            if not self.room_name:
+                return "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"  # Default FAQ bot
+            
+            import httpx
+            backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{backend_url}/api/sessions/{self.room_name}")
+                if response.status_code == 200:
+                    data = response.json()
+                    faq_bot_id = data.get("user_data", {}).get("faq_bot_id")
+                    if faq_bot_id:
+                        logger.info(f"🤖 Using FAQ bot: {faq_bot_id}")
+                        return faq_bot_id
+        except Exception as e:
+            logger.error(f"Failed to get FAQ bot ID: {e}")
+        return "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"  # Default FAQ bot
+    
+    async def _get_special_instructions(self):
+        """Get special instructions from session data"""
+        try:
+            if not self.room_name:
+                return ""
+            
+            import httpx
+            backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{backend_url}/api/sessions/{self.room_name}")
+                if response.status_code == 200:
+                    data = response.json()
+                    instructions = data.get("user_data", {}).get("special_instructions", "")
+                    if instructions:
+                        logger.info(f"📝 Special instructions: {instructions[:100]}...")
+                        return instructions
+        except Exception as e:
+            logger.error(f"Failed to get special instructions: {e}")
+        return ""
+    
     async def on_room_enter(self, room):
         """Called when agent enters the room - start with greeting"""
+        # Update system prompt with special instructions
+        special_instructions = await self._get_special_instructions()
+        if special_instructions:
+            updated_prompt = get_system_prompt(self.botchain_name, self.org_name, special_instructions)
+            self.instructions = updated_prompt
+        
         # Start the conversation with greeting
         await self._start_conversation()
     

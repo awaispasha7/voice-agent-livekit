@@ -61,6 +61,8 @@ class ConnectionDetailsRequest(BaseModel):
     org_name: str = "alive5stage0"
     faq_isVoice: bool = True
     selected_voice: Optional[str] = None
+    faq_bot_id: Optional[str] = None
+    special_instructions: Optional[str] = None
 
 class SessionUpdateRequest(BaseModel):
     room_name: str
@@ -122,8 +124,11 @@ async def get_connection_details(request: ConnectionDetailsRequest):
         # Create or get room
         room_name = request.room_name
         
-        # Use selected voice or default to first available voice
-        selected_voice = request.selected_voice or list(AVAILABLE_VOICES.keys())[0]
+        # Use provided values or defaults
+        selected_voice_id = request.selected_voice or list(AVAILABLE_VOICES.keys())[0]
+        selected_voice_name = AVAILABLE_VOICES.get(selected_voice_id, "Unknown Voice")
+        faq_bot_id = request.faq_bot_id or "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"
+        org_name = request.org_name or "alive5stage0"
         
         # Store session data
         sessions[room_name] = {
@@ -131,12 +136,13 @@ async def get_connection_details(request: ConnectionDetailsRequest):
             "user_name": request.user_name,
             "user_data": {
                 "botchain_name": request.botchain_name,
-                "org_name": request.org_name,
+                "org_name": org_name,
                 "faq_isVoice": request.faq_isVoice,
-                "selected_voice": selected_voice
+                "selected_voice": selected_voice_id,
+                "selected_voice_name": selected_voice_name,
+                "faq_bot_id": faq_bot_id,
+                "special_instructions": request.special_instructions or ""
             },
-            "selected_voice": selected_voice,
-            "voice_id": selected_voice,
             "created_at": datetime.now().isoformat()
         }
         

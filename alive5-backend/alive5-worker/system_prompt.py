@@ -215,20 +215,33 @@ User: "Actually, let's finish marketing first."
 → **Resume "marketing" from step 1** → "Of course! So, how many campaigns are you running?"
 """
 
-def get_system_prompt(botchain_name: str = "voice-1", org_name: str = "alive5stage0") -> str:
+def get_system_prompt(botchain_name: str = "voice-1", org_name: str = "alive5stage0", special_instructions: str = "") -> str:
     """
     Returns the comprehensive system prompt for the Alive5 Voice Agent
     
     Args:
         botchain_name: The botchain name to use for loading flows
         org_name: The organization name to use for loading flows
+        special_instructions: Additional instructions to guide the agent's behavior
         
     Returns:
-        System prompt with dynamic botchain_name and org_name injected
+        System prompt with dynamic botchain_name, org_name, and special instructions injected
     """
     # Replace placeholder values with actual configuration
     prompt = SYSTEM_PROMPT.replace("{botchain_name}", botchain_name)
     prompt = prompt.replace("{org_name}", org_name)
+    
+    # Add special instructions if provided
+    if special_instructions and special_instructions.strip():
+        special_section = f"""
+
+──────────────────────────────
+:bulb: SPECIAL INSTRUCTIONS
+──────────────────────────────
+{special_instructions.strip()}
+"""
+        # Append special instructions at the end of the prompt
+        prompt = prompt + special_section
     
     return prompt
 
