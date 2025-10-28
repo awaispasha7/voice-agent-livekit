@@ -31,8 +31,8 @@ body {
     box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
     width: 100%;
     max-width: 550px;
-    height: 90vh;
-    max-height: 90vh;
+    height: 95vh;
+    max-height: 95vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -580,7 +580,8 @@ body {
 }
 
 .form-group input,
-.form-group select {
+.form-group select,
+.form-group textarea {
     width: 100%;
     padding: 1rem;
     border: 2px solid #e9ecef;
@@ -588,6 +589,12 @@ body {
     font-size: 1.1rem;
     transition: all 0.3s ease;
     box-sizing: border-box;
+    font-family: inherit;
+}
+
+.form-group textarea {
+    resize: vertical;
+    min-height: 80px;
 }
 
 .form-group select {
@@ -596,7 +603,8 @@ body {
 }
 
 .form-group input:focus,
-.form-group select:focus {
+.form-group select:focus,
+.form-group textarea:focus {
     outline: none;
     border-color: #667eea;
     box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
@@ -621,7 +629,8 @@ body {
     }
     
     .form-group input,
-    .form-group select {
+    .form-group select,
+    .form-group textarea {
         padding: 1rem;
         font-size: 16px; /* Prevents zoom on iOS */
     }
