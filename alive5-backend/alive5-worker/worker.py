@@ -79,7 +79,7 @@ force_clean_logging()
 class SimpleVoiceAgent(Agent):
     """Single-LLM voice agent with function calling"""
     
-    def __init__(self, room_name: str, botchain_name: str = "voice-1", org_name: str = "alive5stage0"):
+    def __init__(self, room_name: str, botchain_name: str = "voice-1", org_name: str = "alive5stage0", special_instructions: str = ""):
         self.room_name = room_name
         self.botchain_name = botchain_name
         self.org_name = org_name
@@ -94,8 +94,8 @@ class SimpleVoiceAgent(Agent):
         # Create OpenAI LLM instance
         llm_instance = openai.LLM(model="gpt-4o", temperature=0.7)
         
-        # Initialize the base Agent class (special instructions will be loaded later)
-        system_prompt = get_system_prompt(botchain_name, org_name, "")
+        # Initialize the base Agent class with special instructions
+        system_prompt = get_system_prompt(botchain_name, org_name, special_instructions)
         super().__init__(instructions=system_prompt, llm=llm_instance)
         
     
@@ -182,34 +182,8 @@ class SimpleVoiceAgent(Agent):
             logger.error(f"Failed to get FAQ bot ID: {e}")
         return "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"  # Default FAQ bot
     
-    async def _get_special_instructions(self):
-        """Get special instructions from session data"""
-        try:
-            if not self.room_name:
-                return ""
-            
-            import httpx
-            backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{backend_url}/api/sessions/{self.room_name}")
-                if response.status_code == 200:
-                    data = response.json()
-                    instructions = data.get("user_data", {}).get("special_instructions", "")
-                    if instructions:
-                        logger.info(f"📝 Special instructions: {instructions[:100]}...")
-                        return instructions
-        except Exception as e:
-            logger.error(f"Failed to get special instructions: {e}")
-        return ""
-    
     async def on_room_enter(self, room):
         """Called when agent enters the room - start with greeting"""
-        # Update system prompt with special instructions
-        special_instructions = await self._get_special_instructions()
-        if special_instructions:
-            updated_prompt = get_system_prompt(self.botchain_name, self.org_name, special_instructions)
-            self.instructions = updated_prompt
-        
         # Start the conversation with greeting
         await self._start_conversation()
     
@@ -291,6 +265,7 @@ async def entrypoint(ctx: JobContext):
     botchain_name = "voice-1"
     org_name = "alive5stage0"
     faq_isVoice = True  # Default to concise responses
+    special_instructions = ""  # Default empty special instructions
     
     try:
         import httpx
@@ -302,6 +277,7 @@ async def entrypoint(ctx: JobContext):
                 botchain_name = user_data.get("botchain_name", "voice-1")
                 org_name = user_data.get("org_name", "alive5stage0")
                 faq_isVoice = user_data.get("faq_isVoice", True)  # Default to concise responses
+                special_instructions = user_data.get("special_instructions", "")  # Load special instructions
             else:
                 logger.warning(f"⚠️ Could not fetch session data (status {response.status_code}), using defaults")
     except Exception as e:
@@ -311,7 +287,7 @@ async def entrypoint(ctx: JobContext):
     await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
     
     # Create and start the agent
-    agent = SimpleVoiceAgent(ctx.room.name, botchain_name, org_name)
+    agent = SimpleVoiceAgent(ctx.room.name, botchain_name, org_name, special_instructions)
     agent.faq_isVoice = faq_isVoice
     
     # Get VAD - with environment variable control for testing
