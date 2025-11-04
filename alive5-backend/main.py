@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
+import socketio
 from datetime import datetime
 
 import httpx
@@ -71,6 +72,15 @@ class SessionUpdateRequest(BaseModel):
 class VoiceChangeRequest(BaseModel):
     room_name: str
     voice_id: str
+
+class CRMSubmissionRequest(BaseModel):
+    room_name: str
+    botchain_name: str
+    org_name: str
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    notes: Optional[str] = None
 
 
 # In-memory storage (simple approach)
@@ -223,6 +233,234 @@ async def delete_room(room_name: str):
         del rooms[room_name]
     
     return {"status": "deleted", "room_name": room_name}
+
+@app.post("/api/init_livechat")
+async def init_livechat(room_name: str, org_name: str, botchain_name: str):
+    """Initialize livechat session with Alive5 Socket.io
+    
+    Step 1: Get widget data and auth token
+    Step 2: Connect to socket.io with auth
+    Step 3: Emit init-livechat-bot to create thread/CRM
+    Step 4: Store thread_id and crm_id in session
+    """
+    try:
+        logger.info(f"🚀 Initializing livechat for room: {room_name}")
+        
+        # Step 1: Get widget data (includes auth token)
+        # TODO: Replace with actual getWidgetData API call
+        widget_api_url = "https://api-v2.alive5.com/get-widget-data"  # Replace with actual endpoint
+        
+        async with httpx.AsyncClient() as client:
+            # This should return: { authToken: "...", channel_id: "...", widget_id: "..." }
+            response = await client.get(
+                widget_api_url,
+                params={"org_name": org_name, "botchain": botchain_name}
+            )
+            
+            if response.status_code != 200:
+                raise Exception(f"Failed to get widget data: {response.status_code}")
+            
+            widget_data = response.json()
+            auth_token = widget_data.get("authToken")
+            channel_id = widget_data.get("channel_id")
+            widget_id = widget_data.get("widget_id")
+        
+        # Step 2: Create socket.io client and connect
+        sio = socketio.AsyncClient()
+        
+        await sio.connect(
+            'https://api-v2.alive5.com',
+            transports=['websocket', 'polling'],
+            auth={
+                'authToken': auth_token,
+                'thread_id': "",
+                'crm_id': "",
+                'channel_id': channel_id
+            },
+            socketio_path='/socket.io'
+        )
+        
+        # Step 3: Emit init-livechat-bot event
+        init_data = {
+            "channel_id": channel_id,
+            "org_name": org_name,
+            "botchain_name": botchain_name,
+            "message_type": "voicechat",
+            "Widget_id": widget_id
+        }
+        
+        # Wait for response with thread_id and crm_id
+        response_data = {}
+        
+        @sio.on('livechat-initialized')
+        async def on_init(data):
+            nonlocal response_data
+            response_data = data
+        
+        await sio.emit('init-livechat-bot', init_data)
+        
+        # Wait for response (timeout after 5 seconds)
+        import asyncio
+        await asyncio.sleep(2)  # Give time for response
+        
+        # Step 4: Store in session
+        if room_name in sessions:
+            sessions[room_name]["thread_id"] = response_data.get("thread_id")
+            sessions[room_name]["crm_id"] = response_data.get("crm_id")
+            sessions[room_name]["auth_token"] = auth_token
+            sessions[room_name]["channel_id"] = channel_id
+            sessions[room_name]["widget_id"] = widget_id
+            sessions[room_name]["socket_connected"] = True
+        
+        await sio.disconnect()
+        
+        logger.info(f"✅ Livechat initialized - Thread: {response_data.get('thread_id')}, CRM: {response_data.get('crm_id')}")
+        
+        return {
+            "status": "success",
+            "thread_id": response_data.get("thread_id"),
+            "crm_id": response_data.get("crm_id")
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error initializing livechat: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/submit_crm")
+async def submit_crm(request: CRMSubmissionRequest):
+    """Submit collected CRM data via Socket.io livechat-message event
+    
+    Uses existing thread_id and crm_id from init_livechat
+    """
+    try:
+        logger.info(f"📝 CRM submission received for room: {request.room_name}")
+        logger.info(f"   Name: {request.full_name}")
+        logger.info(f"   Email: {request.email}")
+        logger.info(f"   Notes: {request.notes}")
+        
+        # Get session data (includes auth_token, thread_id, crm_id from init)
+        session = sessions.get(request.room_name, {})
+        auth_token = session.get("auth_token")
+        thread_id = session.get("thread_id")
+        crm_id = session.get("crm_id")
+        channel_id = session.get("channel_id")
+        widget_id = session.get("widget_id")
+        
+        if not auth_token:
+            raise Exception("Session not initialized - call init_livechat first")
+        
+        # Store CRM data in session
+        if "crm_data" not in sessions[request.room_name]:
+            sessions[request.room_name]["crm_data"] = {}
+        
+        sessions[request.room_name]["crm_data"].update({
+            "full_name": request.full_name,
+            "email": request.email,
+            "phone": request.phone,
+            "notes": request.notes,
+            "submitted_at": datetime.now().isoformat()
+        })
+        
+        # Connect to Socket.io
+        sio = socketio.AsyncClient()
+        
+        await sio.connect(
+            'https://api-v2.alive5.com',
+            transports=['websocket', 'polling'],
+            auth={
+                'authToken': auth_token,
+                'thread_id': thread_id or "",
+                'crm_id': crm_id or "",
+                'channel_id': channel_id
+            },
+            socketio_path='/socket.io'
+        )
+        
+        # Prepare message data as per client specification
+        message_data = {
+            "channel_id": channel_id,
+            "Message_content": f"Name: {request.full_name}\nEmail: {request.email}\nPhone: {request.phone or 'N/A'}\nNotes: {request.notes}",
+            "message_type": "voicechat",
+            "org_name": request.org_name,
+            "thread_id": thread_id,
+            "crm_id": crm_id,
+            "newThread": False,  # Thread already exists from init
+            "attach_botchain": request.botchain_name,
+            "webpage_title": "Voice Agent",
+            "webpage_url": "",
+            "assignedTo": "",
+            "user_interacted": "additional_action",
+            "Widget_id": widget_id
+        }
+        
+        # Emit livechat-message event
+        await sio.emit('livechat-message', message_data)
+        logger.info(f"✅ CRM data sent via livechat-message")
+        
+        await sio.disconnect()
+        
+        return {
+            "status": "success",
+            "message": "CRM data sent to Alive5",
+            "thread_id": thread_id,
+            "crm_id": crm_id
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error submitting CRM data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/end_livechat")
+async def end_livechat(room_name: str):
+    """End livechat session with visitor-chat-end event"""
+    try:
+        logger.info(f"👋 Ending livechat for room: {room_name}")
+        
+        session = sessions.get(room_name, {})
+        auth_token = session.get("auth_token")
+        thread_id = session.get("thread_id")
+        crm_id = session.get("crm_id")
+        channel_id = session.get("channel_id")
+        
+        if not auth_token:
+            logger.warning("No active session to end")
+            return {"status": "no_session"}
+        
+        # Connect and emit visitor-chat-end
+        sio = socketio.AsyncClient()
+        
+        await sio.connect(
+            'https://api-v2.alive5.com',
+            transports=['websocket', 'polling'],
+            auth={
+                'authToken': auth_token,
+                'thread_id': thread_id or "",
+                'crm_id': crm_id or "",
+                'channel_id': channel_id
+            },
+            socketio_path='/socket.io'
+        )
+        
+        end_data = {
+            "thread_id": thread_id,
+            "crm_id": crm_id,
+            "channel_id": channel_id
+        }
+        
+        await sio.emit('visitor-chat-end', end_data)
+        logger.info(f"✅ Livechat session ended")
+        
+        await sio.disconnect()
+        
+        # Clean up session
+        if room_name in sessions:
+            sessions[room_name]["socket_connected"] = False
+        
+        return {"status": "success", "message": "Session ended"}
+        
+    except Exception as e:
+        logger.error(f"❌ Error ending livechat: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 

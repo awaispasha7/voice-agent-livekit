@@ -91,6 +91,14 @@ class SimpleVoiceAgent(Agent):
         self.bot_template = None
         self.flow_states = {}  # Track current step of each flow
         
+        # CRM data collection
+        self.collected_data = {
+            "full_name": None,
+            "email": None,
+            "phone": None,
+            "notes_entry": []
+        }
+        
         # Create OpenAI LLM instance
         llm_instance = openai.LLM(model="gpt-4o", temperature=0.7)
         
@@ -110,6 +118,51 @@ class SimpleVoiceAgent(Agent):
         # logger.info(f"🔧 Loading bot flows for {botchain_name}")
         return await handle_load_bot_flows(botchain_name, org_name)
     
+    
+    @function_tool()
+    async def submit_crm_data(self, context: RunContext) -> Dict[str, Any]:
+        """Submit collected customer data to CRM at the end of conversation.
+        Call this when you have collected the customer's information (name, email, notes) and the conversation is ending.
+        """
+        try:
+            # Prepare data for submission
+            crm_data = {
+                "room_name": self.room_name,
+                "botchain_name": self.botchain_name,
+                "org_name": self.org_name,
+                "full_name": self.collected_data.get("full_name"),
+                "email": self.collected_data.get("email"),
+                "phone": self.collected_data.get("phone"),
+                "notes": " | ".join(self.collected_data.get("notes_entry", [])) if self.collected_data.get("notes_entry") else None
+            }
+            
+            # Submit to backend API
+            import httpx
+            backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{backend_url}/api/submit_crm",
+                    json=crm_data
+                )
+                
+                if response.status_code == 200:
+                    logger.info(f"✅ CRM data submitted successfully")
+                    return {
+                        "success": True,
+                        "message": "Customer information has been saved and forwarded to the team."
+                    }
+                else:
+                    logger.error(f"❌ CRM submission failed: {response.status_code}")
+                    return {
+                        "success": False,
+                        "message": "There was an issue saving the information, but I've noted your details."
+                    }
+        except Exception as e:
+            logger.error(f"❌ Error submitting CRM data: {e}")
+            return {
+                "success": False,
+                "message": "Information noted, though there was a technical issue with submission."
+            }
     
     @function_tool()
     async def faq_bot_request(self, context: RunContext, faq_question: str, bot_id: str = None, isVoice: bool = None) -> Dict[str, Any]:
@@ -186,6 +239,23 @@ class SimpleVoiceAgent(Agent):
         """Called when agent enters the room - start with greeting"""
         # Start the conversation with greeting
         await self._start_conversation()
+    
+    async def on_session_end(self):
+        """Called when session is ending - cleanup livechat"""
+        try:
+            import httpx
+            backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(
+                    f"{backend_url}/api/end_livechat",
+                    params={"room_name": self.room_name}
+                )
+                if response.status_code == 200:
+                    logger.info(f"✅ Livechat session ended successfully")
+                else:
+                    logger.warning(f"⚠️ Livechat end failed: {response.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not end livechat: {e}")
     
     async def _start_conversation(self):
         """Start the conversation - let LLM handle flow loading and greeting"""
@@ -285,6 +355,26 @@ async def entrypoint(ctx: JobContext):
     
     # Connect to the room first - using same approach as working implementation
     await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
+    
+    # Initialize livechat session with Socket.io
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{backend_url}/api/init_livechat",
+                params={
+                    "room_name": ctx.room.name,
+                    "org_name": org_name,
+                    "botchain_name": botchain_name
+                }
+            )
+            if response.status_code == 200:
+                init_result = response.json()
+                logger.info(f"✅ Livechat initialized - Thread: {init_result.get('thread_id')}, CRM: {init_result.get('crm_id')}")
+            else:
+                logger.warning(f"⚠️ Livechat init failed: {response.status_code}")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not initialize livechat: {e}")
     
     # Create and start the agent
     agent = SimpleVoiceAgent(ctx.room.name, botchain_name, org_name, special_instructions)
