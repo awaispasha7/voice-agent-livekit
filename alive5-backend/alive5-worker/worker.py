@@ -120,6 +120,82 @@ class SimpleVoiceAgent(Agent):
     
     
     @function_tool()
+    async def transfer_call_to_human(self, context: RunContext, transfer_number: str = None) -> Dict[str, Any]:
+        """Transfer the current phone call to a human agent or phone number.
+        
+        Args:
+            transfer_number: Phone number to transfer to (e.g., "+18555518858"). 
+                           If None, uses default call center number from environment.
+                           If no transfer number is configured, returns helpful message.
+        
+        Returns:
+            Success status and message
+        """
+        try:
+            # Get transfer number or use default
+            if not transfer_number:
+                transfer_number = os.getenv("TELNYX_CALL_CENTER_NUMBER")
+                
+                # If no transfer number configured, inform user
+                if not transfer_number:
+                    logger.warning("⚠️ No TELNYX_CALL_CENTER_NUMBER configured - transfer not available")
+                    return {
+                        "success": False,
+                        "message": "I'm sorry, call transfers are not currently configured. Is there anything else I can help you with?"
+                    }
+            
+            # Get call control ID from session
+            import httpx
+            backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{backend_url}/api/sessions/{self.room_name}")
+                if response.status_code == 200:
+                    session_data = response.json()
+                    call_control_id = session_data.get("call_control_id")
+                    
+                    if call_control_id:
+                        # Transfer call via backend
+                        transfer_response = await client.post(
+                            f"{backend_url}/api/telnyx/transfer",
+                            json={
+                                "room_name": self.room_name,
+                                "call_control_id": call_control_id,
+                                "transfer_to": transfer_number
+                            }
+                        )
+                        
+                        if transfer_response.status_code == 200:
+                            logger.info(f"✅ Call transferred to {transfer_number}")
+                            return {
+                                "success": True,
+                                "message": f"Connecting you to a representative now..."
+                            }
+                        else:
+                            logger.error(f"❌ Transfer failed: {transfer_response.status_code}")
+                            return {
+                                "success": False,
+                                "message": "I'm having trouble transferring you. Please hold..."
+                            }
+                    else:
+                        logger.warning("⚠️ No call_control_id found - not a phone call")
+                        return {
+                            "success": False,
+                            "message": "Transfer is only available for phone calls."
+                        }
+                else:
+                    logger.error(f"❌ Could not get session data: {response.status_code}")
+                    return {
+                        "success": False,
+                        "message": "Unable to process transfer request."
+                    }
+        except Exception as e:
+            logger.error(f"❌ Error transferring call: {e}")
+            return {
+                "success": False,
+                "message": "I'm having trouble transferring you right now."
+            }
+    
+    @function_tool()
     async def submit_crm_data(self, context: RunContext) -> Dict[str, Any]:
         """Submit collected customer data to CRM at the end of conversation.
         Call this when you have collected the customer's information (name, email, notes) and the conversation is ending.
@@ -241,7 +317,12 @@ class SimpleVoiceAgent(Agent):
         await self._start_conversation()
     
     async def on_session_end(self):
-        """Called when session is ending - cleanup livechat"""
+        """Called when session is ending - cleanup livechat (skip for phone calls)"""
+        # Skip livechat cleanup for phone calls
+        if self.room_name.startswith("telnyx_call_"):
+            logger.info(f"📞 Phone call ending - skipping livechat cleanup")
+            return
+        
         try:
             import httpx
             backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
@@ -337,6 +418,10 @@ async def entrypoint(ctx: JobContext):
     faq_isVoice = True  # Default to concise responses
     special_instructions = ""  # Default empty special instructions
     
+    # Detect if this is a phone call (Telnyx) or web session
+    is_phone_call = ctx.room.name.startswith("telnyx_call_")
+    user_data = {}
+    
     try:
         import httpx
         async with httpx.AsyncClient() as client:
@@ -344,37 +429,45 @@ async def entrypoint(ctx: JobContext):
             if response.status_code == 200:
                 session_data = response.json()
                 user_data = session_data.get("user_data", {})
-                botchain_name = user_data.get("botchain_name", "voice-1")
-                org_name = user_data.get("org_name", "alive5stage0")
-                faq_isVoice = user_data.get("faq_isVoice", True)  # Default to concise responses
-                special_instructions = user_data.get("special_instructions", "")  # Load special instructions
+                # Check source field to confirm it's a phone call
+                if user_data.get("source") == "telnyx_phone":
+                    is_phone_call = True
             else:
                 logger.warning(f"⚠️ Could not fetch session data (status {response.status_code}), using defaults")
     except Exception as e:
         logger.warning(f"⚠️ Could not fetch session data: {e}, using defaults")
     
+    # Get configuration from session data or use defaults
+    botchain_name = user_data.get("botchain_name", "voice-1")
+    org_name = user_data.get("org_name", "alive5stage0")
+    faq_isVoice = user_data.get("faq_isVoice", True)  # Default to concise responses
+    special_instructions = user_data.get("special_instructions", "")  # Load special instructions
+    
     # Connect to the room first - using same approach as working implementation
     await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
     
-    # Initialize livechat session with Socket.io
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{backend_url}/api/init_livechat",
-                params={
-                    "room_name": ctx.room.name,
-                    "org_name": org_name,
-                    "botchain_name": botchain_name
-                }
-            )
-            if response.status_code == 200:
-                init_result = response.json()
-                logger.info(f"✅ Livechat initialized - Thread: {init_result.get('thread_id')}, CRM: {init_result.get('crm_id')}")
-            else:
-                logger.warning(f"⚠️ Livechat init failed: {response.status_code}")
-    except Exception as e:
-        logger.warning(f"⚠️ Could not initialize livechat: {e}")
+    # Initialize livechat session with Socket.io (skip for phone calls)
+    if not is_phone_call:
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{backend_url}/api/init_livechat",
+                    params={
+                        "room_name": ctx.room.name,
+                        "org_name": org_name,
+                        "botchain_name": botchain_name
+                    }
+                )
+                if response.status_code == 200:
+                    init_result = response.json()
+                    logger.info(f"✅ Livechat initialized - Thread: {init_result.get('thread_id')}, CRM: {init_result.get('crm_id')}")
+                else:
+                    logger.warning(f"⚠️ Livechat init failed: {response.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not initialize livechat: {e}")
+    else:
+        logger.info(f"📞 Phone call detected - skipping livechat initialization")
     
     # Create and start the agent
     agent = SimpleVoiceAgent(ctx.room.name, botchain_name, org_name, special_instructions)
