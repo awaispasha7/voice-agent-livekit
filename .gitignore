@@ -54,3 +54,6 @@ alive5-voice-ai-agent.pem
 main_dynamic copy.py
 llm_utils copy.py
 main_flow_based copy.py
+
+*.md
+!README.md
