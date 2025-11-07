@@ -118,7 +118,7 @@ CARTESIA_API_KEY=your-cartesia-key
 - **Service Management**: Systemd services with auto-restart
 - **Real-time Logs**: Easy log monitoring with PowerShell scripts
 - **Health Monitoring**: Built-in health checks and status endpoints
-- **🧠 Intelligent Agent**: GPT-4 powered conversation with function calling
+- **🧠 Intelligent Agent**: gpt-5-nano-2025-08-07 powered conversation with function calling
 - **📊 Voice Management**: 291+ available voices with dynamic switching
 - **🔄 FAQ Integration**: Seamless FAQ bot integration with verbose mode
 - **🎤 Voice Activity Detection**: Smart VAD with noise cancellation

@@ -25,7 +25,7 @@ from livekit.agents import (
 from livekit.plugins import openai, deepgram, cartesia, silero, noise_cancellation
 
 from system_prompt import get_system_prompt
-from functions import handle_load_bot_flows, handle_faq_bot_request
+from functions import handle_load_bot_flows, handle_faq_bot_request, handle_bedrock_knowledge_base_request
 
 # Load environment variables
 load_dotenv(Path(__file__).parent / "../../.env")
@@ -107,8 +107,25 @@ class SimpleVoiceAgent(Agent):
             "notes_entry": []
         }
         
-        # Create OpenAI LLM instance
-        llm_instance = openai.LLM(model="gpt-4o", temperature=0.7)
+        # Get model from env or use default
+        model_name = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+        import httpx
+        llm_timeout = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=30.0)
+        
+        try:
+            llm_instance = openai.LLM(model=model_name, temperature=0.7, timeout=llm_timeout)
+            self._inference_model_id = None  # Not using LiveKit Inference
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize OpenAI plugin LLM with {model_name}: {e}")
+            logger.warning(f"🔄 Falling back to gpt-4o-mini")
+            try:
+                llm_instance = openai.LLM(model="gpt-4o-mini", temperature=0.7, timeout=llm_timeout)
+                logger.info(f"✅ Fallback LLM initialized: gpt-4o-mini")
+            except Exception as e2:
+                logger.error(f"❌ Fallback also failed: {e2}")
+                raise Exception(f"Could not initialize any LLM. Original error: {e}, Fallback error: {e2}")
+            self._inference_model_id = None
         
         # Initialize the base Agent class with special instructions
         system_prompt = get_system_prompt(botchain_name, org_name, special_instructions)
@@ -294,7 +311,8 @@ class SimpleVoiceAgent(Agent):
             if hasattr(self, "agent_session") and self.agent_session:
                 await self.agent_session.say(message)
         
-        return await handle_faq_bot_request(faq_question, bot_id, isVoice, waiting_callback)
+        # Try Bedrock Knowledge Base first (faster), fallback to Alive5 API if needed
+        return await handle_bedrock_knowledge_base_request(faq_question, max_results=5, waiting_callback=waiting_callback)
     
     async def _get_current_voice(self):
         """Get current voice from session data (like working implementation)"""
@@ -374,7 +392,7 @@ class SimpleVoiceAgent(Agent):
                 logger.warning("⚠️ Agent session not available")
             
         except Exception as e:
-            logger.error(f"❌ Error starting conversation: {e}")
+            logger.error(f"❌ Error starting conversation: {e}", exc_info=True)
             # Informative fallback message
             if hasattr(self, "agent_session") and self.agent_session:
                 await self.agent_session.say("Failed to load the bot flows. But you can still speak with me naturally.")
@@ -445,8 +463,34 @@ async def entrypoint(ctx: JobContext):
     special_instructions = ""  # Default empty special instructions
     
     # Detect if this is a phone call (Telnyx) or web session
-    # Clean up room name in case of double prefix from dispatch rule
+    # Clean up room name: handle URL-encoding and double prefix from dispatch rule
+    from urllib.parse import unquote, quote
     room_name_clean = ctx.room.name
+    
+    # First, URL-decode if needed (LiveKit dispatch rule may not decode it)
+    if '%' in room_name_clean:
+        room_name_decoded = unquote(room_name_clean)
+        logger.warning(f"⚠️ Room name is URL-encoded: {room_name_clean} -> {room_name_decoded}")
+        
+        # Check if a room with the decoded name already exists (prevent duplicate sessions)
+        # This happens when LiveKit dispatch rule doesn't decode the room name from SIP URI
+        try:
+            import httpx
+            backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+            encoded_decoded_name = quote(room_name_decoded, safe='')  # quote already imported above
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(f"{backend_url}/api/sessions/{encoded_decoded_name}")
+                if response.status_code == 200:
+                    # Decoded room name exists - this is a duplicate session from URL-encoded room
+                    logger.warning(f"⚠️ Duplicate session detected! Room {room_name_decoded} already exists.")
+                    logger.warning(f"   This session ({room_name_clean}) is a duplicate - exiting to prevent conflicts.")
+                    return  # Exit early to prevent duplicate agent sessions
+        except Exception as e:
+            logger.debug(f"Could not check for duplicate: {e}")
+        
+        room_name_clean = room_name_decoded
+    
+    # Remove double prefix if present
     if room_name_clean.startswith("telnyx_call__telnyx_call_"):
         # Remove double prefix
         room_name_clean = room_name_clean.replace("telnyx_call__telnyx_call_", "telnyx_call_", 1)
@@ -548,14 +592,21 @@ async def entrypoint(ctx: JobContext):
             logger.error(f"❌ Basic Cartesia TTS also failed: {e2}")
             raise Exception("TTS initialization failed completely")
     
-    # Start the agent session with proper STT/TTS configuration (like working implementation)
+    # Get model name for logging
+    model_name_for_log = None
+    if hasattr(agent.llm, '_opts') and hasattr(agent.llm._opts, 'model'):
+        model_name_for_log = agent.llm._opts.model
+    elif hasattr(agent.llm, 'model'):
+        model_name_for_log = agent.llm.model
+    
     session = AgentSession(
         stt=deepgram.STT(model="nova-2", language="en-US", api_key=os.getenv("DEEPGRAM_API_KEY")),
-        llm=agent.llm,  # This should be the LLM with function tools
+        llm=agent.llm,  # OpenAI plugin LLM instance (supports GPT-5 models directly)
         tts=tts,
         vad=vad,
         turn_detection=None
     )
+    
     
     
     # Set the agent's room and session
@@ -587,7 +638,7 @@ async def entrypoint(ctx: JobContext):
     
     logger.info("✅ Simple agent started successfully")
     logger.info("=" * 80)
-    logger.info(f"🎯 SESSION READY - Room: {room_name_clean} | Botchain: {botchain_name} | Org: {org_name}")
+    logger.info(f"🎯 SESSION READY - Room: {room_name_clean} | Botchain: {botchain_name} | Org: {org_name} | Model: {model_name_for_log}")
     logger.info("=" * 80)
 
 if __name__ == "__main__":

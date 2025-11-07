@@ -33,7 +33,6 @@ env_loaded = False
 for env_path in env_paths:
     if env_path.exists():
         load_dotenv(dotenv_path=str(env_path), override=True)
-        print(f"✅ Loaded .env from: {env_path}")
         env_loaded = True
         break
 if not env_loaded:
@@ -524,24 +523,11 @@ async def telnyx_webhook(request: Request):
     try:
         payload = await request.json()
         
-        # Log full payload for debugging (first time only)
-        logger.info(f"📞 Telnyx webhook payload keys: {list(payload.keys())}")
-        
         # Try different payload structures (API v1 vs v2)
         data = payload.get("data") or payload.get("payload") or payload
         event_type = data.get("event_type") or payload.get("event_type")
         
-        logger.info(f"📞 Telnyx webhook received: {event_type}")
-        
-        # Log data keys for debugging
-        if isinstance(data, dict):
-            logger.info(f"📞 Data keys: {list(data.keys())}")
-            # Log first few key-value pairs to understand structure
-            sample_keys = list(data.keys())[:10]
-            for key in sample_keys:
-                value = data.get(key)
-                if isinstance(value, (str, int, float, bool, type(None))):
-                    logger.info(f"   {key}: {value}")
+        logger.info(f"📞 Telnyx webhook: {event_type}")
         
         if event_type == "call.initiated":
             # Incoming call - create LiveKit room and SIP participant
@@ -564,11 +550,7 @@ async def telnyx_webhook(request: Request):
             if not direction:
                 direction = data.get("direction")
             
-            # Log payload structure for debugging
-            if isinstance(payload_data, dict):
-                logger.info(f"📞 Payload keys: {list(payload_data.keys())[:15]}")
-            
-            logger.info(f"📞 Call initiated: direction={direction} from {caller_number} to {called_number} (call_control_id: {call_control_id})")
+            logger.info(f"📞 Call: {caller_number} → {called_number} (ID: {call_control_id[:20]}...)")
             
             # Only process inbound calls - skip outbound calls (these are our dial-out calls to LiveKit)
             # Telnyx uses "incoming" for inbound and "outgoing" for outbound
@@ -589,7 +571,10 @@ async def telnyx_webhook(request: Request):
                 raise HTTPException(status_code=400, detail="Missing call_control_id in webhook payload")
             
             # Create unique room name for this call
-            room_name = f"telnyx_call_{call_control_id}"
+            # Replace colons with dashes to avoid URL-encoding issues in SIP URI
+            # This prevents duplicate sessions when LiveKit dispatch rule extracts room name
+            safe_call_control_id = call_control_id.replace(':', '-')
+            room_name = f"telnyx_call_{safe_call_control_id}"
             
             # Get LiveKit credentials
             livekit_url = os.getenv("LIVEKIT_URL")
@@ -677,14 +662,12 @@ async def telnyx_webhook(request: Request):
                     logger.error(f"❌ Missing LIVEKIT_SIP_DOMAIN")
                     return {"status": "error", "message": "Missing LIVEKIT_SIP_DOMAIN"}
                 
-                # URL-encode the room name to handle special characters like colons in call_control_id
-                from urllib.parse import quote
-                encoded_room_name = quote(room_name, safe='')
-                livekit_sip_uri = f"sip:{encoded_room_name}@{livekit_sip_domain}:5060"
+                # Room name no longer contains colons (replaced with dashes), so no URL-encoding needed
+                # This prevents duplicate sessions when LiveKit dispatch rule extracts room name
+                livekit_sip_uri = f"sip:{room_name}@{livekit_sip_domain}:5060"
                 
                 logger.info(f"📞 Answering call and transferring to LiveKit")
                 logger.info(f"   Room name: {room_name}")
-                logger.info(f"   Encoded room name: {encoded_room_name}")
                 logger.info(f"   SIP URI: {livekit_sip_uri}")
                 logger.info(f"   ✅ Using transfer (not dial) - avoids Telnyx outbound call limits")
                 logger.info(f"   ⚠️  LiveKit inbound trunk must be configured to route calls to room")
@@ -771,7 +754,7 @@ async def telnyx_webhook(request: Request):
             direction = payload_data.get("direction") or data.get("direction")
             called_number = payload_data.get("to") or data.get("to")
             
-            logger.info(f"📞 Call answered: direction={direction}, call_control_id={call_control_id}, to={called_number}")
+            logger.info(f"📞 Call answered: {call_control_id[:20]}...")
             
             # Check if this is our outbound call to LiveKit being answered
             livekit_sip_domain = os.getenv("LIVEKIT_SIP_DOMAIN", "")
@@ -810,12 +793,27 @@ async def telnyx_webhook(request: Request):
                         try:
                             await lk_api.room.delete_room(api.DeleteRoomRequest(room=actual_room_name))
                             logger.info(f"✅ Cleaned up room: {actual_room_name}")
-                        except:
-                            # If that fails, try the key name
-                            await lk_api.room.delete_room(api.DeleteRoomRequest(room=room_name_key))
-                            logger.info(f"✅ Cleaned up room: {room_name_key}")
+                        except Exception as e1:
+                            # Check if it's a "not found" error - that's fine, room already deleted
+                            if "not_found" in str(e1).lower() or "does not exist" in str(e1).lower():
+                                logger.debug(f"ℹ️ Room {actual_room_name} already deleted (not found)")
+                            else:
+                                # If that fails for other reasons, try the key name
+                                try:
+                                    await lk_api.room.delete_room(api.DeleteRoomRequest(room=room_name_key))
+                                    logger.info(f"✅ Cleaned up room: {room_name_key}")
+                                except Exception as e2:
+                                    # Check if it's a "not found" error - that's fine
+                                    if "not_found" in str(e2).lower() or "does not exist" in str(e2).lower():
+                                        logger.debug(f"ℹ️ Room {room_name_key} already deleted (not found)")
+                                    else:
+                                        raise e2
                     except Exception as e:
-                        logger.error(f"❌ Error cleaning up room: {e}")
+                        # Only log as error if it's not a "not found" error
+                        if "not_found" in str(e).lower() or "does not exist" in str(e).lower():
+                            logger.debug(f"ℹ️ Room already deleted (not found): {e}")
+                        else:
+                            logger.error(f"❌ Error cleaning up room: {e}")
                     
                     # Mark session for deletion
                     session_to_delete.append(room_name_key)

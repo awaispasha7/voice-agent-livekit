@@ -72,13 +72,103 @@ async def handle_load_bot_flows(botchain_name: str, org_name: str = "alive5stage
             "error": str(e)
         }
 
+async def handle_bedrock_knowledge_base_request(
+    query_text: str,
+    max_results: int = 5,
+    waiting_callback = None
+) -> Dict[str, Any]:
+    """Call Amazon Bedrock Knowledge Base directly (faster than Alive5 API wrapper)"""
+    try:
+        bedrock_api_key = os.getenv("BEDROCK_API_KEY")
+        knowledge_base_id = os.getenv("BEDROCK_KNOWLEDGE_BASE_ID", "2CFKDFOXVH")
+        bedrock_endpoint = os.getenv("BEDROCK_ENDPOINT", "https://bedrock-agent-runtime.us-east-1.amazonaws.com")
+        
+        if not bedrock_api_key:
+            logger.warning("⚠️ BEDROCK_API_KEY not set, falling back to Alive5 FAQ API")
+            return await handle_faq_bot_request(query_text, isVoice=True, waiting_callback=waiting_callback)
+        
+        logger.info(f"🔧 Bedrock Knowledge Base request: {query_text}")
+        
+        if waiting_callback:
+            await waiting_callback("Let me check that for you...")
+        
+        url = f"{bedrock_endpoint}/knowledgebases/{knowledge_base_id}/retrieve"
+        
+        headers = {
+            'Authorization': f'Bearer {bedrock_api_key}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+        
+        payload = {
+            "retrievalQuery": {
+                "text": query_text
+            },
+            "retrievalConfiguration": {
+                "vectorSearchConfiguration": {
+                    "numberOfResults": max_results
+                }
+            }
+        }
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            
+            if response.status_code == 200:
+                data = response.json()
+                retrieval_results = data.get('retrievalResults', [])
+                
+                if retrieval_results:
+                    # Combine all retrieved content into a single answer
+                    # Take the top result(s) and format for voice
+                    combined_text = ""
+                    for i, result in enumerate(retrieval_results[:3]):  # Use top 3 results
+                        content = result.get('content', {}).get('text', '')
+                        if content:
+                            if i > 0:
+                                combined_text += " "  # Add space between results
+                            combined_text += content
+                    
+                    # Format response similar to Alive5 API format for compatibility
+                    logger.info(f"✅ Bedrock Knowledge Base response received ({len(retrieval_results)} results)")
+                    return {
+                        "success": True,
+                        "data": {
+                            "answer": combined_text.strip(),
+                            "urls": [],  # Bedrock doesn't return URLs in this format
+                            "source": "bedrock_knowledge_base"
+                        }
+                    }
+                else:
+                    logger.info("ℹ️ No results found in Bedrock Knowledge Base")
+                    return {
+                        "success": True,
+                        "data": {
+                            "answer": None,
+                            "urls": [],
+                            "source": "bedrock_knowledge_base"
+                        }
+                    }
+            else:
+                logger.error(f"❌ Bedrock API error: {response.status_code} - {response.text}")
+                # Fallback to Alive5 API if Bedrock fails
+                logger.info("🔄 Falling back to Alive5 FAQ API...")
+                return await handle_faq_bot_request(query_text, isVoice=True, waiting_callback=waiting_callback)
+                
+    except Exception as e:
+        logger.error(f"❌ Error calling Bedrock Knowledge Base: {e}")
+        # Fallback to Alive5 API if Bedrock fails
+        logger.info("🔄 Falling back to Alive5 FAQ API...")
+        return await handle_faq_bot_request(query_text, isVoice=True, waiting_callback=waiting_callback)
+
+
 async def handle_faq_bot_request(
     faq_question: str,
     bot_id: str = FAQ_BOT_ID,
     isVoice: bool = True,
     waiting_callback = None
 ) -> Dict[str, Any]:
-    """Call the Alive5 FAQ bot API"""
+    """Call the Alive5 FAQ bot API (fallback method)"""
     try:
         if not A5_BASE_URL or not A5_API_KEY:
             return {
@@ -86,7 +176,7 @@ async def handle_faq_bot_request(
                 "error": "FAQ API not configured"
             }
         
-        logger.info(f"🔧 FAQ bot request: {faq_question}")
+        logger.info(f"🔧 FAQ bot request (Alive5 API): {faq_question}")
         
         if waiting_callback:
             await waiting_callback("Please wait while I fetch the information from the Alive5 website...")
