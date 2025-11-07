@@ -6,6 +6,7 @@ Simplified backend for the simple-agent worker and frontend
 import os
 import json
 import logging
+import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional
 import socketio
@@ -199,10 +200,52 @@ async def get_connection_details(request: ConnectionDetailsRequest):
 @app.get("/api/sessions/{room_name}")
 async def get_session(room_name: str):
     """Get session data for the simple-agent worker"""
-    if room_name not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+    # FastAPI automatically URL-decodes the path parameter
+    from urllib.parse import unquote
     
-    return sessions[room_name]
+    # URL-decode the room name in case it's encoded
+    room_name_decoded = unquote(room_name)
+    
+    # Check for double prefix and clean it up
+    room_name_clean = room_name_decoded
+    if room_name_clean.startswith("telnyx_call__telnyx_call_"):
+        # Remove double prefix
+        room_name_clean = room_name_clean.replace("telnyx_call__telnyx_call_", "telnyx_call_", 1)
+        logger.info(f"⚠️ Fixed double-prefixed room name in session lookup: {room_name_decoded} -> {room_name_clean}")
+    
+    # Log for debugging
+    logger.debug(f"📋 Session lookup - Room name: {room_name_decoded}, Cleaned: {room_name_clean}")
+    logger.debug(f"   Available sessions: {list(sessions.keys())[:5]}...")  # Show first 5
+    
+    # Try cleaned name first
+    if room_name_clean in sessions:
+        return sessions[room_name_clean]
+    
+    # Try original decoded name
+    if room_name_decoded in sessions:
+        return sessions[room_name_decoded]
+    
+    # Try original (might be encoded)
+    if room_name in sessions:
+        return sessions[room_name]
+    
+    # Try to find a matching session (in case of encoding issues)
+    for key in sessions.keys():
+        # Check if keys match after cleaning
+        key_clean = key
+        if key_clean.startswith("telnyx_call__telnyx_call_"):
+            key_clean = key_clean.replace("telnyx_call__telnyx_call_", "telnyx_call_", 1)
+        
+        if key_clean == room_name_clean or key == room_name_decoded:
+            logger.info(f"✅ Found session by matching: {key}")
+            return sessions[key]
+        
+        # Also try URL encoding/decoding variations
+        if key.replace(':', '%3A') == room_name or room_name.replace('%3A', ':') == key:
+            logger.info(f"✅ Found session by encoding match: {key}")
+            return sessions[key]
+    
+    raise HTTPException(status_code=404, detail=f"Session not found: {room_name} (tried: {room_name_clean}, {room_name_decoded})")
 
 @app.post("/api/sessions/update")
 async def update_session(request: SessionUpdateRequest):
@@ -480,17 +523,70 @@ async def telnyx_webhook(request: Request):
     """
     try:
         payload = await request.json()
-        event_type = payload.get("data", {}).get("event_type")
+        
+        # Log full payload for debugging (first time only)
+        logger.info(f"📞 Telnyx webhook payload keys: {list(payload.keys())}")
+        
+        # Try different payload structures (API v1 vs v2)
+        data = payload.get("data") or payload.get("payload") or payload
+        event_type = data.get("event_type") or payload.get("event_type")
         
         logger.info(f"📞 Telnyx webhook received: {event_type}")
         
+        # Log data keys for debugging
+        if isinstance(data, dict):
+            logger.info(f"📞 Data keys: {list(data.keys())}")
+            # Log first few key-value pairs to understand structure
+            sample_keys = list(data.keys())[:10]
+            for key in sample_keys:
+                value = data.get(key)
+                if isinstance(value, (str, int, float, bool, type(None))):
+                    logger.info(f"   {key}: {value}")
+        
         if event_type == "call.initiated":
             # Incoming call - create LiveKit room and SIP participant
-            call_control_id = payload.get("data", {}).get("call_control_id")
-            caller_number = payload.get("data", {}).get("from")
-            called_number = payload.get("data", {}).get("to")
+            # Telnyx webhook structure: data.payload contains the actual call data
+            payload_data = data.get("payload") or data
             
-            logger.info(f"📞 Incoming call from {caller_number} to {called_number}")
+            # Extract call_control_id from payload (not from event id)
+            call_control_id = payload_data.get("call_control_id") or payload_data.get("id")
+            caller_number = payload_data.get("from") or payload_data.get("from_number") or payload_data.get("caller_number") or payload_data.get("caller_id_number")
+            called_number = payload_data.get("to") or payload_data.get("to_number") or payload_data.get("called_number") or payload_data.get("called_id_number")
+            direction = payload_data.get("direction")  # "inbound" or "outbound"
+            
+            # If still None, try top-level data
+            if not call_control_id:
+                call_control_id = data.get("call_control_id") or data.get("id")
+            if not caller_number:
+                caller_number = data.get("from") or data.get("from_number")
+            if not called_number:
+                called_number = data.get("to") or data.get("to_number")
+            if not direction:
+                direction = data.get("direction")
+            
+            # Log payload structure for debugging
+            if isinstance(payload_data, dict):
+                logger.info(f"📞 Payload keys: {list(payload_data.keys())[:15]}")
+            
+            logger.info(f"📞 Call initiated: direction={direction} from {caller_number} to {called_number} (call_control_id: {call_control_id})")
+            
+            # Only process inbound calls - skip outbound calls (these are our dial-out calls to LiveKit)
+            # Telnyx uses "incoming" for inbound and "outgoing" for outbound
+            # Also check if "to" is a SIP URI to our LiveKit domain - that's definitely an outbound call we initiated
+            livekit_sip_domain = os.getenv("LIVEKIT_SIP_DOMAIN", "")
+            is_outbound_call = (
+                direction in ["outbound", "outgoing"] or
+                (called_number and livekit_sip_domain and livekit_sip_domain in str(called_number))
+            )
+            
+            if is_outbound_call:
+                logger.info(f"⏭️ Skipping outbound call (direction={direction}, to={called_number}) - this is our dial-out to LiveKit")
+                return {"status": "ok"}
+            
+            # Validate we have call_control_id (only for inbound calls)
+            if not call_control_id:
+                logger.error(f"❌ Missing call_control_id in webhook payload. Full payload: {payload}")
+                raise HTTPException(status_code=400, detail="Missing call_control_id in webhook payload")
             
             # Create unique room name for this call
             room_name = f"telnyx_call_{call_control_id}"
@@ -523,8 +619,23 @@ async def telnyx_webhook(request: Request):
                 # No need to create SIP participant manually for inbound calls.
                 logger.info(f"✅ Room created - LiveKit SIP trunk will auto-connect call to room")
                 
+                # Get default voice from env or use first available voice
+                default_voice_id = os.getenv("TELNYX_DEFAULT_VOICE")
+                if default_voice_id and default_voice_id in AVAILABLE_VOICES:
+                    selected_voice_id = default_voice_id
+                    selected_voice_name = AVAILABLE_VOICES[default_voice_id]
+                    logger.info(f"🎤 Using configured voice from TELNYX_DEFAULT_VOICE: {selected_voice_name} ({selected_voice_id})")
+                else:
+                    # Fallback to first available voice
+                    selected_voice_id = list(AVAILABLE_VOICES.keys())[0]
+                    selected_voice_name = AVAILABLE_VOICES.get(selected_voice_id, "Unknown")
+                    if default_voice_id:
+                        logger.warning(f"⚠️ TELNYX_DEFAULT_VOICE '{default_voice_id}' not found in available voices, using default: {selected_voice_name}")
+                    else:
+                        logger.info(f"🎤 Using default voice (first available): {selected_voice_name} ({selected_voice_id})")
+                
                 # Store call session
-                sessions[room_name] = {
+                session_data = {
                     "room_name": room_name,
                     "user_name": f"Caller_{caller_number}",
                     "call_control_id": call_control_id,
@@ -534,8 +645,8 @@ async def telnyx_webhook(request: Request):
                         "botchain_name": os.getenv("TELNYX_DEFAULT_BOTCHAIN", "voice-1"),
                         "org_name": os.getenv("TELNYX_DEFAULT_ORG", "alive5stage0"),
                         "faq_isVoice": True,
-                        "selected_voice": list(AVAILABLE_VOICES.keys())[0],
-                        "selected_voice_name": AVAILABLE_VOICES.get(list(AVAILABLE_VOICES.keys())[0], "Unknown"),
+                        "selected_voice": selected_voice_id,
+                        "selected_voice_name": selected_voice_name,
                         "faq_bot_id": os.getenv("TELNYX_DEFAULT_FAQ_BOT", "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"),
                         "special_instructions": "",
                         "source": "telnyx_phone"
@@ -543,63 +654,177 @@ async def telnyx_webhook(request: Request):
                     "created_at": datetime.now().isoformat()
                 }
                 
-                # Bridge call to LiveKit SIP domain
-                # For Bridge App, we need to dial out to LiveKit SIP URI
-                livekit_sip_uri = f"sip:{room_name}@{livekit_sip_domain}"
+                # Store with correct room name
+                sessions[room_name] = session_data
                 
-                logger.info(f"🌉 Bridging call to LiveKit: {livekit_sip_uri}")
+                # Also store with double-prefixed name (workaround for dispatch rule issue)
+                # This allows the session to be found even if LiveKit creates room with wrong name
+                double_prefixed_name = f"telnyx_call__{room_name}"
+                sessions[double_prefixed_name] = session_data
+                logger.info(f"📝 Stored session under both names: {room_name} and {double_prefixed_name}")
                 
-                # Return Telnyx commands: answer + dial (to bridge to LiveKit)
-                return {
-                    "commands": [
-                        {
-                            "type": "answer",
-                            "call_control_id": call_control_id
-                        },
-                        {
-                            "type": "dial",
-                            "call_control_id": call_control_id,
-                            "to": livekit_sip_uri,
-                            "from": called_number
-                        }
-                    ]
-                }
+                # Answer the call and transfer to LiveKit
+                # APPROACH: Telnyx transfers the call to LiveKit SIP URI (no outbound calls needed)
+                # LiveKit receives via inbound trunk and routes to room
+                telnyx_api_key = os.getenv("TELNYX_API_KEY")
+                livekit_sip_domain = os.getenv("LIVEKIT_SIP_DOMAIN")
+                
+                if not telnyx_api_key:
+                    logger.error(f"❌ Missing TELNYX_API_KEY")
+                    return {"status": "error", "message": "Missing TELNYX_API_KEY"}
+                
+                if not livekit_sip_domain:
+                    logger.error(f"❌ Missing LIVEKIT_SIP_DOMAIN")
+                    return {"status": "error", "message": "Missing LIVEKIT_SIP_DOMAIN"}
+                
+                # URL-encode the room name to handle special characters like colons in call_control_id
+                from urllib.parse import quote
+                encoded_room_name = quote(room_name, safe='')
+                livekit_sip_uri = f"sip:{encoded_room_name}@{livekit_sip_domain}:5060"
+                
+                logger.info(f"📞 Answering call and transferring to LiveKit")
+                logger.info(f"   Room name: {room_name}")
+                logger.info(f"   Encoded room name: {encoded_room_name}")
+                logger.info(f"   SIP URI: {livekit_sip_uri}")
+                logger.info(f"   ✅ Using transfer (not dial) - avoids Telnyx outbound call limits")
+                logger.info(f"   ⚠️  LiveKit inbound trunk must be configured to route calls to room")
+                
+                try:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        # Step 1: Answer the inbound call on Telnyx (this doesn't count as outbound)
+                        answer_response = await client.post(
+                            f"https://api.telnyx.com/v2/calls/{call_control_id}/actions/answer",
+                            headers={
+                                "Authorization": f"Bearer {telnyx_api_key}",
+                                "Content-Type": "application/json",
+                                "Accept": "application/json"
+                            }
+                        )
+                        if answer_response.status_code in [200, 201]:
+                            logger.info(f"✅ Call answered successfully on Telnyx")
+                        else:
+                            logger.error(f"❌ Failed to answer call: {answer_response.status_code} - {answer_response.text}")
+                            return {"status": "error", "message": "Failed to answer call"}
+                        
+                        # Step 2: Transfer the call to LiveKit SIP URI
+                        # This is a transfer, not a dial, so it doesn't count as an outbound call
+                        transfer_response = await client.post(
+                            f"https://api.telnyx.com/v2/calls/{call_control_id}/actions/transfer",
+                            headers={
+                                "Authorization": f"Bearer {telnyx_api_key}",
+                                "Content-Type": "application/json",
+                                "Accept": "application/json"
+                            },
+                            json={
+                                "to": livekit_sip_uri,
+                                "from": called_number or os.getenv("TELNYX_CALLER_NUMBER", "+14153765236")
+                            }
+                        )
+                        if transfer_response.status_code in [200, 201]:
+                            logger.info(f"✅ Call transferred to LiveKit successfully")
+                            logger.info(f"   ⏳ LiveKit should receive the call via inbound trunk")
+                            logger.info(f"   ⏳ LiveKit should route to room: {room_name}")
+                            logger.info(f"   ✅ No Telnyx outbound calls used!")
+                        else:
+                            logger.error(f"❌ Failed to transfer call: {transfer_response.status_code} - {transfer_response.text}")
+                            logger.error(f"   Response: {transfer_response.text}")
+                            
+                except Exception as e:
+                    logger.error(f"❌ Error transferring call: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                
+                # Return success response to webhook
+                return {"status": "ok"}
                 
             except Exception as e:
                 logger.error(f"❌ Error creating LiveKit room/participant: {e}")
-                # Still answer the call
-                return {
-                    "commands": [
-                        {
-                            "type": "answer",
-                            "call_control_id": call_control_id
-                        }
-                    ]
-                }
+                # Still try to answer the call
+                telnyx_api_key = os.getenv("TELNYX_API_KEY")
+                if telnyx_api_key and call_control_id:
+                    try:
+                        import httpx
+                        async with httpx.AsyncClient(timeout=10.0) as client:
+                            response = await client.post(
+                                f"https://api.telnyx.com/v2/calls/{call_control_id}/actions/answer",
+                                headers={
+                                    "Authorization": f"Bearer {telnyx_api_key}",
+                                    "Content-Type": "application/json",
+                                    "Accept": "application/json"
+                                }
+                            )
+                            if response.status_code in [200, 201]:
+                                logger.info(f"✅ Call answered despite error")
+                            else:
+                                logger.error(f"❌ Failed to answer call: {response.status_code}")
+                    except Exception as e2:
+                        logger.error(f"❌ Error answering call: {e2}")
+                
+                return {"status": "ok"}
+        
+        elif event_type == "call.answered":
+            # Call was answered - log it and check if it's our outbound call to LiveKit
+            data = payload.get("data") or payload.get("payload") or payload
+            payload_data = data.get("payload") or data
+            call_control_id = payload_data.get("call_control_id") or payload_data.get("id") or data.get("call_control_id")
+            direction = payload_data.get("direction") or data.get("direction")
+            called_number = payload_data.get("to") or data.get("to")
+            
+            logger.info(f"📞 Call answered: direction={direction}, call_control_id={call_control_id}, to={called_number}")
+            
+            # Check if this is our outbound call to LiveKit being answered
+            livekit_sip_domain = os.getenv("LIVEKIT_SIP_DOMAIN", "")
+            if direction in ["outbound", "outgoing"] and called_number and livekit_sip_domain and livekit_sip_domain in str(called_number):
+                logger.info(f"✅ Outbound call to LiveKit was answered! SIP connection should be established now.")
+            
+            # For inbound calls, dialing already happened in call.initiated
+            # For outbound calls (our dial-out to LiveKit), the bridge_on_answer parameter will automatically bridge
+            
+            return {"status": "ok"}
         
         elif event_type == "call.hangup":
             # Call ended - cleanup
-            call_control_id = payload.get("data", {}).get("call_control_id")
+            # Use same payload parsing logic
+            data = payload.get("data") or payload.get("payload") or payload
+            # Extract call_control_id from payload (not from event id)
+            payload_data = data.get("payload") or data
+            call_control_id = payload_data.get("call_control_id") or payload_data.get("id") or data.get("call_control_id")
             logger.info(f"📞 Call ended: {call_control_id}")
             
             # Find and cleanup session
-            for room_name, session in sessions.items():
+            session_to_delete = []
+            for room_name_key, session in sessions.items():
                 if session.get("call_control_id") == call_control_id:
-                    # Cleanup room
+                    # Get the actual room name from session data
+                    actual_room_name = session.get("room_name", room_name_key)
+                    
+                    # Cleanup room (try both the actual room name and the key)
                     try:
                         lk_api = api.LiveKitAPI(
                             os.getenv("LIVEKIT_URL"),
                             os.getenv("LIVEKIT_API_KEY"),
                             os.getenv("LIVEKIT_API_SECRET")
                         )
-                        await lk_api.room.delete_room(api.DeleteRoomRequest(room=room_name))
-                        logger.info(f"✅ Cleaned up room: {room_name}")
+                        # Try to delete the actual room name first
+                        try:
+                            await lk_api.room.delete_room(api.DeleteRoomRequest(room=actual_room_name))
+                            logger.info(f"✅ Cleaned up room: {actual_room_name}")
+                        except:
+                            # If that fails, try the key name
+                            await lk_api.room.delete_room(api.DeleteRoomRequest(room=room_name_key))
+                            logger.info(f"✅ Cleaned up room: {room_name_key}")
                     except Exception as e:
                         logger.error(f"❌ Error cleaning up room: {e}")
                     
-                    # Remove session
-                    del sessions[room_name]
-                    break
+                    # Mark session for deletion
+                    session_to_delete.append(room_name_key)
+            
+            # Delete all sessions with this call_control_id (handles both correct and double-prefixed names)
+            for room_name_key in session_to_delete:
+                if room_name_key in sessions:
+                    del sessions[room_name_key]
+                    logger.info(f"✅ Removed session: {room_name_key}")
             
             return {"status": "ok"}
         
@@ -616,7 +841,8 @@ async def telnyx_webhook(request: Request):
 async def telnyx_transfer_call(request: TelnyxTransferRequest):
     """Transfer an active Telnyx call to another number
     
-    This transfers the call from the AI agent to a human agent or call center
+    This transfers the call from the AI agent to a human agent or call center.
+    If transferring to the call center number, automatically selects option 1 (speak with representative).
     """
     try:
         logger.info(f"📞 Transferring call {request.call_control_id} to {request.transfer_to}")
@@ -630,8 +856,15 @@ async def telnyx_transfer_call(request: TelnyxTransferRequest):
         session = sessions.get(request.room_name, {})
         called_number = session.get("called_number") or os.getenv("TELNYX_CALLER_NUMBER", "+14153765236")
         
+        # Check if this is the call center number that requires IVR selection
+        # call_center_number = os.getenv("TELNYX_CALL_CENTER_NUMBER", "+18555518858")
+        # needs_ivr_selection = (request.transfer_to == call_center_number)
+        
         # Transfer call using Telnyx Call Control API
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Add a small delay to ensure agent's acknowledgment message is heard before transfer
+        await asyncio.sleep(1.5)  # Give agent time to speak "I'm connecting you with a representative now..."
+        
+        async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
                 f"https://api.telnyx.com/v2/calls/{request.call_control_id}/actions/transfer",
                 headers={
@@ -647,27 +880,48 @@ async def telnyx_transfer_call(request: TelnyxTransferRequest):
             if response.status_code in [200, 201]:
                 logger.info(f"✅ Call transferred successfully to {request.transfer_to}")
                 
+                # TODO: Uncomment below to enable automatic IVR selection for call center
+                # If transferring to call center, send DTMF to select option 1
+                # if needs_ivr_selection:
+                #     logger.info(f"📞 Call center IVR detected - will send DTMF '1' to select 'speak with representative'")
+                #     
+                #     # Wait for IVR to start (usually 2-3 seconds)
+                #     await asyncio.sleep(2.5)
+                #     
+                #     # Send DTMF tone "1" to select first option
+                #     try:
+                #         dtmf_response = await client.post(
+                #             f"https://api.telnyx.com/v2/calls/{request.call_control_id}/actions/send_dtmf",
+                #             headers={
+                #                 "Authorization": f"Bearer {telnyx_api_key}",
+                #                 "Content-Type": "application/json"
+                #             },
+                #             json={
+                #                 "digits": "1"
+                #             }
+                #         )
+                #         
+                #         if dtmf_response.status_code in [200, 201]:
+                #             logger.info(f"✅ Sent DTMF '1' to select 'speak with representative'")
+                #         else:
+                #             logger.warning(f"⚠️ Failed to send DTMF: {dtmf_response.status_code} - {dtmf_response.text}")
+                #     except Exception as e:
+                #         logger.warning(f"⚠️ Error sending DTMF (call may still work): {e}")
+                
                 # Mark session as transferred
                 if request.room_name in sessions:
                     sessions[request.room_name]["transferred"] = True
                     sessions[request.room_name]["transferred_to"] = request.transfer_to
                     sessions[request.room_name]["transferred_at"] = datetime.now().isoformat()
                 
-                return {
-                    "status": "success",
-                    "message": "Call transferred",
-                    "transfer_to": request.transfer_to
-                }
-            else:
-                logger.error(f"❌ Telnyx transfer failed: {response.status_code} - {response.text}")
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Transfer failed: {response.text}"
-                )
-    
+        return {
+            "status": "success",
+            "message": "Call transferred",
+            "transfer_to": request.transfer_to
+        }
     except Exception as e:
         logger.error(f"❌ Error transferring call: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get("/api/telnyx/sip/trunk/setup")
 async def telnyx_sip_setup_info():

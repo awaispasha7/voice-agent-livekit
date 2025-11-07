@@ -8,7 +8,7 @@ import os
 import random
 import sys
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Set environment variables to control LiveKit logging BEFORE any imports
 os.environ["LIVEKIT_LOG_LEVEL"] = "WARN"
@@ -40,6 +40,14 @@ logging.getLogger("livekit.plugins").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins.cartesia").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins.deepgram").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins.openai").setLevel(logging.WARNING)
+
+# Reduce OpenAI and HTTP client logging verbosity
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("openai._base_client").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpcore.connection").setLevel(logging.WARNING)
+logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
 
 # Reduce asyncio logging
 logging.getLogger("asyncio").setLevel(logging.WARNING)
@@ -120,12 +128,12 @@ class SimpleVoiceAgent(Agent):
     
     
     @function_tool()
-    async def transfer_call_to_human(self, context: RunContext, transfer_number: str = None) -> Dict[str, Any]:
+    async def transfer_call_to_human(self, context: RunContext, transfer_number: Optional[str] = None) -> Dict[str, Any]:
         """Transfer the current phone call to a human agent or phone number.
         
         Args:
             transfer_number: Phone number to transfer to (e.g., "+18555518858"). 
-                           If None, uses default call center number from environment.
+                           Optional - if not provided, uses default call center number from environment.
                            If no transfer number is configured, returns helpful message.
         
         Returns:
@@ -146,9 +154,24 @@ class SimpleVoiceAgent(Agent):
             
             # Get call control ID from session
             import httpx
+            from urllib.parse import quote, unquote
+            
             backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+            
+            # Ensure room name doesn't have double prefix (clean it up)
+            room_name_clean = self.room_name
+            if room_name_clean.startswith("telnyx_call__telnyx_call_"):
+                # Remove double prefix
+                room_name_clean = room_name_clean.replace("telnyx_call__telnyx_call_", "telnyx_call_", 1)
+                logger.warning(f"⚠️ Fixed double-prefixed room name: {self.room_name} -> {room_name_clean}")
+            
+            # URL-encode the room name to handle special characters (colons, etc.)
+            encoded_room_name = quote(room_name_clean, safe='')
+            
+            logger.info(f"📞 Attempting transfer - Room: {room_name_clean}, Encoded: {encoded_room_name}")
+            
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{backend_url}/api/sessions/{self.room_name}")
+                response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
                 if response.status_code == 200:
                     session_data = response.json()
                     call_control_id = session_data.get("call_control_id")
@@ -158,7 +181,7 @@ class SimpleVoiceAgent(Agent):
                         transfer_response = await client.post(
                             f"{backend_url}/api/telnyx/transfer",
                             json={
-                                "room_name": self.room_name,
+                                "room_name": room_name_clean,  # Use cleaned room name
                                 "call_control_id": call_control_id,
                                 "transfer_to": transfer_number
                             }
@@ -171,7 +194,7 @@ class SimpleVoiceAgent(Agent):
                                 "message": f"Connecting you to a representative now..."
                             }
                         else:
-                            logger.error(f"❌ Transfer failed: {transfer_response.status_code}")
+                            logger.error(f"❌ Transfer failed: {transfer_response.status_code} - {transfer_response.text}")
                             return {
                                 "success": False,
                                 "message": "I'm having trouble transferring you. Please hold..."
@@ -183,7 +206,10 @@ class SimpleVoiceAgent(Agent):
                             "message": "Transfer is only available for phone calls."
                         }
                 else:
-                    logger.error(f"❌ Could not get session data: {response.status_code}")
+                    logger.error(f"❌ Could not get session data: {response.status_code} - {response.text}")
+                    logger.error(f"   Original room name: {self.room_name}")
+                    logger.error(f"   Cleaned room name: {room_name_clean}")
+                    logger.error(f"   Encoded room name: {encoded_room_name}")
                     return {
                         "success": False,
                         "message": "Unable to process transfer request."
@@ -419,13 +445,23 @@ async def entrypoint(ctx: JobContext):
     special_instructions = ""  # Default empty special instructions
     
     # Detect if this is a phone call (Telnyx) or web session
-    is_phone_call = ctx.room.name.startswith("telnyx_call_")
+    # Clean up room name in case of double prefix from dispatch rule
+    room_name_clean = ctx.room.name
+    if room_name_clean.startswith("telnyx_call__telnyx_call_"):
+        # Remove double prefix
+        room_name_clean = room_name_clean.replace("telnyx_call__telnyx_call_", "telnyx_call_", 1)
+        logger.warning(f"⚠️ Fixed double-prefixed room name: {ctx.room.name} -> {room_name_clean}")
+    
+    is_phone_call = room_name_clean.startswith("telnyx_call_")
     user_data = {}
     
     try:
         import httpx
+        from urllib.parse import quote
+        # URL-encode room name for API call
+        encoded_room_name = quote(room_name_clean, safe='')
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{backend_url}/api/sessions/{ctx.room.name}")
+            response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
             if response.status_code == 200:
                 session_data = response.json()
                 user_data = session_data.get("user_data", {})
@@ -454,7 +490,7 @@ async def entrypoint(ctx: JobContext):
                 response = await client.post(
                     f"{backend_url}/api/init_livechat",
                     params={
-                        "room_name": ctx.room.name,
+                        "room_name": room_name_clean,  # Use cleaned room name
                         "org_name": org_name,
                         "botchain_name": botchain_name
                     }
@@ -469,8 +505,8 @@ async def entrypoint(ctx: JobContext):
     else:
         logger.info(f"📞 Phone call detected - skipping livechat initialization")
     
-    # Create and start the agent
-    agent = SimpleVoiceAgent(ctx.room.name, botchain_name, org_name, special_instructions)
+    # Create and start the agent (use cleaned room name)
+    agent = SimpleVoiceAgent(room_name_clean, botchain_name, org_name, special_instructions)
     agent.faq_isVoice = faq_isVoice
     
     # Get VAD - with environment variable control for testing
@@ -551,7 +587,7 @@ async def entrypoint(ctx: JobContext):
     
     logger.info("✅ Simple agent started successfully")
     logger.info("=" * 80)
-    logger.info(f"🎯 SESSION READY - Room: {ctx.room.name} | Botchain: {botchain_name} | Org: {org_name}")
+    logger.info(f"🎯 SESSION READY - Room: {room_name_clean} | Botchain: {botchain_name} | Org: {org_name}")
     logger.info("=" * 80)
 
 if __name__ == "__main__":
