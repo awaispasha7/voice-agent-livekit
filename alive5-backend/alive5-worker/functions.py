@@ -111,10 +111,10 @@ async def handle_bedrock_knowledge_base_request(
             return await handle_faq_bot_request(query_text, bot_id=faq_bot_id, isVoice=True, waiting_callback=waiting_callback)
         
         logger.info(f"🔧 Bedrock Knowledge Base request: {query_text}")
-        if faq_bot_id:
-            logger.info(f"   Filtering by FAQ bot ID (orgbot_name): {faq_bot_id}")
-        if org_name:
-            logger.info(f"   Filtering by org_name: {org_name}")
+        # if faq_bot_id:
+        #     logger.info(f"   Filtering by FAQ bot ID (orgbot_name): {faq_bot_id}")
+        # if org_name:
+        #     logger.info(f"   Filtering by org_name: {org_name}")
         
         # if waiting_callback:
         #     await waiting_callback("Let me check that for you...")
@@ -182,6 +182,37 @@ async def handle_bedrock_knowledge_base_request(
         retrieval_results = response.get('retrievalResults', [])
         
         if retrieval_results:
+            # Log metadata for each result
+            logger.info(f"✅ Bedrock Knowledge Base response received ({len(retrieval_results)} results)")
+            logger.info(f"📊 Results metadata:")
+            
+            for i, result in enumerate(retrieval_results, 1):
+                metadata = result.get('metadata', {})
+                score = result.get('score', 0)
+                orgbot_name = metadata.get('orgbot_name', 'N/A')
+                org_name_meta = metadata.get('org_name', 'N/A')
+                reference_url = metadata.get('reference_url', 'N/A')
+                
+                logger.info(f"   Result {i}:")
+                logger.info(f"      - Score: {score:.4f}")
+                logger.info(f"      - orgbot_name: {orgbot_name}")
+                logger.info(f"      - org_name: {org_name_meta}")
+                logger.info(f"      - reference_url: {reference_url}")
+                
+                # Log if filter matched (if filters were applied)
+                if faq_bot_id:
+                    expected_orgbot = faq_bot_id if faq_bot_id.startswith("faq_") else f"faq_{faq_bot_id}"
+                    if orgbot_name == expected_orgbot:
+                        logger.info(f"      ✅ Filter match: orgbot_name matches filter")
+                    else:
+                        logger.warning(f"      ⚠️ Filter mismatch: expected '{expected_orgbot}', got '{orgbot_name}'")
+                
+                if org_name and org_name_meta:
+                    if org_name_meta == org_name:
+                        logger.info(f"      ✅ Filter match: org_name matches filter")
+                    else:
+                        logger.warning(f"      ⚠️ Filter mismatch: expected '{org_name}', got '{org_name_meta}'")
+            
             # Combine all retrieved content into a single answer
             # Take the top result(s) and format for voice
             combined_text = ""
@@ -192,9 +223,6 @@ async def handle_bedrock_knowledge_base_request(
                         combined_text += " "  # Add space between results
                     combined_text += content
             
-            # Format response similar to FAQ API format for compatibility
-            logger.info(f"✅ Bedrock Knowledge Base response received ({len(retrieval_results)} results)")
-            
             # Log the actual response content (truncated if too long)
             response_preview = combined_text.strip()
             # if len(response_preview) > 500:
@@ -202,9 +230,9 @@ async def handle_bedrock_knowledge_base_request(
             # else:
             #     logger.info(f"📄 Response content: {response_preview}")
 
-            logger.info(f"📄 Response content: {response_preview}")
+            # logger.info(f"📄 Response content: {response_preview}")
             
-            # # Log individual results summary
+            # Log individual results summary
             # for i, result in enumerate(retrieval_results[:3], 1):
             #     content = result.get('content', {}).get('text', '')
             #     score = result.get('score', 0)

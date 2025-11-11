@@ -108,6 +108,8 @@ class SimpleVoiceAgent(Agent):
         self.room = None
         self.selected_voice = "e90c6678-f0d3-4767-9883-5d0ecf5894a8"  # Default voice
         self._turn_detection = None  # Required by Agent class
+        # Initialize FAQ bot ID to None - will be set during entrypoint
+        self.faq_bot_id = None
         
         # Flow management
         self.bot_template = None
@@ -340,8 +342,25 @@ class SimpleVoiceAgent(Agent):
         """
         # logger.info(f"🔧 FAQ bot request: {faq_question}")
         
-        # Use dynamic FAQ bot ID from session data if not provided
-        if bot_id is None:
+        # Use dynamic FAQ bot ID from agent instance or session data if not provided
+        # CRITICAL: Always use the stored FAQ bot ID from agent instance, ignore LLM-provided bot_id
+        # The LLM should NOT be providing bot_id - it should always be None
+        logger.info(f"🔍 FAQ bot ID check - LLM provided bot_id: {bot_id}, type: {type(bot_id)}")
+        
+        # CRITICAL: Check agent instance attribute directly - this is the source of truth
+        stored_faq_bot_id = getattr(self, 'faq_bot_id', None)
+        logger.info(f"🔍 FAQ bot ID check - stored value on agent: {stored_faq_bot_id}, type: {type(stored_faq_bot_id)}")
+        
+        # ALWAYS use stored FAQ bot ID from agent instance if available (ignore LLM-provided bot_id)
+        if stored_faq_bot_id and stored_faq_bot_id.strip():
+            bot_id = stored_faq_bot_id
+            logger.info(f"🤖 Using FAQ bot ID from agent instance: {bot_id}")
+        elif bot_id and bot_id.strip():
+            # If LLM provided a bot_id and we don't have one stored, use it (but log warning)
+            logger.warning(f"⚠️ Using LLM-provided bot_id (no stored value): {bot_id}")
+        else:
+            logger.warning(f"⚠️ FAQ bot ID not available on agent instance (value: {stored_faq_bot_id}), fetching from session data...")
+            # Fallback: fetch from session data
             bot_id = await self._get_faq_bot_id()
         
         # Use agent's faq_isVoice if isVoice not specified
@@ -353,21 +372,32 @@ class SimpleVoiceAgent(Agent):
             if hasattr(self, "agent_session") and self.agent_session:
                 await self.agent_session.say(message)
         
-        # Get org_name from session data for filtering
+        # Get org_name from agent instance (set during initialization) or session data
         org_name = None
-        try:
-            import httpx
-            from urllib.parse import quote
-            backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
-            encoded_room_name = quote(self.room_name, safe='')
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
-                if response.status_code == 200:
-                    session_data = response.json()
-                    user_data = session_data.get("user_data", {})
-                    org_name = user_data.get("org_name")
-        except Exception as e:
-            logger.debug(f"Could not fetch org_name for filtering: {e}")
+        if hasattr(self, 'org_name') and self.org_name:
+            org_name = self.org_name
+            logger.debug(f"Using org_name from agent instance: {org_name}")
+        else:
+            # Fallback: fetch from session data
+            try:
+                import httpx
+                from urllib.parse import quote
+                backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+                encoded_room_name = quote(self.room_name, safe='')
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
+                    if response.status_code == 200:
+                        session_data = response.json()
+                        user_data = session_data.get("user_data", {})
+                        org_name = user_data.get("org_name")
+                        if org_name:
+                            # Store it on the agent instance for future use
+                            self.org_name = org_name
+            except Exception as e:
+                logger.debug(f"Could not fetch org_name for filtering: {e}")
+        
+        # Log the FAQ bot ID and org_name being used
+        logger.info(f"🔍 FAQ request - Bot ID: {bot_id}, Org Name: {org_name}")
         
         # Try Bedrock Knowledge Base first (faster), fallback to FAQ API if needed
         # Pass FAQ bot ID and org_name for filtering
@@ -401,23 +431,40 @@ class SimpleVoiceAgent(Agent):
         return "f114a467-c40a-4db8-964d-aaba89cd08fa"  # Miles - Yogi (same as working system)
     
     async def _get_faq_bot_id(self):
-        """Get FAQ bot ID from session data"""
+        """Get FAQ bot ID from agent instance or session data"""
+        # First check if it's stored on the agent instance (set during initialization)
+        if hasattr(self, 'faq_bot_id') and self.faq_bot_id:
+            logger.info(f"🤖 Using FAQ bot from agent instance: {self.faq_bot_id}")
+            return self.faq_bot_id
+        
+        # Fallback: fetch from session data via backend API
         try:
             if not self.room_name:
+                logger.warning("⚠️ No room name available, using default FAQ bot")
                 return "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"  # Default FAQ bot
             
             import httpx
+            from urllib.parse import quote
             backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+            encoded_room_name = quote(self.room_name, safe='')
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{backend_url}/api/sessions/{self.room_name}")
+                response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
                 if response.status_code == 200:
                     data = response.json()
                     faq_bot_id = data.get("user_data", {}).get("faq_bot_id")
                     if faq_bot_id:
-                        logger.info(f"🤖 Using FAQ bot: {faq_bot_id}")
+                        logger.info(f"🤖 Using FAQ bot from session data: {faq_bot_id}")
+                        # Store it on the agent instance for future use
+                        self.faq_bot_id = faq_bot_id
                         return faq_bot_id
+                    else:
+                        logger.warning(f"⚠️ FAQ bot ID not found in session data for room: {self.room_name}")
+                else:
+                    logger.warning(f"⚠️ Failed to fetch session data: {response.status_code}")
         except Exception as e:
-            logger.error(f"Failed to get FAQ bot ID: {e}")
+            logger.error(f"❌ Failed to get FAQ bot ID: {e}")
+        
+        logger.warning("⚠️ Using default FAQ bot ID")
         return "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"  # Default FAQ bot
     
     async def on_room_enter(self, room):
@@ -587,8 +634,23 @@ async def entrypoint(ctx: JobContext):
         botchain_name = user_data.get("botchain_name", "voice-1")
         org_name = user_data.get("org_name", "alive5stage0")
         faq_bot_id = user_data.get("faq_bot_id")  # FAQ bot ID for Bedrock filtering
+        
+        # Validate and log FAQ bot ID
+        if not faq_bot_id or faq_bot_id.strip() == "":
+            logger.warning(f"⚠️ FAQ bot ID is None or empty in session data, using default")
+            faq_bot_id = "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"  # Default FAQ bot
+        else:
+            logger.info(f"✅ FAQ bot ID found in session data: {faq_bot_id}")
+        
         faq_isVoice = user_data.get("faq_isVoice", True)  # Default to concise responses
         special_instructions = user_data.get("special_instructions", "")  # Load special instructions
+        
+        # Log configuration for debugging
+        logger.info(f"📋 Session configuration loaded:")
+        logger.info(f"   - Botchain: {botchain_name}")
+        logger.info(f"   - Org Name: {org_name}")
+        logger.info(f"   - FAQ Bot ID: {faq_bot_id}")
+        logger.info(f"   - FAQ IsVoice: {faq_isVoice}")
         
         # Connect to the room first - using same approach as working implementation
         await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
@@ -619,6 +681,19 @@ async def entrypoint(ctx: JobContext):
         # Create and start the agent (use cleaned room name)
         agent = SimpleVoiceAgent(room_name_clean, botchain_name, org_name, special_instructions)
         agent.faq_isVoice = faq_isVoice
+        # Store FAQ bot ID and org_name on agent instance for easy access
+        # IMPORTANT: Ensure faq_bot_id is not None before storing
+        logger.info(f"🔍 About to store FAQ bot ID: {faq_bot_id} (type: {type(faq_bot_id)})")
+        if faq_bot_id and faq_bot_id.strip():
+            agent.faq_bot_id = faq_bot_id
+            logger.info(f"💾 Stored FAQ bot ID on agent instance: {agent.faq_bot_id}")
+            logger.info(f"   - Verification: hasattr(agent, 'faq_bot_id') = {hasattr(agent, 'faq_bot_id')}")
+            logger.info(f"   - Verification: agent.faq_bot_id = {getattr(agent, 'faq_bot_id', 'NOT_SET')}")
+        else:
+            logger.warning(f"⚠️ FAQ bot ID is None or empty (value: {faq_bot_id}), not storing on agent instance")
+            agent.faq_bot_id = None  # Explicitly set to None so we know it's missing
+        agent.org_name = org_name  # Store org_name on agent for Bedrock filtering
+        logger.info(f"💾 Stored org_name on agent instance: {agent.org_name}")
         
         # Get VAD - with environment variable control for testing
         # For phone calls, VAD can sometimes be less reliable due to network latency
@@ -691,8 +766,6 @@ async def entrypoint(ctx: JobContext):
             vad=vad,
             turn_detection=None
         )
-        
-        
         
         # Set the agent's room and session
         agent.room = ctx.room
