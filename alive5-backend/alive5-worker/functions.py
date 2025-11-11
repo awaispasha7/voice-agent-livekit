@@ -1,5 +1,5 @@
 """
-Function Definitions and Handlers for Alive5 Voice Agent
+Function Definitions and Handlers for Voice Agent
 """
 
 import json
@@ -27,12 +27,12 @@ FAQ_BOT_ID = os.getenv("FAQ_BOT_ID", "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e")
 # ============================================================================
 
 async def handle_load_bot_flows(botchain_name: str, org_name: str = "alive5stage0") -> Dict[str, Any]:
-    """Load Alive5 bot flow definitions dynamically"""
+    """Load bot flow definitions dynamically"""
     try:
         if not A5_BASE_URL or not A5_API_KEY:
             return {
                 "success": False,
-                "error": "Missing Alive5 API configuration"
+                "error": "Missing API configuration"
             }
         
         logger.info(f"🔧 Loading bot flows for {botchain_name}")
@@ -75,91 +75,186 @@ async def handle_load_bot_flows(botchain_name: str, org_name: str = "alive5stage
 async def handle_bedrock_knowledge_base_request(
     query_text: str,
     max_results: int = 5,
-    waiting_callback = None
+    waiting_callback = None,
+    faq_bot_id: str = None,
+    org_name: str = None
 ) -> Dict[str, Any]:
-    """Call Amazon Bedrock Knowledge Base directly (faster than Alive5 API wrapper)"""
+    """Call Amazon Bedrock Knowledge Base directly using boto3 (faster than FAQ API wrapper)
+    
+    Args:
+        query_text: The user's question
+        max_results: Maximum number of results to return
+        waiting_callback: Optional callback to notify user while waiting
+        faq_bot_id: FAQ bot ID to filter by (orgbot_name in metadata). If None, no filter is applied.
+        org_name: Organization name to filter by (org_name in metadata). Optional, can be used with faq_bot_id.
+    """
     try:
-        bedrock_api_key = os.getenv("BEDROCK_API_KEY")
-        knowledge_base_id = os.getenv("BEDROCK_KNOWLEDGE_BASE_ID", "2CFKDFOXVH")
-        bedrock_endpoint = os.getenv("BEDROCK_ENDPOINT", "https://bedrock-agent-runtime.us-east-1.amazonaws.com")
-        
-        if not bedrock_api_key:
-            logger.warning("⚠️ BEDROCK_API_KEY not set, falling back to Alive5 FAQ API")
+        # Check if boto3 is available
+        try:
+            import boto3
+            from botocore.exceptions import ClientError, BotoCoreError
+        except ImportError:
+            logger.warning("⚠️ boto3 not installed, falling back to FAQ API")
+            logger.info("   Install with: pip install boto3")
             return await handle_faq_bot_request(query_text, isVoice=True, waiting_callback=waiting_callback)
         
+        knowledge_base_id = os.getenv("BEDROCK_KNOWLEDGE_BASE_ID", "2CFKDFOXVH")
+        
+        # Get AWS credentials from environment
+        aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+        aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+        aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+        
+        if not aws_access_key_id or not aws_secret_access_key:
+            logger.warning("⚠️ AWS credentials not set, falling back to FAQ API")
+            logger.info("   Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env")
+            return await handle_faq_bot_request(query_text, bot_id=faq_bot_id, isVoice=True, waiting_callback=waiting_callback)
+        
         logger.info(f"🔧 Bedrock Knowledge Base request: {query_text}")
+        if faq_bot_id:
+            logger.info(f"   Filtering by FAQ bot ID (orgbot_name): {faq_bot_id}")
+        if org_name:
+            logger.info(f"   Filtering by org_name: {org_name}")
         
-        if waiting_callback:
-            await waiting_callback("Let me check that for you...")
+        # if waiting_callback:
+        #     await waiting_callback("Let me check that for you...")
         
-        url = f"{bedrock_endpoint}/knowledgebases/{knowledge_base_id}/retrieve"
+        # Create Bedrock Runtime client with explicit credentials
+        # boto3 will use these credentials and handle AWS Signature V4 automatically
+        bedrock_runtime = boto3.client(
+            'bedrock-agent-runtime',
+            region_name=aws_region,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key
+        )
         
-        headers = {
-            'Authorization': f'Bearer {bedrock_api_key}',
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        }
-        
-        payload = {
-            "retrievalQuery": {
-                "text": query_text
-            },
-            "retrievalConfiguration": {
-                "vectorSearchConfiguration": {
-                    "numberOfResults": max_results
-                }
+        # Build retrieval configuration with optional filters
+        retrieval_config = {
+            'vectorSearchConfiguration': {
+                'numberOfResults': max_results
             }
         }
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, headers=headers, json=payload)
+        # Add filter if FAQ bot ID is provided
+        # According to AWS docs: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_agent-runtime_RetrievalFilter.html
+        # We can filter by metadata attributes using RetrievalFilter
+        if faq_bot_id or org_name:
+            filters = []
             
-            if response.status_code == 200:
-                data = response.json()
-                retrieval_results = data.get('retrievalResults', [])
-                
-                if retrieval_results:
-                    # Combine all retrieved content into a single answer
-                    # Take the top result(s) and format for voice
-                    combined_text = ""
-                    for i, result in enumerate(retrieval_results[:3]):  # Use top 3 results
-                        content = result.get('content', {}).get('text', '')
-                        if content:
-                            if i > 0:
-                                combined_text += " "  # Add space between results
-                            combined_text += content
-                    
-                    # Format response similar to Alive5 API format for compatibility
-                    logger.info(f"✅ Bedrock Knowledge Base response received ({len(retrieval_results)} results)")
-                    return {
-                        "success": True,
-                        "data": {
-                            "answer": combined_text.strip(),
-                            "urls": [],  # Bedrock doesn't return URLs in this format
-                            "source": "bedrock_knowledge_base"
-                        }
+            # Filter by orgbot_name (FAQ bot ID) if provided
+            if faq_bot_id:
+                # Ensure FAQ bot ID is in the correct format (with "faq_" prefix if needed)
+                orgbot_name = faq_bot_id if faq_bot_id.startswith("faq_") else f"faq_{faq_bot_id}"
+                filters.append({
+                    'equals': {
+                        'key': 'orgbot_name',
+                        'value': orgbot_name
                     }
-                else:
-                    logger.info("ℹ️ No results found in Bedrock Knowledge Base")
-                    return {
-                        "success": True,
-                        "data": {
-                            "answer": None,
-                            "urls": [],
-                            "source": "bedrock_knowledge_base"
-                        }
+                })
+            
+            # Filter by org_name if provided (can be combined with orgbot_name using andAll)
+            if org_name:
+                filters.append({
+                    'equals': {
+                        'key': 'org_name',
+                        'value': org_name
                     }
-            else:
-                logger.error(f"❌ Bedrock API error: {response.status_code} - {response.text}")
-                # Fallback to Alive5 API if Bedrock fails
-                logger.info("🔄 Falling back to Alive5 FAQ API...")
-                return await handle_faq_bot_request(query_text, isVoice=True, waiting_callback=waiting_callback)
-                
+                })
+            
+            # If multiple filters, combine them with andAll
+            if len(filters) == 1:
+                retrieval_config['vectorSearchConfiguration']['filter'] = filters[0]
+            elif len(filters) > 1:
+                retrieval_config['vectorSearchConfiguration']['filter'] = {
+                    'andAll': filters
+                }
+        
+        # Call the retrieve API
+        response = bedrock_runtime.retrieve(
+            knowledgeBaseId=knowledge_base_id,
+            retrievalQuery={
+                'text': query_text
+            },
+            retrievalConfiguration=retrieval_config
+        )
+        
+        # Process results
+        retrieval_results = response.get('retrievalResults', [])
+        
+        if retrieval_results:
+            # Combine all retrieved content into a single answer
+            # Take the top result(s) and format for voice
+            combined_text = ""
+            for i, result in enumerate(retrieval_results[:3]):  # Use top 3 results
+                content = result.get('content', {}).get('text', '')
+                if content:
+                    if i > 0:
+                        combined_text += " "  # Add space between results
+                    combined_text += content
+            
+            # Format response similar to FAQ API format for compatibility
+            logger.info(f"✅ Bedrock Knowledge Base response received ({len(retrieval_results)} results)")
+            
+            # Log the actual response content (truncated if too long)
+            response_preview = combined_text.strip()
+            # if len(response_preview) > 500:
+            #     logger.info(f"📄 Response content (first 500 chars): {response_preview[:500]}...")
+            # else:
+            #     logger.info(f"📄 Response content: {response_preview}")
+
+            logger.info(f"📄 Response content: {response_preview}")
+            
+            # # Log individual results summary
+            # for i, result in enumerate(retrieval_results[:3], 1):
+            #     content = result.get('content', {}).get('text', '')
+            #     score = result.get('score', 0)
+            #     if content:
+            #         content_preview = content[:200] + "..." if len(content) > 200 else content
+            #         logger.info(f"   Result {i} (score: {score:.4f}): {content_preview}")
+            
+            # Note: The combined_text may contain raw RAG data with metadata, timestamps, IDs, etc.
+            # The LLM will process and summarize this in the system prompt
+            return {
+                "success": True,
+                "data": {
+                    "answer": combined_text.strip(),
+                    "urls": [],  # Bedrock doesn't return URLs in this format
+                    "source": "bedrock_knowledge_base",
+                    "needs_summarization": True  # Flag to indicate this is RAG data that needs processing
+                }
+            }
+        else:
+            logger.info("ℹ️ No results found in Bedrock Knowledge Base")
+            return {
+                "success": True,
+                "data": {
+                    "answer": None,
+                    "urls": [],
+                    "source": "bedrock_knowledge_base"
+                }
+            }
+            
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        error_message = e.response['Error']['Message']
+        logger.error(f"❌ Bedrock API error ({error_code}): {error_message}")
+        # Fallback to FAQ API if Bedrock fails
+        logger.info("🔄 Falling back to FAQ API...")
+        return await handle_faq_bot_request(query_text, bot_id=faq_bot_id, isVoice=True, waiting_callback=waiting_callback)
+        
+    except BotoCoreError as e:
+        logger.error(f"❌ boto3 error: {e}")
+        # Fallback to FAQ API if boto3 fails
+        logger.info("🔄 Falling back to FAQ API...")
+        return await handle_faq_bot_request(query_text, bot_id=faq_bot_id, isVoice=True, waiting_callback=waiting_callback)
+        
     except Exception as e:
-        logger.error(f"❌ Error calling Bedrock Knowledge Base: {e}")
-        # Fallback to Alive5 API if Bedrock fails
-        logger.info("🔄 Falling back to Alive5 FAQ API...")
-        return await handle_faq_bot_request(query_text, isVoice=True, waiting_callback=waiting_callback)
+        logger.error(f"❌ Unexpected error calling Bedrock Knowledge Base: {e}")
+        import traceback
+        logger.error(f"   Traceback: {traceback.format_exc()}")
+        # Fallback to FAQ API if anything else fails
+        logger.info("🔄 Falling back to FAQ API...")
+        return await handle_faq_bot_request(query_text, bot_id=faq_bot_id, isVoice=True, waiting_callback=waiting_callback)
 
 
 async def handle_faq_bot_request(
@@ -168,7 +263,7 @@ async def handle_faq_bot_request(
     isVoice: bool = True,
     waiting_callback = None
 ) -> Dict[str, Any]:
-    """Call the Alive5 FAQ bot API (fallback method)"""
+    """Call the FAQ bot API (fallback method)"""
     try:
         if not A5_BASE_URL or not A5_API_KEY:
             return {
@@ -176,10 +271,10 @@ async def handle_faq_bot_request(
                 "error": "FAQ API not configured"
             }
         
-        logger.info(f"🔧 FAQ bot request (Alive5 API): {faq_question}")
+        logger.info(f"🔧 FAQ bot request: {faq_question}")
         
         if waiting_callback:
-            await waiting_callback("Please wait while I fetch the information from the Alive5 website...")
+            await waiting_callback("Please wait while I fetch the information...")
         
         # Create a task for the HTTP request
         import asyncio

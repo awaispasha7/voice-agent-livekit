@@ -144,11 +144,52 @@ async def get_connection_details(request: ConnectionDetailsRequest):
         # Create or get room
         room_name = request.room_name
         
-        # Use provided values or defaults
+        # Use provided values from frontend or defaults
         selected_voice_id = request.selected_voice or list(AVAILABLE_VOICES.keys())[0]
         selected_voice_name = AVAILABLE_VOICES.get(selected_voice_id, "Unknown Voice")
         faq_bot_id = request.faq_bot_id or "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"
         org_name = request.org_name or "alive5stage0"
+        
+        logger.info(f"🌐 Web session configuration from frontend:")
+        logger.info(f"   - Org Name: {org_name}")
+        logger.info(f"   - FAQ Bot ID: {faq_bot_id}")
+        logger.info(f"   - Botchain: {request.botchain_name}")
+        
+        # Get LiveKit credentials
+        livekit_url = os.getenv("LIVEKIT_URL")
+        livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+        livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+        
+        if not all([livekit_url, livekit_api_key, livekit_api_secret]):
+            raise HTTPException(status_code=500, detail="LiveKit configuration missing")
+        
+        # CRITICAL: Create the LiveKit room BEFORE returning connection details
+        # This ensures the room exists and the worker can be dispatched when the frontend connects
+        # This is the same approach used for phone calls (line 593)
+        lk_api = api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret)
+        
+        try:
+            # Create room (or get existing room)
+            room = await lk_api.room.create_room(
+                api.CreateRoomRequest(
+                    name=room_name,
+                    empty_timeout=300,  # 5 minutes
+                    max_participants=10  # Allow multiple participants for web sessions
+                )
+            )
+            logger.info(f"✅ Created LiveKit room for web session: {room_name}")
+        except Exception as room_error:
+            # Room might already exist, which is fine
+            logger.debug(f"Room {room_name} might already exist: {room_error}")
+            # Try to get existing room info
+            try:
+                rooms = await lk_api.room.list_rooms(api.ListRoomsRequest(names=[room_name]))
+                if rooms.rooms:
+                    logger.info(f"✅ Room {room_name} already exists")
+                else:
+                    logger.warning(f"⚠️ Could not create or find room {room_name}, but continuing...")
+            except Exception as list_error:
+                logger.warning(f"⚠️ Could not verify room existence: {list_error}, but continuing...")
         
         # Store session data
         sessions[room_name] = {
@@ -165,14 +206,6 @@ async def get_connection_details(request: ConnectionDetailsRequest):
             },
             "created_at": datetime.now().isoformat()
         }
-        
-        # Get LiveKit connection details
-        livekit_url = os.getenv("LIVEKIT_URL")
-        livekit_api_key = os.getenv("LIVEKIT_API_KEY")
-        livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
-        
-        if not all([livekit_url, livekit_api_key, livekit_api_secret]):
-            raise HTTPException(status_code=500, detail="LiveKit configuration missing")
         
         # Create room token
         token = api.AccessToken(livekit_api_key, livekit_api_secret)
@@ -619,6 +652,16 @@ async def telnyx_webhook(request: Request):
                     else:
                         logger.info(f"🎤 Using default voice (first available): {selected_voice_name} ({selected_voice_id})")
                 
+                # Get phone call configuration from .env
+                phone_org_name = os.getenv("TELNYX_DEFAULT_ORG", "alive5stage0")
+                phone_faq_bot_id = os.getenv("TELNYX_DEFAULT_FAQ_BOT", "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e")
+                phone_botchain = os.getenv("TELNYX_DEFAULT_BOTCHAIN", "voice-1")
+                
+                logger.info(f"📞 Phone call configuration from .env:")
+                logger.info(f"   - Org Name: {phone_org_name}")
+                logger.info(f"   - FAQ Bot ID: {phone_faq_bot_id}")
+                logger.info(f"   - Botchain: {phone_botchain}")
+                
                 # Store call session
                 session_data = {
                     "room_name": room_name,
@@ -627,12 +670,12 @@ async def telnyx_webhook(request: Request):
                     "caller_number": caller_number,
                     "called_number": called_number,
                     "user_data": {
-                        "botchain_name": os.getenv("TELNYX_DEFAULT_BOTCHAIN", "voice-1"),
-                        "org_name": os.getenv("TELNYX_DEFAULT_ORG", "alive5stage0"),
+                        "botchain_name": phone_botchain,
+                        "org_name": phone_org_name,
                         "faq_isVoice": True,
                         "selected_voice": selected_voice_id,
                         "selected_voice_name": selected_voice_name,
-                        "faq_bot_id": os.getenv("TELNYX_DEFAULT_FAQ_BOT", "faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e"),
+                        "faq_bot_id": phone_faq_bot_id,
                         "special_instructions": "",
                         "source": "telnyx_phone"
                     },
@@ -859,8 +902,8 @@ async def telnyx_transfer_call(request: TelnyxTransferRequest):
         # needs_ivr_selection = (request.transfer_to == call_center_number)
         
         # Transfer call using Telnyx Call Control API
-        # Add a small delay to ensure agent's acknowledgment message is heard before transfer
-        await asyncio.sleep(1.5)  # Give agent time to speak "I'm connecting you with a representative now..."
+        # Note: The agent will speak acknowledgment BEFORE calling this endpoint
+        # So we don't need a delay here - the agent handles the timing
         
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
@@ -911,6 +954,33 @@ async def telnyx_transfer_call(request: TelnyxTransferRequest):
                     sessions[request.room_name]["transferred"] = True
                     sessions[request.room_name]["transferred_to"] = request.transfer_to
                     sessions[request.room_name]["transferred_at"] = datetime.now().isoformat()
+                
+                # Close LiveKit room after successful transfer to stop the agent session
+                # The call is now with the human agent, so the AI agent should stop listening
+                # Add delay to allow agent's acknowledgment message to be spoken before closing room
+                await asyncio.sleep(3.0)  # Give agent time to speak "I'm connecting you with a representative now..."
+                
+                try:
+                    livekit_url = os.getenv("LIVEKIT_URL")
+                    livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+                    livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+                    
+                    if all([livekit_url, livekit_api_key, livekit_api_secret]):
+                        lk_api = api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret)
+                        try:
+                            await lk_api.room.delete_room(api.DeleteRoomRequest(room=request.room_name))
+                            logger.info(f"✅ Closed LiveKit room after transfer: {request.room_name}")
+                        except Exception as e:
+                            # Check if it's a "not found" error - that's fine, room already closed
+                            if "not_found" in str(e).lower() or "does not exist" in str(e).lower():
+                                logger.debug(f"ℹ️ Room {request.room_name} already closed (not found)")
+                            else:
+                                logger.warning(f"⚠️ Could not close LiveKit room after transfer: {e}")
+                    else:
+                        logger.warning("⚠️ LiveKit credentials not configured - cannot close room after transfer")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error closing LiveKit room after transfer: {e}")
+                    # Don't fail the transfer if room cleanup fails
                 
         return {
             "status": "success",

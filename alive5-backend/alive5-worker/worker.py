@@ -1,5 +1,5 @@
 """
-Alive5 Simple Voice Agent - Single LLM with Function Calling
+Voice Agent - Single LLM with Function Calling (Brand-Agnostic)
 """
 
 import asyncio
@@ -33,7 +33,8 @@ load_dotenv(Path(__file__).parent / "../../.env")
 # Create our logger
 logger = logging.getLogger("simple-agent")
 
-# Reduce LiveKit agent logging verbosity
+# Reduce LiveKit agent logging verbosity (but keep worker connection logs)
+logging.getLogger("livekit.agents.worker").setLevel(logging.INFO)  # Keep worker connection logs
 logging.getLogger("livekit.agents").setLevel(logging.WARNING)
 logging.getLogger("livekit").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins").setLevel(logging.WARNING)
@@ -48,6 +49,19 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpcore.connection").setLevel(logging.WARNING)
 logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
+
+# Reduce boto3/botocore logging verbosity (AWS SDK)
+logging.getLogger("boto3").setLevel(logging.WARNING)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("botocore.hooks").setLevel(logging.WARNING)
+logging.getLogger("botocore.loaders").setLevel(logging.WARNING)
+logging.getLogger("botocore.auth").setLevel(logging.WARNING)
+logging.getLogger("botocore.endpoint").setLevel(logging.WARNING)
+logging.getLogger("botocore.httpsession").setLevel(logging.WARNING)
+logging.getLogger("botocore.parsers").setLevel(logging.WARNING)
+logging.getLogger("botocore.retryhandler").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
 
 # Reduce asyncio logging
 logging.getLogger("asyncio").setLevel(logging.WARNING)
@@ -134,11 +148,11 @@ class SimpleVoiceAgent(Agent):
     
     @function_tool()
     async def load_bot_flows(self, context: RunContext, botchain_name: str, org_name: str) -> Dict[str, Any]:
-        """Load Alive5 bot flow definitions dynamically. MUST be called on startup before first user interaction.
+        """Load bot flow definitions dynamically. MUST be called on startup before first user interaction.
         
         Args:
             botchain_name: The botchain name (e.g., 'voice-1')
-            org_name: The organization name (default: 'alive5stage0')
+            org_name: The organization name
         """
         # logger.info(f"🔧 Loading bot flows for {botchain_name}")
         return await handle_load_bot_flows(botchain_name, org_name)
@@ -148,13 +162,17 @@ class SimpleVoiceAgent(Agent):
     async def transfer_call_to_human(self, context: RunContext, transfer_number: Optional[str] = None) -> Dict[str, Any]:
         """Transfer the current phone call to a human agent or phone number.
         
+        **IMPORTANT: This function only works for phone calls, not web sessions.**
+        For web sessions, it will return a message explaining that transfer is not available.
+        
         Args:
             transfer_number: Phone number to transfer to (e.g., "+18555518858"). 
                            Optional - if not provided, uses default call center number from environment.
                            If no transfer number is configured, returns helpful message.
         
         Returns:
-            Success status and message
+            Success status and message. If this is a web session (no call_control_id), 
+            returns success=False with message explaining transfer is not available for web interface.
         """
         try:
             # Get transfer number or use default
@@ -166,6 +184,7 @@ class SimpleVoiceAgent(Agent):
                     logger.warning("⚠️ No TELNYX_CALL_CENTER_NUMBER configured - transfer not available")
                     return {
                         "success": False,
+                        "is_web_session": False,
                         "message": "I'm sorry, call transfers are not currently configured. Is there anything else I can help you with?"
                     }
             
@@ -192,35 +211,60 @@ class SimpleVoiceAgent(Agent):
                 if response.status_code == 200:
                     session_data = response.json()
                     call_control_id = session_data.get("call_control_id")
+                    source = session_data.get("user_data", {}).get("source")
+                    
+                    # Check if this is a web session (no call_control_id or source is not telnyx_phone)
+                    if not call_control_id or source != "telnyx_phone":
+                        logger.info("ℹ️ Transfer requested for web session - not available")
+                        return {
+                            "success": False,
+                            "is_web_session": True,
+                            "message": "I'm sorry, call transfers are only available for phone calls, not through this web interface. Is there anything else I can help you with today?"
+                        }
                     
                     if call_control_id:
-                        # Transfer call via backend
-                        transfer_response = await client.post(
-                            f"{backend_url}/api/telnyx/transfer",
-                            json={
-                                "room_name": room_name_clean,  # Use cleaned room name
-                                "call_control_id": call_control_id,
-                                "transfer_to": transfer_number
-                            }
-                        )
+                        # Return success immediately so agent can speak acknowledgment first
+                        # The actual transfer will happen in the background after a delay
+                        logger.info(f"📞 Transfer requested - will execute after agent speaks acknowledgment")
                         
-                        if transfer_response.status_code == 200:
-                            logger.info(f"✅ Call transferred to {transfer_number}")
-                            return {
-                                "success": True,
-                                "message": f"Connecting you to a representative now..."
-                            }
-                        else:
-                            logger.error(f"❌ Transfer failed: {transfer_response.status_code} - {transfer_response.text}")
-                            return {
-                                "success": False,
-                                "message": "I'm having trouble transferring you. Please hold..."
-                            }
+                        # Schedule the transfer to happen after agent speaks (in background)
+                        import asyncio
+                        async def execute_transfer_after_delay():
+                            # Wait for agent to speak acknowledgment (3-4 seconds should be enough)
+                            await asyncio.sleep(4.0)
+                            try:
+                                async with httpx.AsyncClient(timeout=15.0) as transfer_client:
+                                    transfer_response = await transfer_client.post(
+                                        f"{backend_url}/api/telnyx/transfer",
+                                        json={
+                                            "room_name": room_name_clean,
+                                            "call_control_id": call_control_id,
+                                            "transfer_to": transfer_number
+                                        }
+                                    )
+                                    
+                                    if transfer_response.status_code == 200:
+                                        logger.info(f"✅ Call transferred to {transfer_number} (after acknowledgment)")
+                                    else:
+                                        logger.error(f"❌ Transfer failed: {transfer_response.status_code} - {transfer_response.text}")
+                            except Exception as e:
+                                logger.error(f"❌ Error executing transfer: {e}")
+                        
+                        # Start the transfer task in the background
+                        asyncio.create_task(execute_transfer_after_delay())
+                        
+                        # Return success immediately so agent can speak
+                        return {
+                            "success": True,
+                            "is_web_session": False,
+                            "message": "Transfer will happen after you speak the acknowledgment message."
+                        }
                     else:
                         logger.warning("⚠️ No call_control_id found - not a phone call")
                         return {
                             "success": False,
-                            "message": "Transfer is only available for phone calls."
+                            "is_web_session": True,
+                            "message": "I'm sorry, call transfers are only available for phone calls, not through this web interface. Is there anything else I can help you with today?"
                         }
                 else:
                     logger.error(f"❌ Could not get session data: {response.status_code} - {response.text}")
@@ -229,12 +273,14 @@ class SimpleVoiceAgent(Agent):
                     logger.error(f"   Encoded room name: {encoded_room_name}")
                     return {
                         "success": False,
+                        "is_web_session": False,
                         "message": "Unable to process transfer request."
                     }
         except Exception as e:
             logger.error(f"❌ Error transferring call: {e}")
             return {
                 "success": False,
+                "is_web_session": False,
                 "message": "I'm having trouble transferring you right now."
             }
     
@@ -285,10 +331,10 @@ class SimpleVoiceAgent(Agent):
     
     @function_tool()
     async def faq_bot_request(self, context: RunContext, faq_question: str, bot_id: str = None, isVoice: bool = None) -> Dict[str, Any]:
-        """Call the Alive5 FAQ bot API to get answers about Alive5 services, pricing, features, or company information.
+        """Call the FAQ bot API to get answers about company services, pricing, features, or company information.
         
         Args:
-            faq_question: The user's question about Alive5
+            faq_question: The user's question about the company
             bot_id: The FAQ bot ID (if None, uses session data)
             isVoice: Whether this is a voice interaction (if None, uses agent's faq_isVoice setting)
         """
@@ -302,17 +348,36 @@ class SimpleVoiceAgent(Agent):
         if isVoice is None:
             isVoice = getattr(self, 'faq_isVoice', True)
         
-        # Provide immediate feedback to user
-        if hasattr(self, "agent_session") and self.agent_session:
-            await self.agent_session.say("Let me check that for you...")
-        
-        # Call FAQ with waiting callback
+        # Call FAQ with waiting callback (the function will provide the "Let me check that" message)
         async def waiting_callback(message):
             if hasattr(self, "agent_session") and self.agent_session:
                 await self.agent_session.say(message)
         
-        # Try Bedrock Knowledge Base first (faster), fallback to Alive5 API if needed
-        return await handle_bedrock_knowledge_base_request(faq_question, max_results=5, waiting_callback=waiting_callback)
+        # Get org_name from session data for filtering
+        org_name = None
+        try:
+            import httpx
+            from urllib.parse import quote
+            backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+            encoded_room_name = quote(self.room_name, safe='')
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
+                if response.status_code == 200:
+                    session_data = response.json()
+                    user_data = session_data.get("user_data", {})
+                    org_name = user_data.get("org_name")
+        except Exception as e:
+            logger.debug(f"Could not fetch org_name for filtering: {e}")
+        
+        # Try Bedrock Knowledge Base first (faster), fallback to FAQ API if needed
+        # Pass FAQ bot ID and org_name for filtering
+        return await handle_bedrock_knowledge_base_request(
+            faq_question, 
+            max_results=5, 
+            waiting_callback=waiting_callback,
+            faq_bot_id=bot_id,
+            org_name=org_name
+        )
     
     async def _get_current_voice(self):
         """Get current voice from session data (like working implementation)"""
@@ -451,195 +516,256 @@ def prewarm(proc):
 
 async def entrypoint(ctx: JobContext):
     """Main entry point for the simple agent"""
-    logger.info("=" * 80)
-    logger.info(f"🚀 NEW VOICE SESSION STARTING - Room: {ctx.room.name}")
-    logger.info("=" * 80)
-    
-    # Fetch session data from backend to get dynamic configuration
-    backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
-    botchain_name = "voice-1"
-    org_name = "alive5stage0"
-    faq_isVoice = True  # Default to concise responses
-    special_instructions = ""  # Default empty special instructions
-    
-    # Detect if this is a phone call (Telnyx) or web session
-    # Clean up room name: handle URL-encoding and double prefix from dispatch rule
-    from urllib.parse import unquote, quote
-    room_name_clean = ctx.room.name
-    
-    # First, URL-decode if needed (LiveKit dispatch rule may not decode it)
-    if '%' in room_name_clean:
-        room_name_decoded = unquote(room_name_clean)
-        logger.warning(f"⚠️ Room name is URL-encoded: {room_name_clean} -> {room_name_decoded}")
-        
-        # Check if a room with the decoded name already exists (prevent duplicate sessions)
-        # This happens when LiveKit dispatch rule doesn't decode the room name from SIP URI
-        try:
-            import httpx
-            backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
-            encoded_decoded_name = quote(room_name_decoded, safe='')  # quote already imported above
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                response = await client.get(f"{backend_url}/api/sessions/{encoded_decoded_name}")
-                if response.status_code == 200:
-                    # Decoded room name exists - this is a duplicate session from URL-encoded room
-                    logger.warning(f"⚠️ Duplicate session detected! Room {room_name_decoded} already exists.")
-                    logger.warning(f"   This session ({room_name_clean}) is a duplicate - exiting to prevent conflicts.")
-                    return  # Exit early to prevent duplicate agent sessions
-        except Exception as e:
-            logger.debug(f"Could not check for duplicate: {e}")
-        
-        room_name_clean = room_name_decoded
-    
-    # Remove double prefix if present
-    if room_name_clean.startswith("telnyx_call__telnyx_call_"):
-        # Remove double prefix
-        room_name_clean = room_name_clean.replace("telnyx_call__telnyx_call_", "telnyx_call_", 1)
-        logger.warning(f"⚠️ Fixed double-prefixed room name: {ctx.room.name} -> {room_name_clean}")
-    
-    is_phone_call = room_name_clean.startswith("telnyx_call_")
-    user_data = {}
-    
     try:
-        import httpx
-        from urllib.parse import quote
-        # URL-encode room name for API call
-        encoded_room_name = quote(room_name_clean, safe='')
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
-            if response.status_code == 200:
-                session_data = response.json()
-                user_data = session_data.get("user_data", {})
-                # Check source field to confirm it's a phone call
-                if user_data.get("source") == "telnyx_phone":
-                    is_phone_call = True
-            else:
-                logger.warning(f"⚠️ Could not fetch session data (status {response.status_code}), using defaults")
-    except Exception as e:
-        logger.warning(f"⚠️ Could not fetch session data: {e}, using defaults")
-    
-    # Get configuration from session data or use defaults
-    botchain_name = user_data.get("botchain_name", "voice-1")
-    org_name = user_data.get("org_name", "alive5stage0")
-    faq_isVoice = user_data.get("faq_isVoice", True)  # Default to concise responses
-    special_instructions = user_data.get("special_instructions", "")  # Load special instructions
-    
-    # Connect to the room first - using same approach as working implementation
-    await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
-    
-    # Initialize livechat session with Socket.io (skip for phone calls)
-    if not is_phone_call:
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    f"{backend_url}/api/init_livechat",
-                    params={
-                        "room_name": room_name_clean,  # Use cleaned room name
-                        "org_name": org_name,
-                        "botchain_name": botchain_name
-                    }
-                )
-                if response.status_code == 200:
-                    init_result = response.json()
-                    logger.info(f"✅ Livechat initialized - Thread: {init_result.get('thread_id')}, CRM: {init_result.get('crm_id')}")
-                else:
-                    logger.warning(f"⚠️ Livechat init failed: {response.status_code}")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not initialize livechat: {e}")
-    else:
-        logger.info(f"📞 Phone call detected - skipping livechat initialization")
-    
-    # Create and start the agent (use cleaned room name)
-    agent = SimpleVoiceAgent(room_name_clean, botchain_name, org_name, special_instructions)
-    agent.faq_isVoice = faq_isVoice
-    
-    # Get VAD - with environment variable control for testing
-    vad = None
-    use_vad = os.getenv("USE_VAD", "true").lower() == "true"
-    
-    if use_vad:
-        if "vad" in ctx.proc.userdata:
-            vad = ctx.proc.userdata["vad"]
-            logger.info("✅ VAD loaded from prewarm")
-        else:
+        logger.info("=" * 80)
+        logger.info(f"🚀 NEW VOICE SESSION STARTING - Room: {ctx.room.name}")
+        logger.info("=" * 80)
+        
+        # Fetch session data from backend to get dynamic configuration
+        backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+        botchain_name = "voice-1"
+        org_name = "alive5stage0"
+        faq_isVoice = True  # Default to concise responses
+        special_instructions = ""  # Default empty special instructions
+        
+        # Detect if this is a phone call (Telnyx) or web session
+        # Clean up room name: handle URL-encoding and double prefix from dispatch rule
+        from urllib.parse import unquote, quote
+        room_name_clean = ctx.room.name
+        
+        # First, URL-decode if needed (LiveKit dispatch rule may not decode it)
+        if '%' in room_name_clean:
+            room_name_decoded = unquote(room_name_clean)
+            logger.warning(f"⚠️ Room name is URL-encoded: {room_name_clean} -> {room_name_decoded}")
+            
+            # Check if a room with the decoded name already exists (prevent duplicate sessions)
+            # This happens when LiveKit dispatch rule doesn't decode the room name from SIP URI
             try:
-                vad = silero.VAD.load()
-                logger.info("✅ VAD loaded successfully")
+                import httpx
+                backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+                encoded_decoded_name = quote(room_name_decoded, safe='')  # quote already imported above
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    response = await client.get(f"{backend_url}/api/sessions/{encoded_decoded_name}")
+                    if response.status_code == 200:
+                        # Decoded room name exists - this is a duplicate session from URL-encoded room
+                        logger.warning(f"⚠️ Duplicate session detected! Room {room_name_decoded} already exists.")
+                        logger.warning(f"   This session ({room_name_clean}) is a duplicate - exiting to prevent conflicts.")
+                        return  # Exit early to prevent duplicate agent sessions
             except Exception as e:
-                logger.warning(f"⚠️ Failed to load VAD: {e}, continuing without VAD")
-    else:
-        logger.info("🚫 VAD disabled via USE_VAD environment variable")
-    
-    # Set room on agent for frontend communication
-    agent.room = ctx.room
-    
-    # Get current voice from session data (like working implementation)
-    current_voice = await agent._get_current_voice()
-    agent.selected_voice = current_voice
-    logger.info(f"🎤 Initializing TTS with voice: {current_voice}")
-    
-    # Create TTS with fallback handling
-    try:
-        tts = cartesia.TTS(model="sonic-2", voice=current_voice, api_key=os.getenv("CARTESIA_API_KEY"))
-        logger.info("✅ Cartesia TTS initialized successfully")
-    except Exception as e:
-        logger.error(f"❌ Cartesia TTS failed: {e}")
-        logger.info("🔄 Falling back to basic Cartesia TTS...")
+                logger.debug(f"Could not check for duplicate: {e}")
+            
+            room_name_clean = room_name_decoded
+        
+        # Remove double prefix if present
+        if room_name_clean.startswith("telnyx_call__telnyx_call_"):
+            # Remove double prefix
+            room_name_clean = room_name_clean.replace("telnyx_call__telnyx_call_", "telnyx_call_", 1)
+            logger.warning(f"⚠️ Fixed double-prefixed room name: {ctx.room.name} -> {room_name_clean}")
+        
+        is_phone_call = room_name_clean.startswith("telnyx_call_")
+        user_data = {}
+        
         try:
-            tts = cartesia.TTS(model="sonic-2")
-            logger.info("✅ Basic Cartesia TTS initialized")
-        except Exception as e2:
-            logger.error(f"❌ Basic Cartesia TTS also failed: {e2}")
-            raise Exception("TTS initialization failed completely")
-    
-    # Get model name for logging
-    model_name_for_log = None
-    if hasattr(agent.llm, '_opts') and hasattr(agent.llm._opts, 'model'):
-        model_name_for_log = agent.llm._opts.model
-    elif hasattr(agent.llm, 'model'):
-        model_name_for_log = agent.llm.model
-    
-    session = AgentSession(
-        stt=deepgram.STT(model="nova-2", language="en-US", api_key=os.getenv("DEEPGRAM_API_KEY")),
-        llm=agent.llm,  # OpenAI plugin LLM instance (supports GPT-5 models directly)
-        tts=tts,
-        vad=vad,
-        turn_detection=None
-    )
-    
-    
-    
-    # Set the agent's room and session
-    agent.room = ctx.room
-    agent.agent_session = session
-    
-    # Start the session - with environment variable control for testing
-    use_noise_cancellation = os.getenv("USE_NOISE_CANCELLATION", "true").lower() == "true"
-    
-    room_input_options = RoomInputOptions(text_enabled=True)
-    if use_noise_cancellation:
-        room_input_options.noise_cancellation = noise_cancellation.BVC()
-        logger.info("🔇 Noise cancellation enabled")
-    else:
-        logger.info("🚫 Noise cancellation disabled via USE_NOISE_CANCELLATION environment variable")
-    
-    await session.start(
-        room=ctx.room,
-        agent=agent,
-        room_input_options=room_input_options,
-        room_output_options=RoomOutputOptions(
-            transcription_enabled=True,
-            sync_transcription=False
+            import httpx
+            from urllib.parse import quote
+            # URL-encode room name for API call
+            encoded_room_name = quote(room_name_clean, safe='')
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
+                if response.status_code == 200:
+                    session_data = response.json()
+                    user_data = session_data.get("user_data", {})
+                    # Check source field to confirm it's a phone call
+                    if user_data.get("source") == "telnyx_phone":
+                        is_phone_call = True
+                else:
+                    logger.warning(f"⚠️ Could not fetch session data (status {response.status_code}), using defaults")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch session data: {e}, using defaults")
+        
+        # Get configuration from session data or use defaults
+        botchain_name = user_data.get("botchain_name", "voice-1")
+        org_name = user_data.get("org_name", "alive5stage0")
+        faq_bot_id = user_data.get("faq_bot_id")  # FAQ bot ID for Bedrock filtering
+        faq_isVoice = user_data.get("faq_isVoice", True)  # Default to concise responses
+        special_instructions = user_data.get("special_instructions", "")  # Load special instructions
+        
+        # Connect to the room first - using same approach as working implementation
+        await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
+        
+        # Initialize livechat session with Socket.io (skip for phone calls)
+        if not is_phone_call:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(
+                        f"{backend_url}/api/init_livechat",
+                        params={
+                            "room_name": room_name_clean,  # Use cleaned room name
+                            "org_name": org_name,
+                            "botchain_name": botchain_name
+                        }
+                    )
+                    if response.status_code == 200:
+                        init_result = response.json()
+                        logger.info(f"✅ Livechat initialized - Thread: {init_result.get('thread_id')}, CRM: {init_result.get('crm_id')}")
+                    else:
+                        logger.warning(f"⚠️ Livechat init failed: {response.status_code}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not initialize livechat: {e}")
+        else:
+            logger.info(f"📞 Phone call detected - skipping livechat initialization")
+        
+        # Create and start the agent (use cleaned room name)
+        agent = SimpleVoiceAgent(room_name_clean, botchain_name, org_name, special_instructions)
+        agent.faq_isVoice = faq_isVoice
+        
+        # Get VAD - with environment variable control for testing
+        # For phone calls, VAD can sometimes be less reliable due to network latency
+        # Consider using turn_detection instead for phone calls if VAD causes issues
+        vad = None
+        use_vad = os.getenv("USE_VAD", "true").lower() == "true"
+        
+        # Phone calls may benefit from different VAD settings
+        if is_phone_call:
+            phone_use_vad = os.getenv("PHONE_USE_VAD", "true").lower() == "true"
+            if not phone_use_vad:
+                use_vad = False
+                logger.info("📞 Phone call detected - VAD disabled (using turn detection instead)")
+        
+        if use_vad:
+            if "vad" in ctx.proc.userdata:
+                vad = ctx.proc.userdata["vad"]
+                logger.info("✅ VAD loaded from prewarm")
+            else:
+                try:
+                    vad = silero.VAD.load()
+                    logger.info("✅ VAD loaded successfully")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to load VAD: {e}, continuing without VAD")
+        else:
+            logger.info("🚫 VAD disabled")
+        
+        # Set room on agent for frontend communication
+        agent.room = ctx.room
+        
+        # Get current voice from session data (like working implementation)
+        current_voice = await agent._get_current_voice()
+        agent.selected_voice = current_voice
+        logger.info(f"🎤 Initializing TTS with voice: {current_voice}")
+        
+        # Create TTS with fallback handling
+        try:
+            tts = cartesia.TTS(model="sonic-2", voice=current_voice, api_key=os.getenv("CARTESIA_API_KEY"))
+            logger.info("✅ Cartesia TTS initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Cartesia TTS failed: {e}")
+            logger.info("🔄 Falling back to basic Cartesia TTS...")
+            try:
+                tts = cartesia.TTS(model="sonic-2")
+                logger.info("✅ Basic Cartesia TTS initialized")
+            except Exception as e2:
+                logger.error(f"❌ Basic Cartesia TTS also failed: {e2}")
+                raise Exception("TTS initialization failed completely")
+        
+        # Optimize STT model for phone calls - use faster model if configured
+        stt_model = os.getenv("DEEPGRAM_STT_MODEL", "nova-2")
+        if is_phone_call:
+            # For phone calls, check if we should use a faster STT model
+            phone_stt_model = os.getenv("PHONE_DEEPGRAM_STT_MODEL", stt_model)
+            if phone_stt_model != stt_model:
+                stt_model = phone_stt_model
+                logger.info(f"📞 Phone call detected - using optimized STT model: {stt_model}")
+        
+        # Get model name for logging
+        model_name_for_log = None
+        if hasattr(agent.llm, '_opts') and hasattr(agent.llm._opts, 'model'):
+            model_name_for_log = agent.llm._opts.model
+        elif hasattr(agent.llm, 'model'):
+            model_name_for_log = agent.llm.model
+        
+        session = AgentSession(
+            stt=deepgram.STT(model=stt_model, language="en-US", api_key=os.getenv("DEEPGRAM_API_KEY")),
+            llm=agent.llm,  # OpenAI plugin LLM instance (supports GPT-5 models directly)
+            tts=tts,
+            vad=vad,
+            turn_detection=None
         )
-    )
-    
-    # Start the conversation with greeting
-    await agent.on_room_enter(ctx.room)
-    
-    logger.info("✅ Simple agent started successfully")
-    logger.info("=" * 80)
-    logger.info(f"🎯 SESSION READY - Room: {room_name_clean} | Botchain: {botchain_name} | Org: {org_name} | Model: {model_name_for_log}")
-    logger.info("=" * 80)
+        
+        
+        
+        # Set the agent's room and session
+        agent.room = ctx.room
+        agent.agent_session = session
+        
+        # Start the session - with environment variable control for testing
+        # For phone calls, noise cancellation can add latency - optimize based on session type
+        use_noise_cancellation = os.getenv("USE_NOISE_CANCELLATION", "true").lower() == "true"
+        
+        # Phone calls may benefit from disabling noise cancellation to reduce latency
+        # Web sessions typically have better audio quality and can handle noise cancellation better
+        if is_phone_call:
+            # For phone calls, check if we should disable noise cancellation for better latency
+            phone_noise_cancellation = os.getenv("PHONE_USE_NOISE_CANCELLATION", "false").lower() == "true"
+            if not phone_noise_cancellation:
+                use_noise_cancellation = False
+                logger.info("📞 Phone call detected - noise cancellation disabled for lower latency")
+        
+        room_input_options = RoomInputOptions(text_enabled=True)
+        if use_noise_cancellation:
+            room_input_options.noise_cancellation = noise_cancellation.BVC()
+            logger.info("🔇 Noise cancellation enabled")
+        else:
+            logger.info("🚫 Noise cancellation disabled")
+        
+        await session.start(
+            room=ctx.room,
+            agent=agent,
+            room_input_options=room_input_options,
+            room_output_options=RoomOutputOptions(
+                transcription_enabled=True,
+                sync_transcription=False
+            )
+        )
+        
+        # Start the conversation with greeting
+        await agent.on_room_enter(ctx.room)
+        
+        logger.info("✅ Simple agent started successfully")
+        logger.info("=" * 80)
+        logger.info(f"🎯 SESSION READY - Room: {room_name_clean} | Botchain: {botchain_name} | Org: {org_name} | Model: {model_name_for_log}")
+        logger.info("=" * 80)
+    except Exception as e:
+        logger.error(f"❌ CRITICAL ERROR in entrypoint: {e}")
+        logger.error(f"   Room: {ctx.room.name if ctx and ctx.room else 'Unknown'}")
+        import traceback
+        logger.error(f"   Traceback: {traceback.format_exc()}")
+        raise  # Re-raise to let LiveKit know the job failed
 
 if __name__ == "__main__":
+    logger.info("=" * 80)
+    logger.info("🚀 Starting LiveKit Worker...")
+    logger.info("=" * 80)
+    
+    # Verify environment variables are loaded
+    livekit_url = os.getenv("LIVEKIT_URL")
+    livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+    livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+    
+    if not livekit_url:
+        logger.error("❌ LIVEKIT_URL not set in environment!")
+        sys.exit(1)
+    if not livekit_api_key:
+        logger.error("❌ LIVEKIT_API_KEY not set in environment!")
+        sys.exit(1)
+    if not livekit_api_secret:
+        logger.error("❌ LIVEKIT_API_SECRET not set in environment!")
+        sys.exit(1)
+    
+    logger.info(f"✅ LiveKit URL: {livekit_url}")
+    logger.info(f"✅ LiveKit API Key: {livekit_api_key[:10]}...")
+    logger.info("=" * 80)
+    logger.info("🔌 Connecting to LiveKit server...")
+    logger.info("=" * 80)
+    
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
