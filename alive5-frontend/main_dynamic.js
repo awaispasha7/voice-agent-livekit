@@ -260,9 +260,29 @@ class DynamicVoiceAgent {
         
         const sessionDetails = document.getElementById('sessionDetails');
         const sessionIdDisplay = document.getElementById('sessionIdDisplay');
+        const faqBotIdDisplay = document.getElementById('faqBotIdDisplay');
+        const orgNameDisplay = document.getElementById('orgNameDisplay');
+        const botchainNameDisplay = document.getElementById('botchainNameDisplay');
+        
         if (sessionDetails && sessionIdDisplay) {
             sessionIdDisplay.textContent = this.sessionId;
             sessionDetails.style.display = 'block';
+        }
+        
+        // Populate FAQ Bot ID, Org Name, and Botchain Name from form or stored values
+        if (faqBotIdDisplay) {
+            const faqBotId = document.getElementById('faqBotId')?.value?.trim() || this.storedFaqBotId || '';
+            faqBotIdDisplay.textContent = faqBotId || 'Not set';
+        }
+        
+        if (orgNameDisplay) {
+            const orgName = document.getElementById('orgName')?.value?.trim() || this.storedOrgName || '';
+            orgNameDisplay.textContent = orgName || 'Not set';
+        }
+        
+        if (botchainNameDisplay) {
+            const botchainName = document.getElementById('botchainName')?.value?.trim() || this.storedBotchainName || '';
+            botchainNameDisplay.textContent = botchainName || 'Not set';
         }
         
         const joinBtn = document.getElementById('joinBtn');
@@ -331,6 +351,11 @@ class DynamicVoiceAgent {
         const faqVerboseMode = document.getElementById('faqVerboseMode')?.checked ?? true;
         const faqBotId = document.getElementById('faqBotId')?.value?.trim() || 'faq_b9952a56-fc7b-41c9-b0a0-5c662ddb039e';
         const specialInstructions = document.getElementById('specialInstructions')?.value?.trim() || '';
+        
+        // Store values for display in session details
+        this.storedFaqBotId = faqBotId;
+        this.storedOrgName = orgName;
+        this.storedBotchainName = botchainName;
         
         if (!botchainName) {
             this.showStatus('Please enter a bot name (botchain)', 'error');
@@ -410,6 +435,9 @@ class DynamicVoiceAgent {
             this.updateChatHeader(botchainName, 'Connected');
             this.updateStatusIndicator('connected');
             this.updateConnectionStatus('connected', 'Ready to listen');
+            
+            // Update session details display with stored values
+            this.updateDisplay();
             
             // Add welcome message
             this.addMessage(`Connected to ${botchainName}! I'm ready to help you.`, 'agent');
