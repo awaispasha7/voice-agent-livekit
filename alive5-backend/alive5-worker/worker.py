@@ -111,6 +111,8 @@ class SimpleVoiceAgent(Agent):
         self._turn_detection = None  # Required by Agent class
         # Initialize FAQ bot ID to None - will be set during entrypoint
         self.faq_bot_id = None
+        # Flag to track if we're using Nova Sonic (speech-to-speech model)
+        self._using_nova = False
         
         # Flow management
         self.bot_template = None
@@ -124,7 +126,7 @@ class SimpleVoiceAgent(Agent):
             "notes_entry": []
         }
         
-        # Get LLM provider from env (bedrock or openai)
+        # Get LLM provider from env (bedrock, openai, or nova)
         llm_provider = os.getenv("LLM_PROVIDER", "bedrock").lower()
         
         import httpx
@@ -153,6 +155,33 @@ class SimpleVoiceAgent(Agent):
                 except Exception as e2:
                     logger.error(f"❌ Fallback also failed: {e2}")
                     raise Exception(f"Could not initialize any LLM. Bedrock error: {e}, OpenAI fallback error: {e2}")
+                self._inference_model_id = None
+        elif llm_provider == "nova":
+            # Use Amazon Nova Sonic (speech-to-speech, realtime model)
+            # Nova Sonic is a complete speech-to-speech solution (no separate STT/TTS needed)
+            nova_voice = os.getenv("NOVA_VOICE", None)  # Optional voice name
+            nova_region = os.getenv("NOVA_REGION", "us-east-1")
+            
+            try:
+                # Nova Sonic uses realtime.RealtimeModel() which is a speech-to-speech model
+                llm_instance = aws.realtime.RealtimeModel(
+                    voice=nova_voice if nova_voice and nova_voice != "default" else None,
+                    region=nova_region
+                )
+                logger.info(f"✅ Amazon Nova Sonic initialized (region: {nova_region}, voice: {nova_voice or 'default'})")
+                self._inference_model_id = None
+                # Mark that we're using Nova Sonic (speech-to-speech, no separate STT/TTS)
+                self._using_nova = True
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Nova Sonic: {e}")
+                logger.warning(f"🔄 Falling back to OpenAI gpt-4o-mini")
+                try:
+                    llm_instance = openai.LLM(model="gpt-4o-mini", temperature=0.3, timeout=llm_timeout)
+                    logger.info(f"✅ Fallback LLM initialized: gpt-4o-mini (OpenAI)")
+                    self._using_nova = False
+                except Exception as e2:
+                    logger.error(f"❌ Fallback also failed: {e2}")
+                    raise Exception(f"Could not initialize any LLM. Nova Sonic error: {e}, OpenAI fallback error: {e2}")
                 self._inference_model_id = None
         else:
             # Use OpenAI LLM (original implementation)
@@ -754,33 +783,43 @@ async def entrypoint(ctx: JobContext):
         # Set room on agent for frontend communication
         agent.room = ctx.room
         
-        # Get current voice from session data (like working implementation)
-        current_voice = await agent._get_current_voice()
-        agent.selected_voice = current_voice
-        logger.info(f"🎤 Initializing TTS with voice: {current_voice}")
-        
-        # Create TTS with fallback handling
-        try:
-            tts = cartesia.TTS(model="sonic-2", voice=current_voice, api_key=os.getenv("CARTESIA_API_KEY"))
-            logger.info("✅ Cartesia TTS initialized successfully")
-        except Exception as e:
-            logger.error(f"❌ Cartesia TTS failed: {e}")
-            logger.info("🔄 Falling back to basic Cartesia TTS...")
+        # Initialize TTS (skip for Nova Sonic as it's speech-to-speech)
+        tts = None
+        if not getattr(agent, '_using_nova', False):
+            # Get current voice from session data (like working implementation)
+            current_voice = await agent._get_current_voice()
+            agent.selected_voice = current_voice
+            logger.info(f"🎤 Initializing TTS with voice: {current_voice}")
+            
+            # Create TTS with fallback handling
             try:
-                tts = cartesia.TTS(model="sonic-2")
-                logger.info("✅ Basic Cartesia TTS initialized")
-            except Exception as e2:
-                logger.error(f"❌ Basic Cartesia TTS also failed: {e2}")
-                raise Exception("TTS initialization failed completely")
+                tts = cartesia.TTS(model="sonic-2", voice=current_voice, api_key=os.getenv("CARTESIA_API_KEY"))
+                logger.info("✅ Cartesia TTS initialized successfully")
+            except Exception as e:
+                logger.error(f"❌ Cartesia TTS failed: {e}")
+                logger.info("🔄 Falling back to basic Cartesia TTS...")
+                try:
+                    tts = cartesia.TTS(model="sonic-2")
+                    logger.info("✅ Basic Cartesia TTS initialized")
+                except Exception as e2:
+                    logger.error(f"❌ Basic Cartesia TTS also failed: {e2}")
+                    raise Exception("TTS initialization failed completely")
+        else:
+            logger.info("🎙️ Skipping TTS initialization (Nova Sonic handles TTS internally)")
         
         # Optimize STT model for phone calls - use faster model if configured
-        stt_model = os.getenv("DEEPGRAM_STT_MODEL", "nova-2")
-        if is_phone_call:
-            # For phone calls, check if we should use a faster STT model
-            phone_stt_model = os.getenv("PHONE_DEEPGRAM_STT_MODEL", stt_model)
-            if phone_stt_model != stt_model:
-                stt_model = phone_stt_model
-                logger.info(f"📞 Phone call detected - using optimized STT model: {stt_model}")
+        # Skip STT initialization for Nova Sonic (it's speech-to-speech)
+        stt_model = None
+        if not getattr(agent, '_using_nova', False):
+            stt_model = os.getenv("DEEPGRAM_STT_MODEL", "nova-2")
+            if is_phone_call:
+                # For phone calls, check if we should use a faster STT model
+                phone_stt_model = os.getenv("PHONE_DEEPGRAM_STT_MODEL", stt_model)
+                if phone_stt_model != stt_model:
+                    stt_model = phone_stt_model
+                    logger.info(f"📞 Phone call detected - using optimized STT model: {stt_model}")
+        else:
+            logger.info("🎙️ Skipping STT initialization (Nova Sonic handles STT internally)")
         
         # Get model name for logging
         model_name_for_log = None
@@ -789,13 +828,22 @@ async def entrypoint(ctx: JobContext):
         elif hasattr(agent.llm, 'model'):
             model_name_for_log = agent.llm.model
         
-        session = AgentSession(
-            stt=deepgram.STT(model=stt_model, language="en-US", api_key=os.getenv("DEEPGRAM_API_KEY")),
-            llm=agent.llm,  # OpenAI plugin LLM instance (supports GPT-5 models directly)
-            tts=tts,
-            vad=vad,
-            turn_detection=None
-        )
+        # Initialize AgentSession based on LLM provider
+        # Nova Sonic is a speech-to-speech model, so it doesn't need separate STT/TTS
+        if getattr(agent, '_using_nova', False):
+            logger.info("🎙️ Using Nova Sonic (speech-to-speech) - no separate STT/TTS needed")
+            session = AgentSession(
+                llm=agent.llm,  # Nova Sonic RealtimeModel (handles STT, LLM, and TTS)
+            )
+        else:
+            # Traditional setup with separate STT, LLM, and TTS
+            session = AgentSession(
+                stt=deepgram.STT(model=stt_model, language="en-US", api_key=os.getenv("DEEPGRAM_API_KEY")) if stt_model else None,
+                llm=agent.llm,  # LLM instance (OpenAI, Bedrock, etc.)
+                tts=tts,
+                vad=vad,
+                turn_detection=None
+            )
         
         # Set the agent's room and session
         agent.room = ctx.room
