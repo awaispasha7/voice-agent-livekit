@@ -22,7 +22,7 @@ from livekit.agents import (
     JobContext, WorkerOptions, cli, Agent, AgentSession,
     function_tool, RunContext, RoomInputOptions, RoomOutputOptions, AutoSubscribe
 )
-from livekit.plugins import openai, deepgram, cartesia, silero, noise_cancellation
+from livekit.plugins import openai, deepgram, cartesia, silero, noise_cancellation, aws
 
 from system_prompt import get_system_prompt
 from functions import handle_load_bot_flows, handle_faq_bot_request, handle_bedrock_knowledge_base_request
@@ -41,6 +41,7 @@ logging.getLogger("livekit.plugins").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins.cartesia").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins.deepgram").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins.openai").setLevel(logging.WARNING)
+logging.getLogger("livekit.plugins.aws").setLevel(logging.WARNING)
 
 # Reduce OpenAI and HTTP client logging verbosity
 logging.getLogger("openai").setLevel(logging.WARNING)
@@ -123,25 +124,54 @@ class SimpleVoiceAgent(Agent):
             "notes_entry": []
         }
         
-        # Get model from env or use default
-        model_name = os.getenv("OPENAI_MODEL", "gpt-4o")
-
+        # Get LLM provider from env (bedrock or openai)
+        llm_provider = os.getenv("LLM_PROVIDER", "bedrock").lower()
+        
         import httpx
         llm_timeout = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=30.0)
         
-        try:
-            llm_instance = openai.LLM(model=model_name, temperature=0.7, timeout=llm_timeout)
-            self._inference_model_id = None  # Not using LiveKit Inference
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize OpenAI plugin LLM with {model_name}: {e}")
-            logger.warning(f"🔄 Falling back to gpt-4o-mini")
+        # Initialize LLM based on provider
+        if llm_provider == "bedrock":
+            # Use AWS Bedrock LLM (data stays in AWS, no training on your data)
+            bedrock_model = os.getenv("BEDROCK_MODEL", "anthropic.claude-3-5-sonnet-20240620-v1:0")
+            bedrock_region = os.getenv("BEDROCK_REGION", "us-east-1")
+            
             try:
-                llm_instance = openai.LLM(model="gpt-4o-mini", temperature=0.7, timeout=llm_timeout)
-                logger.info(f"✅ Fallback LLM initialized: gpt-4o-mini")
-            except Exception as e2:
-                logger.error(f"❌ Fallback also failed: {e2}")
-                raise Exception(f"Could not initialize any LLM. Original error: {e}, Fallback error: {e2}")
-            self._inference_model_id = None
+                llm_instance = aws.LLM(
+                    model=bedrock_model,
+                    region=bedrock_region,
+                    temperature=0.3
+                )
+                logger.info(f"✅ AWS Bedrock LLM initialized: {bedrock_model}")
+                self._inference_model_id = None
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Bedrock LLM with {bedrock_model}: {e}")
+                logger.warning(f"🔄 Falling back to OpenAI gpt-4o-mini")
+                try:
+                    llm_instance = openai.LLM(model="gpt-4o-mini", temperature=0.3, timeout=llm_timeout)
+                    logger.info(f"✅ Fallback LLM initialized: gpt-4o-mini (OpenAI)")
+                except Exception as e2:
+                    logger.error(f"❌ Fallback also failed: {e2}")
+                    raise Exception(f"Could not initialize any LLM. Bedrock error: {e}, OpenAI fallback error: {e2}")
+                self._inference_model_id = None
+        else:
+            # Use OpenAI LLM (original implementation)
+            openai_model = os.getenv("OPENAI_MODEL", "gpt-4o")
+            
+            try:
+                llm_instance = openai.LLM(model=openai_model, temperature=0.3, timeout=llm_timeout)
+                logger.info(f"✅ OpenAI LLM initialized: {openai_model}")
+                self._inference_model_id = None
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize OpenAI plugin LLM with {openai_model}: {e}")
+                logger.warning(f"🔄 Falling back to gpt-4o-mini")
+                try:
+                    llm_instance = openai.LLM(model="gpt-4o-mini", temperature=0.3, timeout=llm_timeout)
+                    logger.info(f"✅ Fallback LLM initialized: gpt-4o-mini")
+                except Exception as e2:
+                    logger.error(f"❌ Fallback also failed: {e2}")
+                    raise Exception(f"Could not initialize any LLM. Original error: {e}, Fallback error: {e2}")
+                self._inference_model_id = None
         
         # Initialize the base Agent class with special instructions
         system_prompt = get_system_prompt(botchain_name, org_name, special_instructions)
@@ -645,12 +675,12 @@ async def entrypoint(ctx: JobContext):
         faq_isVoice = user_data.get("faq_isVoice", True)  # Default to concise responses
         special_instructions = user_data.get("special_instructions", "")  # Load special instructions
         
-        # Log configuration for debugging
-        logger.info(f"📋 Session configuration loaded:")
-        logger.info(f"   - Botchain: {botchain_name}")
-        logger.info(f"   - Org Name: {org_name}")
-        logger.info(f"   - FAQ Bot ID: {faq_bot_id}")
-        logger.info(f"   - FAQ IsVoice: {faq_isVoice}")
+        # # Log configuration for debugging
+        # logger.info(f"📋 Session configuration loaded:")
+        # logger.info(f"   - Botchain: {botchain_name}")
+        # logger.info(f"   - Org Name: {org_name}")
+        # logger.info(f"   - FAQ Bot ID: {faq_bot_id}")
+        # logger.info(f"   - FAQ IsVoice: {faq_isVoice}")
         
         # Connect to the room first - using same approach as working implementation
         await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)

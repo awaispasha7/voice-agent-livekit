@@ -278,13 +278,47 @@ if ($choice -eq "1") {
     }
     
     Write-Host "  - Installing packages from requirements.txt..." -ForegroundColor White
-    $installResult = & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/pip install -r requirements.txt" 2>&1
+    Write-Host "    (This may take 2-5 minutes, especially for livekit-plugins-aws...)" -ForegroundColor $WarningColor
+    Write-Host "    Installing with verbose output (you'll see progress)..." -ForegroundColor White
+    
+    # Install with legacy resolver to avoid backtracking issues
+    # The new resolver can take forever with complex dependency trees
+    $installCmd = "cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/pip install --no-cache-dir --timeout=300 --use-deprecated=legacy-resolver -r requirements.txt 2>&1 | tee /tmp/pip-install.log"
+    Write-Host ""
+    Write-Host "    Using legacy resolver to avoid dependency backtracking..." -ForegroundColor Gray
+    
+    # Run with unbuffered output for real-time streaming
+    $installResult = & ssh -i $KEY -o StrictHostKeyChecking=no -o ServerAliveInterval=10 "$USER@$SERVER" "bash -c '$installCmd'" 2>&1 | ForEach-Object {
+        Write-Host $_ -ForegroundColor Gray
+        $_
+    }
+    
     if ($LASTEXITCODE -eq 0) {
         Write-Host "  ✅ Requirements installed successfully!" -ForegroundColor $SuccessColor
     } else {
         Write-Host "  ❌ Error installing requirements:" -ForegroundColor $ErrorColor
         Write-Host $installResult -ForegroundColor $ErrorColor
-        Write-Host "  ⚠️ Continuing with service setup..." -ForegroundColor $WarningColor
+        
+        # Try installing AWS plugin separately with legacy resolver
+        Write-Host "  - Attempting to install livekit-plugins-aws separately..." -ForegroundColor $WarningColor
+        Write-Host "    (Using legacy resolver to avoid backtracking)..." -ForegroundColor White
+        $awsPluginResult = & ssh -i $KEY -o StrictHostKeyChecking=no -o ServerAliveInterval=10 "$USER@$SERVER" "bash -c 'cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/pip install --no-cache-dir --timeout=300 --use-deprecated=legacy-resolver livekit-plugins-aws>=1.2.0,<2.0.0 2>&1'" 2>&1 | ForEach-Object {
+            Write-Host $_ -ForegroundColor Gray
+            $_
+        }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✅ AWS plugin installed separately!" -ForegroundColor $SuccessColor
+            Write-Host "  - Retrying full requirements install..." -ForegroundColor White
+            $installResult = & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" $installCmd 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  ✅ Requirements installed successfully on retry!" -ForegroundColor $SuccessColor
+            } else {
+                Write-Host "  ⚠️ Some packages may have failed, but continuing..." -ForegroundColor $WarningColor
+            }
+        } else {
+            Write-Host "  ⚠️ AWS plugin installation also failed. Continuing with service setup..." -ForegroundColor $WarningColor
+            Write-Host "  ⚠️ Note: Worker will fall back to OpenAI if Bedrock plugin is not available" -ForegroundColor $WarningColor
+        }
     }
     
     # Create backend service

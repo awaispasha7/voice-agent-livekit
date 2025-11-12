@@ -199,19 +199,19 @@ async def handle_bedrock_knowledge_base_request(
                 logger.info(f"      - org_name: {org_name_meta}")
                 logger.info(f"      - reference_url: {reference_url}")
                 
-                # Log if filter matched (if filters were applied)
-                if faq_bot_id:
-                    expected_orgbot = faq_bot_id if faq_bot_id.startswith("faq_") else f"faq_{faq_bot_id}"
-                    if orgbot_name == expected_orgbot:
-                        logger.info(f"      ✅ Filter match: orgbot_name matches filter")
-                    else:
-                        logger.warning(f"      ⚠️ Filter mismatch: expected '{expected_orgbot}', got '{orgbot_name}'")
+                # # Log if filter matched (if filters were applied)
+                # if faq_bot_id:
+                #     expected_orgbot = faq_bot_id if faq_bot_id.startswith("faq_") else f"faq_{faq_bot_id}"
+                #     if orgbot_name == expected_orgbot:
+                #         logger.info(f"      ✅ Filter match: orgbot_name matches filter")
+                #     else:
+                #         logger.warning(f"      ⚠️ Filter mismatch: expected '{expected_orgbot}', got '{orgbot_name}'")
                 
-                if org_name and org_name_meta:
-                    if org_name_meta == org_name:
-                        logger.info(f"      ✅ Filter match: org_name matches filter")
-                    else:
-                        logger.warning(f"      ⚠️ Filter mismatch: expected '{org_name}', got '{org_name_meta}'")
+                # if org_name and org_name_meta:
+                #     if org_name_meta == org_name:
+                #         logger.info(f"      ✅ Filter match: org_name matches filter")
+                #     else:
+                #         logger.warning(f"      ⚠️ Filter mismatch: expected '{org_name}', got '{org_name_meta}'")
             
             # Combine all retrieved content into a single answer
             # Take the top result(s) and format for voice
@@ -230,7 +230,7 @@ async def handle_bedrock_knowledge_base_request(
             # else:
             #     logger.info(f"📄 Response content: {response_preview}")
 
-            # logger.info(f"📄 Response content: {response_preview}")
+            logger.info(f"📄 Response content: {response_preview}")
             
             # Log individual results summary
             # for i, result in enumerate(retrieval_results[:3], 1):
