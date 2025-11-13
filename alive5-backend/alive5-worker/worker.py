@@ -346,11 +346,55 @@ class SimpleVoiceAgent(Agent):
             }
     
     @function_tool()
+    async def save_collected_data(self, context: RunContext, field_name: str, value: str) -> Dict[str, Any]:
+        """Save user response to collected_data based on save_data_to field from flow.
+        
+        Call this function whenever a flow question has a 'save_data_to' field and the user provides an answer.
+        
+        Args:
+            field_name: The field name from save_data_to (e.g., "full_name", "email", "phone", "notes_entry")
+            value: The user's response value to save
+        """
+        try:
+            if field_name == "full_name":
+                self.collected_data["full_name"] = value
+                logger.info(f"💾 Saved full_name: {value}")
+            elif field_name == "email":
+                self.collected_data["email"] = value
+                logger.info(f"💾 Saved email: {value}")
+            elif field_name == "phone":
+                self.collected_data["phone"] = value
+                logger.info(f"💾 Saved phone: {value}")
+            elif field_name == "notes_entry":
+                if "notes_entry" not in self.collected_data:
+                    self.collected_data["notes_entry"] = []
+                self.collected_data["notes_entry"].append(value)
+                logger.info(f"💾 Appended to notes_entry: {value}")
+            else:
+                logger.warning(f"⚠️ Unknown field_name: {field_name}")
+                return {"success": False, "message": f"Unknown field: {field_name}"}
+            
+            return {
+                "success": True,
+                "message": f"Saved {field_name} successfully"
+            }
+        except Exception as e:
+            logger.error(f"❌ Error saving collected data: {e}")
+            return {"success": False, "message": f"Error saving data: {str(e)}"}
+    
+    @function_tool()
     async def submit_crm_data(self, context: RunContext) -> Dict[str, Any]:
         """Submit collected customer data to CRM at the end of conversation.
         Call this when you have collected the customer's information (name, email, notes) and the conversation is ending.
         """
         try:
+            # Log collected data before submission
+            logger.info(f"📋 Collected data before submission:")
+            logger.info(f"   - full_name: {self.collected_data.get('full_name')}")
+            logger.info(f"   - email: {self.collected_data.get('email')}")
+            logger.info(f"   - phone: {self.collected_data.get('phone')}")
+            logger.info(f"   - notes_entry: {self.collected_data.get('notes_entry')}")
+            
             # Prepare data for submission
             crm_data = {
                 "room_name": self.room_name,

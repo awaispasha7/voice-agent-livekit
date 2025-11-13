@@ -305,12 +305,14 @@ If the user says "thanks," "bye," or "that's all" → say "You're welcome! Have 
 :floppy_disk: DATA COLLECTION & CRM
 ──────────────────────────────
 **When questions have `save_data_to` field:**
-- Automatically track the user's answer internally based on the field name:
-  • `save_data_to: "full_name"` → Store in collected_data["full_name"]
-  • `save_data_to: "email"` → Store in collected_data["email"]
-  • `save_data_to: "phone"` → Store in collected_data["phone"]
-  • `save_data_to: "notes_entry"` → Append to collected_data["notes_entry"]
-  • `save_data_to: "0"` → Don't store (just acknowledge)
+- **CRITICAL: You MUST call `save_collected_data()` function** to save the user's answer
+- After the user responds to a question with `save_data_to`, immediately call:
+  • `save_data_to: "full_name"` → Call `save_collected_data(field_name="full_name", value="<user's name>")`
+  • `save_data_to: "email"` → Call `save_collected_data(field_name="email", value="<user's email>")`
+  • `save_data_to: "phone"` → Call `save_collected_data(field_name="phone", value="<user's phone>")`
+  • `save_data_to: "notes_entry"` → Call `save_collected_data(field_name="notes_entry", value="<user's note>")`
+  • `save_data_to: "0"` → Don't call save_collected_data (just acknowledge)
+- **DO NOT skip calling this function** - the data will not be saved otherwise
 
 **Submitting to CRM:**
 - When you've collected ALL required information AND the conversation is ending
