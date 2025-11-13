@@ -555,6 +555,11 @@ class SimpleVoiceAgent(Agent):
     
     async def _start_conversation(self):
         """Start the conversation - let LLM handle flow loading and greeting"""
+        # Nova Sonic doesn't support unprompted generation - it requires user input first
+        if getattr(self, '_using_nova', False):
+            logger.info("🎙️ Nova Sonic detected - skipping proactive greeting (waits for user input first)")
+            return  # Nova Sonic will respond naturally when user speaks
+        
         try:
             # Use generate_reply to make the agent speak first
             if hasattr(self, "agent_session") and self.agent_session:
@@ -563,6 +568,11 @@ class SimpleVoiceAgent(Agent):
                 logger.warning("⚠️ Agent session not available")
             
         except Exception as e:
+            # Handle Nova Sonic "unprompted generation" error gracefully
+            if "unprompted generation" in str(e).lower() or "realtime" in str(e).lower():
+                logger.info("🎙️ Nova Sonic requires user input first - this is expected behavior")
+                return
+            
             logger.error(f"❌ Error starting conversation: {e}", exc_info=True)
             # Informative fallback message
             if hasattr(self, "agent_session") and self.agent_session:
@@ -742,17 +752,17 @@ async def entrypoint(ctx: JobContext):
         agent.faq_isVoice = faq_isVoice
         # Store FAQ bot ID and org_name on agent instance for easy access
         # IMPORTANT: Ensure faq_bot_id is not None before storing
-        logger.info(f"🔍 About to store FAQ bot ID: {faq_bot_id} (type: {type(faq_bot_id)})")
+        # logger.info(f"🔍 About to store FAQ bot ID: {faq_bot_id} (type: {type(faq_bot_id)})")
         if faq_bot_id and faq_bot_id.strip():
             agent.faq_bot_id = faq_bot_id
-            logger.info(f"💾 Stored FAQ bot ID on agent instance: {agent.faq_bot_id}")
-            logger.info(f"   - Verification: hasattr(agent, 'faq_bot_id') = {hasattr(agent, 'faq_bot_id')}")
-            logger.info(f"   - Verification: agent.faq_bot_id = {getattr(agent, 'faq_bot_id', 'NOT_SET')}")
+            # logger.info(f"💾 Stored FAQ bot ID on agent instance: {agent.faq_bot_id}")
+            # logger.info(f"   - Verification: hasattr(agent, 'faq_bot_id') = {hasattr(agent, 'faq_bot_id')}")
+            # logger.info(f"   - Verification: agent.faq_bot_id = {getattr(agent, 'faq_bot_id', 'NOT_SET')}")
         else:
             logger.warning(f"⚠️ FAQ bot ID is None or empty (value: {faq_bot_id}), not storing on agent instance")
             agent.faq_bot_id = None  # Explicitly set to None so we know it's missing
         agent.org_name = org_name  # Store org_name on agent for Bedrock filtering
-        logger.info(f"💾 Stored org_name on agent instance: {agent.org_name}")
+        # logger.info(f"💾 Stored org_name on agent instance: {agent.org_name}")
         
         # Get VAD - with environment variable control for testing
         # For phone calls, VAD can sometimes be less reliable due to network latency
@@ -880,6 +890,7 @@ async def entrypoint(ctx: JobContext):
         )
         
         # Start the conversation with greeting
+        # Note: For Nova Sonic, greeting is skipped (waits for user input first)
         await agent.on_room_enter(ctx.room)
         
         logger.info("✅ Simple agent started successfully")

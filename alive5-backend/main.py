@@ -323,92 +323,139 @@ async def delete_room(room_name: str):
 async def init_livechat(room_name: str, org_name: str, botchain_name: str):
     """Initialize livechat session with Alive5 Socket.io
     
-    Step 1: Get widget data and auth token
-    Step 2: Connect to socket.io with auth
+    Step 1: Get widget data by widget ID (returns jwtToken, channel_id, thread_id, crm_id, attach_botchain)
+    Step 2: Connect to WSS with query parameters
     Step 3: Emit init-livechat-bot to create thread/CRM
     Step 4: Store thread_id and crm_id in session
     """
     try:
         logger.info(f"🚀 Initializing livechat for room: {room_name}")
         
-        # Step 1: Get widget data (includes auth token)
-        # TODO: Replace with actual getWidgetData API call
-        widget_api_url = "https://api-v2.alive5.com/get-widget-data"  # Replace with actual endpoint
+        # Get widget ID from environment (required)
+        widget_id = os.getenv("ALIVE5_WIDGET_ID")
+        if not widget_id:
+            raise Exception("ALIVE5_WIDGET_ID not configured in .env")
+        
+        # Step 1: Get widget data by widget ID
+        # Endpoint: https://api-v2-stage.alive5.com/1.0/widget-code/get-by-widget-id?id={widget_id}
+        widget_api_url = f"https://api-v2-stage.alive5.com/1.0/widget-code/get-by-widget-id"
         
         async with httpx.AsyncClient() as client:
-            # This should return: { authToken: "...", channel_id: "...", widget_id: "..." }
             response = await client.get(
                 widget_api_url,
-                params={"org_name": org_name, "botchain": botchain_name}
+                params={"id": widget_id}
             )
             
             if response.status_code != 200:
-                raise Exception(f"Failed to get widget data: {response.status_code}")
+                raise Exception(f"Failed to get widget data: {response.status_code} - {response.text}")
             
             widget_data = response.json()
-            auth_token = widget_data.get("authToken")
-            channel_id = widget_data.get("channel_id")
-            widget_id = widget_data.get("widget_id")
+            # Extract data from response.data (or response if data is at root)
+            data = widget_data.get("data", widget_data)
+            
+            jwt_token = data.get("jwtToken") or data.get("jwt_token")
+            channel_id = data.get("channel_id")
+            thread_id = data.get("thread_id") or ""  # May be empty initially
+            crm_id = data.get("crm_id") or ""  # May be empty initially
+            attach_botchain = data.get("attach_botchain") or botchain_name
+            botusername = data.get("botusername") or "voice-bot"
+            
+            if not jwt_token:
+                raise Exception("jwtToken not found in widget data response")
+            if not channel_id:
+                raise Exception("channel_id not found in widget data response")
         
-        # Step 2: Create socket.io client and connect
+        # Step 2: Connect to WSS with query parameters
+        # Format: wss://api-v2-stage.alive5.com/socket.io/?authToken={jwtToken}&thread_id={thread_id}&crm_id={crm_id}&channel_id={channel_id}&is_mobile=false&EIO=4&transport=websocket
         sio = socketio.AsyncClient()
         
+        # Connect with auth parameters as query string (socket.io client handles this)
         await sio.connect(
-            'https://api-v2.alive5.com',
-            transports=['websocket', 'polling'],
+            'wss://api-v2-stage.alive5.com',
+            transports=['websocket'],
+            socketio_path='/socket.io',
+            wait_timeout=10,
+            # Pass auth parameters as query string
             auth={
-                'authToken': auth_token,
-                'thread_id': "",
-                'crm_id': "",
-                'channel_id': channel_id
-            },
-            socketio_path='/socket.io'
+                'authToken': jwt_token,
+                'thread_id': thread_id,
+                'crm_id': crm_id,
+                'channel_id': channel_id,
+                'is_mobile': 'false',
+                'EIO': '4',
+                'transport': 'websocket'
+            }
         )
         
         # Step 3: Emit init-livechat-bot event
+        # Format matches client's example
         init_data = {
-            "channel_id": channel_id,
             "org_name": org_name,
-            "botchain_name": botchain_name,
-            "message_type": "voicechat",
-            "Widget_id": widget_id
+            "thread_id": thread_id or None,  # May be None if new thread
+            "channel_id": channel_id,
+            "crm_id": crm_id or None,  # May be None if new thread
+            "attach_botchain": attach_botchain,
+            "widget_id": widget_id,
+            "botusername": botusername,
+            "webpage_title": "Voice Agent",
+            "webpage_url": "",
+            "message_type": "voicechat"
         }
         
         # Wait for response with thread_id and crm_id
         response_data = {}
+        response_received = asyncio.Event()
         
         @sio.on('livechat-initialized')
         async def on_init(data):
             nonlocal response_data
             response_data = data
+            response_received.set()
+        
+        # Also listen for any response that might contain thread_id/crm_id
+        @sio.on('connect')
+        async def on_connect():
+            logger.info("✅ Socket.io connected")
         
         await sio.emit('init-livechat-bot', init_data)
+        logger.info(f"📤 Emitted init-livechat-bot: {init_data}")
         
         # Wait for response (timeout after 5 seconds)
-        import asyncio
-        await asyncio.sleep(2)  # Give time for response
+        try:
+            await asyncio.wait_for(response_received.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ No response to init-livechat-bot within 5 seconds")
+            # Use thread_id/crm_id from widget data if available
+            if thread_id:
+                response_data["thread_id"] = thread_id
+            if crm_id:
+                response_data["crm_id"] = crm_id
         
         # Step 4: Store in session
+        final_thread_id = response_data.get("thread_id") or thread_id
+        final_crm_id = response_data.get("crm_id") or crm_id
+        
         if room_name in sessions:
-            sessions[room_name]["thread_id"] = response_data.get("thread_id")
-            sessions[room_name]["crm_id"] = response_data.get("crm_id")
-            sessions[room_name]["auth_token"] = auth_token
+            sessions[room_name]["thread_id"] = final_thread_id
+            sessions[room_name]["crm_id"] = final_crm_id
+            sessions[room_name]["auth_token"] = jwt_token
             sessions[room_name]["channel_id"] = channel_id
             sessions[room_name]["widget_id"] = widget_id
+            sessions[room_name]["attach_botchain"] = attach_botchain
             sessions[room_name]["socket_connected"] = True
         
         await sio.disconnect()
         
-        logger.info(f"✅ Livechat initialized - Thread: {response_data.get('thread_id')}, CRM: {response_data.get('crm_id')}")
+        logger.info(f"✅ Livechat initialized - Thread: {final_thread_id}, CRM: {final_crm_id}")
         
         return {
             "status": "success",
-            "thread_id": response_data.get("thread_id"),
-            "crm_id": response_data.get("crm_id")
+            "thread_id": final_thread_id,
+            "crm_id": final_crm_id
         }
         
     except Exception as e:
-        logger.error(f"❌ Error initializing livechat: {e}")
+        logger.error(f"❌ Error initializing livechat: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/submit_crm")
