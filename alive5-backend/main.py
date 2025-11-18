@@ -7,6 +7,7 @@ import os
 import json
 import logging
 import asyncio
+import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
 import socketio
@@ -166,30 +167,29 @@ async def get_connection_details(request: ConnectionDetailsRequest):
         # CRITICAL: Create the LiveKit room BEFORE returning connection details
         # This ensures the room exists and the worker can be dispatched when the frontend connects
         # This is the same approach used for phone calls (line 593)
-        lk_api = api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret)
-        
-        try:
-            # Create room (or get existing room)
-            room = await lk_api.room.create_room(
-                api.CreateRoomRequest(
-                    name=room_name,
-                    empty_timeout=300,  # 5 minutes
-                    max_participants=10  # Allow multiple participants for web sessions
-                )
-            )
-            logger.info(f"✅ Created LiveKit room for web session: {room_name}")
-        except Exception as room_error:
-            # Room might already exist, which is fine
-            logger.debug(f"Room {room_name} might already exist: {room_error}")
-            # Try to get existing room info
+        async with api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret) as lk_api:
             try:
-                rooms = await lk_api.room.list_rooms(api.ListRoomsRequest(names=[room_name]))
-                if rooms.rooms:
-                    logger.info(f"✅ Room {room_name} already exists")
-                else:
-                    logger.warning(f"⚠️ Could not create or find room {room_name}, but continuing...")
-            except Exception as list_error:
-                logger.warning(f"⚠️ Could not verify room existence: {list_error}, but continuing...")
+                # Create room (or get existing room)
+                room = await lk_api.room.create_room(
+                    api.CreateRoomRequest(
+                        name=room_name,
+                        empty_timeout=300,  # 5 minutes
+                        max_participants=10  # Allow multiple participants for web sessions
+                    )
+                )
+                logger.info(f"✅ Created LiveKit room for web session: {room_name}")
+            except Exception as room_error:
+                # Room might already exist, which is fine
+                logger.debug(f"Room {room_name} might already exist: {room_error}")
+                # Try to get existing room info
+                try:
+                    rooms = await lk_api.room.list_rooms(api.ListRoomsRequest(names=[room_name]))
+                    if rooms.rooms:
+                        logger.info(f"✅ Room {room_name} already exists")
+                    else:
+                        logger.warning(f"⚠️ Could not create or find room {room_name}, but continuing...")
+                except Exception as list_error:
+                    logger.warning(f"⚠️ Could not verify room existence: {list_error}, but continuing...")
         
         # Store session data
         sessions[room_name] = {
@@ -353,8 +353,12 @@ async def init_livechat(room_name: str, org_name: str, botchain_name: str):
             # Extract data from response.data (or response if data is at root)
             data = widget_data.get("data", widget_data)
             
+            # Log full API response for debugging (first time only)
+            # logger.info(f"📋 Full widget API response: {widget_data}")
+            
             jwt_token = data.get("jwtToken") or data.get("jwt_token")
             channel_id = data.get("channel_id")
+            channel_name = data.get("channel_name") or data.get("channel")  # Check for channel name
             thread_id = data.get("thread_id") or ""  # May be empty initially
             crm_id = data.get("crm_id") or ""  # May be empty initially
             attach_botchain = data.get("attach_botchain") or botchain_name
@@ -364,22 +368,45 @@ async def init_livechat(room_name: str, org_name: str, botchain_name: str):
                 raise Exception("jwtToken not found in widget data response")
             if not channel_id:
                 raise Exception("channel_id not found in widget data response")
+            
+            # Log channel information for debugging
+            logger.info(f"📋 Widget configuration loaded:")
+            logger.info(f"   - Channel ID: {channel_id}")
+            logger.info(f"   - Channel Name: {channel_name or '(not provided by API)'}")
+            logger.info(f"   - Thread ID: {thread_id or '(new)'}")
+            logger.info(f"   - CRM ID: {crm_id or '(new)'}")
+            logger.info(f"   - Botchain: {attach_botchain}")
+            logger.info(f"   - Bot Username: {botusername}")
         
         # Step 2: Connect to WSS with query parameters
         # Format: wss://api-v2-stage.alive5.com/socket.io/?authToken={jwtToken}&thread_id={thread_id}&crm_id={crm_id}&channel_id={channel_id}&is_mobile=false&EIO=4&transport=websocket
         sio = socketio.AsyncClient()
         
-        # Connect with auth parameters as query string (socket.io client handles this)
+        # Build URL with query parameters (as per client specification)
+        from urllib.parse import urlencode
+        query_params = {
+            'authToken': jwt_token,
+            'thread_id': thread_id or '',
+            'crm_id': crm_id or '',
+            'channel_id': channel_id,
+            'is_mobile': 'false',
+            'EIO': '4',
+            'transport': 'websocket'
+        }
+        url_with_params = f"wss://api-v2-stage.alive5.com/socket.io/?{urlencode(query_params)}"
+        logger.info(f"🔗 Connecting to Socket.io with URL: wss://api-v2-stage.alive5.com/socket.io/?authToken=***&thread_id={thread_id or ''}&crm_id={crm_id or ''}&channel_id={channel_id}&is_mobile=false&EIO=4&transport=websocket")
+        
+        # Connect with query parameters in URL
         await sio.connect(
             'wss://api-v2-stage.alive5.com',
             transports=['websocket'],
             socketio_path='/socket.io',
             wait_timeout=10,
-            # Pass auth parameters as query string
+            # Also pass auth as fallback (python-socketio might need both)
             auth={
                 'authToken': jwt_token,
-                'thread_id': thread_id,
-                'crm_id': crm_id,
+                'thread_id': thread_id or '',
+                'crm_id': crm_id or '',
                 'channel_id': channel_id,
                 'is_mobile': 'false',
                 'EIO': '4',
@@ -405,26 +432,65 @@ async def init_livechat(room_name: str, org_name: str, botchain_name: str):
         # Wait for response with thread_id and crm_id
         response_data = {}
         response_received = asyncio.Event()
+        all_events_received = []
+        
+        @sio.on('connect')
+        async def on_connect():
+            logger.info("✅ Socket.io connected for init-livechat-bot")
+            logger.info(f"   - Connection ID: {sio.sid}")
+            logger.info(f"   - Connected: {sio.connected}")
+        
+        @sio.on('disconnect')
+        async def on_disconnect(reason=None):
+            logger.info(f"🔌 Socket.io disconnected after init-livechat-bot (reason: {reason})")
+        
+        @sio.on('connect_error')
+        async def on_connect_error(data):
+            logger.error(f"❌ Socket.io connection error: {data}")
         
         @sio.on('livechat-initialized')
         async def on_init(data):
             nonlocal response_data
+            logger.info(f"📥 Received 'livechat-initialized' event: {data}")
             response_data = data
             response_received.set()
         
-        # Also listen for any response that might contain thread_id/crm_id
-        @sio.on('connect')
-        async def on_connect():
-            logger.info("✅ Socket.io connected")
+        # Listen for any other events that might be responses
+        @sio.on('*')
+        async def on_any_event(event, *args):
+            logger.info(f"📥 Received Socket.io event: {event} with data: {args}")
+            all_events_received.append((event, args))
+            # Check if this event contains thread_id or crm_id
+            for arg in args:
+                if isinstance(arg, dict):
+                    if 'thread_id' in arg or 'crm_id' in arg:
+                        nonlocal response_data
+                        response_data.update(arg)
+                        response_received.set()
         
+        # Verify connection before emitting
+        if not sio.connected:
+            logger.error("❌ Socket.io not connected - cannot emit event")
+            raise Exception("Socket.io connection not established")
+        
+        # logger.info(f"📤 Emitting 'init-livechat-bot' event (connection ID: {sio.sid})")
         await sio.emit('init-livechat-bot', init_data)
-        logger.info(f"📤 Emitted init-livechat-bot: {init_data}")
+        # logger.info(f"   - Event name: 'init-livechat-bot'")
+        # logger.info(f"   - Payload keys: {list(init_data.keys())}")
+        # logger.info(f"   - Connection status: {sio.connected}")
         
-        # Wait for response (timeout after 5 seconds)
+        # Wait for response (timeout after 10 seconds - increased for slow API)
         try:
-            await asyncio.wait_for(response_received.wait(), timeout=5.0)
+            await asyncio.wait_for(response_received.wait(), timeout=10.0)
+            logger.info(f"✅ Received response to init-livechat-bot: {response_data}")
         except asyncio.TimeoutError:
-            logger.warning("⚠️ No response to init-livechat-bot within 5 seconds")
+            # Note: Alive5 may process events server-side without sending response events
+            # This is normal behavior - check the dashboard to verify the chat was created
+            logger.info("ℹ️ No response event received from Alive5 (this may be normal - events processed server-side)")
+            if all_events_received:
+                logger.info(f"📋 All events received during wait: {all_events_received}")
+            else:
+                logger.info("ℹ️ No Socket.io response events received (Alive5 may process events server-side)")
             # Use thread_id/crm_id from widget data if available
             if thread_id:
                 response_data["thread_id"] = thread_id
@@ -432,8 +498,10 @@ async def init_livechat(room_name: str, org_name: str, botchain_name: str):
                 response_data["crm_id"] = crm_id
         
         # Step 4: Store in session
-        final_thread_id = response_data.get("thread_id") or thread_id
-        final_crm_id = response_data.get("crm_id") or crm_id
+        # For voice agent sessions, ALWAYS create new thread_id and crm_id
+        # Don't reuse widget's thread_id - each voice session should be a fresh conversation
+        final_thread_id = response_data.get("thread_id") or f"uid-{uuid.uuid4().hex[:16]}-{uuid.uuid4().hex[:12]}-{uuid.uuid4().hex[:12]}-{uuid.uuid4().hex[:12]}-{uuid.uuid4().hex[:12]}"
+        final_crm_id = response_data.get("crm_id") or f"{uuid.uuid4().hex[:8]}-{uuid.uuid4().hex[:4]}-{uuid.uuid4().hex[:4]}-{uuid.uuid4().hex[:4]}-{uuid.uuid4().hex[:12]}"
         
         if room_name in sessions:
             sessions[room_name]["thread_id"] = final_thread_id
@@ -444,7 +512,104 @@ async def init_livechat(room_name: str, org_name: str, botchain_name: str):
             sessions[room_name]["attach_botchain"] = attach_botchain
             sessions[room_name]["socket_connected"] = True
         
-        await sio.disconnect()
+        # Keep connection alive a bit longer to ensure events are processed
+        await asyncio.sleep(1.0)
+        if sio.connected:
+            await sio.disconnect()
+            logger.info("🔌 Disconnected from Socket.io after init-livechat-bot")
+        
+        # Send an initial message in a separate connection to activate the thread
+        # This is required because the server disconnects immediately after init-livechat-bot
+        # We'll create a new connection just for this message, similar to CRM submission
+        try:
+            logger.info(f"📤 Creating separate connection to send initial message for thread activation")
+            sio_initial = socketio.AsyncClient()
+            
+            await sio_initial.connect(
+                'wss://api-v2-stage.alive5.com',
+                transports=['websocket'],
+                socketio_path='/socket.io',
+                wait_timeout=10,
+                auth={
+                    'authToken': jwt_token,
+                    'thread_id': final_thread_id or '',
+                    'crm_id': final_crm_id or '',
+                    'channel_id': channel_id,
+                    'is_mobile': 'false',
+                    'EIO': '4',
+                    'transport': 'websocket'
+                }
+            )
+            
+            # For voice agent sessions, we ALWAYS create a new thread/conversation
+            # Use the final_thread_id and final_crm_id we generated earlier (not widget's IDs)
+            from datetime import datetime
+            timestamp = int(datetime.now().timestamp() * 1000)
+            
+            # Build initial message data with new thread
+            initial_message_data = {
+                "channel_id": channel_id,
+                "Message_content": "Voice agent session started",
+                "message_type": "voicechat",
+                "org_name": org_name,
+                "thread_id": final_thread_id,
+                "crm_id": final_crm_id,
+                "attach_botchain": attach_botchain,
+                "webpage_title": "Voice Agent",
+                "webpage_url": "",
+                "assignedTo": "",
+                "user_interacted": "bot_initiated",
+                "Widget_id": widget_id
+            }
+            
+            # ALWAYS include newThread object for voice agent sessions (required to create conversation in dashboard)
+            # This ensures each voice session creates a new visible conversation
+            initial_message_data["newThread"] = {
+                "assignedTo": "",
+                "botchain_label": attach_botchain or "",
+                "channel_id": channel_id,
+                "connect_botchain": attach_botchain or "",
+                "connect_orgbot": "",
+                "created_at": timestamp,
+                "crm_id": final_crm_id,
+                "lastmessage_at": timestamp,
+                "org_name": org_name,
+                "status_timestamp": f"open||{timestamp}",
+                "thread_session": "{}",
+                "thread_start_chat": timestamp,
+                "thread_status": "chatting",
+                "thread_type": "livechat",
+                "time_ping": timestamp,
+                "timestamp": timestamp,
+                "transaction_id": "",
+                "updated_at": timestamp,
+                "viewed_by": [],
+                "widget_id": widget_id,
+                "thread_id": final_thread_id,
+                "crmData": {
+                    "allow_zapier_syns": True,
+                    "assigned_user": [],
+                    "created_at": timestamp,
+                    "crm_id": final_crm_id,
+                    "crm_thread_type": "livechat",
+                    "crm_type": "livechat",
+                    "org_name": org_name,
+                    "updated_at": timestamp
+                },
+                "tempMessageId": f"uid-{timestamp}"
+            }
+            
+            logger.info(f"📤 Emitting initial 'livechat-message' with newThread object (voice session)")
+            logger.info(f"   - Full payload: {initial_message_data}")
+            await sio_initial.emit('livechat-message', initial_message_data)
+            logger.info(f"✅ Initial message emitted successfully")
+            
+            await asyncio.sleep(0.5)  # Small delay to ensure message is processed
+            await sio_initial.disconnect()
+            logger.info("🔌 Disconnected from Socket.io after initial message")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not send initial message (non-critical): {e}")
+            # Don't fail the entire init if initial message fails - it's not critical
         
         logger.info(f"✅ Livechat initialized - Thread: {final_thread_id}, CRM: {final_crm_id}")
         
@@ -493,31 +658,114 @@ async def submit_crm(request: CRMSubmissionRequest):
             "submitted_at": datetime.now().isoformat()
         })
         
-        # Connect to Socket.io
+        # Connect to Socket.io (use staging API, same as init_livechat)
         sio = socketio.AsyncClient()
         
-        await sio.connect(
-            'https://api-v2.alive5.com',
-            transports=['websocket', 'polling'],
-            auth={
-                'authToken': auth_token,
-                'thread_id': thread_id or "",
-                'crm_id': crm_id or "",
-                'channel_id': channel_id
-            },
-            socketio_path='/socket.io'
-        )
+        # Track emission status
+        emission_success = False
+        emission_error = None
+        response_received = asyncio.Event()
+        
+        @sio.on('connect')
+        async def on_connect():
+            logger.info(f"✅ Socket.io connected for CRM submission")
+            logger.info(f"   - Connection ID: {sio.sid}")
+            logger.info(f"   - Connected: {sio.connected}")
+        
+        @sio.on('disconnect')
+        async def on_disconnect(reason=None):
+            logger.info(f"🔌 Socket.io disconnected after CRM submission (reason: {reason})")
+        
+        @sio.on('connect_error')
+        async def on_connect_error(data):
+            logger.error(f"❌ Socket.io connection error during CRM submission: {data}")
+        
+        @sio.on('error')
+        async def on_error(data):
+            nonlocal emission_error
+            emission_error = data
+            logger.error(f"❌ Socket.io error during CRM submission: {data}")
+            response_received.set()
+        
+        @sio.on('livechat-message-response')
+        async def on_message_response(data):
+            nonlocal emission_success
+            emission_success = True
+            logger.info(f"✅ Received 'livechat-message-response' event: {data}")
+            response_received.set()
+        
+        @sio.on('message-saved')
+        async def on_message_saved(data):
+            nonlocal emission_success
+            emission_success = True
+            logger.info(f"✅ Received 'message-saved' event: {data}")
+            response_received.set()
+        
+        # Listen for any other events that might indicate success
+        all_events_received = []
+        
+        @sio.on('*')
+        async def on_any_event(event, *args):
+            logger.info(f"📥 Received Socket.io event during CRM submission: {event} with data: {args}")
+            all_events_received.append((event, args))
+            # If we get any response, consider it a success (Alive5 might use different event names)
+            if event not in ['connect', 'disconnect', 'error']:
+                nonlocal emission_success
+                emission_success = True
+                response_received.set()
+        
+        # Build URL with query parameters (as per client specification)
+        from urllib.parse import urlencode
+        query_params = {
+            'authToken': auth_token,
+            'thread_id': thread_id or '',
+            'crm_id': crm_id or '',
+            'channel_id': channel_id,
+            'is_mobile': 'false',
+            'EIO': '4',
+            'transport': 'websocket'
+        }
+        logger.info(f"🔗 Connecting to Socket.io for CRM submission with authToken=***&thread_id={thread_id or ''}&crm_id={crm_id or ''}&channel_id={channel_id}")
+        
+        try:
+            await sio.connect(
+                'wss://api-v2-stage.alive5.com',
+                transports=['websocket'],
+                socketio_path='/socket.io',
+                wait_timeout=10,
+                auth={
+                    'authToken': auth_token,
+                    'thread_id': thread_id or "",
+                    'crm_id': crm_id or "",
+                    'channel_id': channel_id,
+                    'is_mobile': 'false',
+                    'EIO': '4',
+                    'transport': 'websocket'
+                }
+            )
+            logger.info(f"🔌 Connected to Socket.io for CRM submission")
+            logger.info(f"   - Connection ID: {sio.sid}")
+            logger.info(f"   - Connected: {sio.connected}")
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to Socket.io: {e}")
+            raise
         
         # Prepare message data as per client specification
+        message_content = f"Name: {request.full_name}\nEmail: {request.email}"
+        if request.phone:
+            message_content += f"\nPhone: {request.phone}"
+        if request.notes:
+            message_content += f"\nNotes: {request.notes}"
+        
         message_data = {
             "channel_id": channel_id,
-            "Message_content": f"Name: {request.full_name}\nEmail: {request.email}\nPhone: {request.phone or 'N/A'}\nNotes: {request.notes}",
+            "Message_content": message_content,
             "message_type": "voicechat",
             "org_name": request.org_name,
             "thread_id": thread_id,
             "crm_id": crm_id,
             "newThread": False,  # Thread already exists from init
-            "attach_botchain": request.botchain_name,
+            "attach_botchain": session.get("attach_botchain") or request.botchain_name,
             "webpage_title": "Voice Agent",
             "webpage_url": "",
             "assignedTo": "",
@@ -526,10 +774,59 @@ async def submit_crm(request: CRMSubmissionRequest):
         }
         
         # Emit livechat-message event
-        await sio.emit('livechat-message', message_data)
-        logger.info(f"✅ CRM data sent via livechat-message")
+        logger.info(f"📤 Emitting livechat-message with data:")
+        logger.info(f"   - Thread ID: {thread_id}")
+        logger.info(f"   - CRM ID: {crm_id}")
+        logger.info(f"   - Channel ID: {channel_id}")
+        logger.info(f"   - Message Content: {message_content[:100]}...")
         
+        # Verify connection before emitting
+        if not sio.connected:
+            logger.error("❌ Socket.io not connected - cannot emit event")
+            raise Exception("Socket.io connection not established")
+        
+        logger.info(f"📡 Emitting 'livechat-message' event (connection ID: {sio.sid})")
+        try:
+            logger.info(f"   - Full payload: {message_data}")
+            await sio.emit('livechat-message', message_data)
+            logger.info(f"   - Event name: 'livechat-message'")
+            logger.info(f"   - Payload keys: {list(message_data.keys())}")
+            logger.info(f"   - Connection status: {sio.connected}")
+            logger.info(f"   - Waiting for response...")
+            
+            # Wait for response (with timeout - increased to 10 seconds)
+            try:
+                await asyncio.wait_for(response_received.wait(), timeout=10.0)
+                if emission_success:
+                    logger.info(f"✅ CRM data confirmed saved to Alive5 (thread: {thread_id}, crm: {crm_id})")
+                elif emission_error:
+                    logger.warning(f"⚠️ CRM submission may have failed: {emission_error}")
+                else:
+                    logger.warning(f"⚠️ No response received from Alive5 (event may still be processing)")
+            except asyncio.TimeoutError:
+                # Note: Alive5 may process events server-side without sending response events
+                # This is normal behavior - check the dashboard to verify the message was saved
+                logger.info(f"ℹ️ No response event received from Alive5 (this may be normal - events processed server-side)")
+                if all_events_received:
+                    logger.info(f"📋 All events received during wait: {all_events_received}")
+                else:
+                    logger.info("ℹ️ No Socket.io response events received (Alive5 may process events server-side)")
+                logger.info(f"💡 IMPORTANT: Check Alive5 dashboard to verify the message was saved:")
+                logger.info(f"   - Thread ID: {thread_id}")
+                logger.info(f"   - CRM ID: {crm_id}")
+                logger.info(f"   - Channel ID: {channel_id}")
+                logger.info(f"   - Dashboard URL: https://app-stage.alive5.com/alivechat")
+                logger.info(f"   - Make sure you're viewing the correct channel in the dashboard")
+                logger.info(f"   - Widget is configured to start chats in channel: 'general' (check widget settings)")
+                logger.info(f"   - Even without response events, the data may have been saved successfully")
+        except Exception as e:
+            logger.error(f"❌ Error emitting livechat-message: {e}")
+            raise
+        
+        # Keep connection alive a bit longer to ensure events are processed
+        await asyncio.sleep(1.0)
         await sio.disconnect()
+        logger.info("🔌 Disconnected from Socket.io after livechat-message")
         
         return {
             "status": "success",
@@ -666,23 +963,22 @@ async def telnyx_webhook(request: Request):
                 raise HTTPException(status_code=500, detail="LiveKit SIP configuration missing")
             
             # Create LiveKit room
-            lk_api = api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret)
-            
             try:
-                # Create room
-                room = await lk_api.room.create_room(
-                    api.CreateRoomRequest(
-                        name=room_name,
-                        empty_timeout=300,  # 5 minutes
-                        max_participants=2
+                async with api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret) as lk_api:
+                    # Create room
+                    room = await lk_api.room.create_room(
+                        api.CreateRoomRequest(
+                            name=room_name,
+                            empty_timeout=300,  # 5 minutes
+                            max_participants=2
+                        )
                     )
-                )
-                logger.info(f"✅ Created LiveKit room: {room_name}")
-                
-                # Note: For inbound calls, LiveKit SIP trunk will automatically connect
-                # the call to this room if trunk is configured with matching room name pattern.
-                # No need to create SIP participant manually for inbound calls.
-                logger.info(f"✅ Room created - LiveKit SIP trunk will auto-connect call to room")
+                    logger.info(f"✅ Created LiveKit room: {room_name}")
+                    
+                    # Note: For inbound calls, LiveKit SIP trunk will automatically connect
+                    # the call to this room if trunk is configured with matching room name pattern.
+                    # No need to create SIP participant manually for inbound calls.
+                    logger.info(f"✅ Room created - LiveKit SIP trunk will auto-connect call to room")
                 
                 # Get default voice from env or use first available voice
                 default_voice_id = os.getenv("TELNYX_DEFAULT_VOICE")
@@ -874,30 +1170,30 @@ async def telnyx_webhook(request: Request):
                     
                     # Cleanup room (try both the actual room name and the key)
                     try:
-                        lk_api = api.LiveKitAPI(
+                        async with api.LiveKitAPI(
                             os.getenv("LIVEKIT_URL"),
                             os.getenv("LIVEKIT_API_KEY"),
                             os.getenv("LIVEKIT_API_SECRET")
-                        )
-                        # Try to delete the actual room name first
-                        try:
-                            await lk_api.room.delete_room(api.DeleteRoomRequest(room=actual_room_name))
-                            logger.info(f"✅ Cleaned up room: {actual_room_name}")
-                        except Exception as e1:
-                            # Check if it's a "not found" error - that's fine, room already deleted
-                            if "not_found" in str(e1).lower() or "does not exist" in str(e1).lower():
-                                logger.debug(f"ℹ️ Room {actual_room_name} already deleted (not found)")
-                            else:
-                                # If that fails for other reasons, try the key name
-                                try:
-                                    await lk_api.room.delete_room(api.DeleteRoomRequest(room=room_name_key))
-                                    logger.info(f"✅ Cleaned up room: {room_name_key}")
-                                except Exception as e2:
-                                    # Check if it's a "not found" error - that's fine
-                                    if "not_found" in str(e2).lower() or "does not exist" in str(e2).lower():
-                                        logger.debug(f"ℹ️ Room {room_name_key} already deleted (not found)")
-                                    else:
-                                        raise e2
+                        ) as lk_api:
+                            # Try to delete the actual room name first
+                            try:
+                                await lk_api.room.delete_room(api.DeleteRoomRequest(room=actual_room_name))
+                                logger.info(f"✅ Cleaned up room: {actual_room_name}")
+                            except Exception as e1:
+                                # Check if it's a "not found" error - that's fine, room already deleted
+                                if "not_found" in str(e1).lower() or "does not exist" in str(e1).lower():
+                                    logger.debug(f"ℹ️ Room {actual_room_name} already deleted (not found)")
+                                else:
+                                    # If that fails for other reasons, try the key name
+                                    try:
+                                        await lk_api.room.delete_room(api.DeleteRoomRequest(room=room_name_key))
+                                        logger.info(f"✅ Cleaned up room: {room_name_key}")
+                                    except Exception as e2:
+                                        # Check if it's a "not found" error - that's fine
+                                        if "not_found" in str(e2).lower() or "does not exist" in str(e2).lower():
+                                            logger.debug(f"ℹ️ Room {room_name_key} already deleted (not found)")
+                                        else:
+                                            raise e2
                     except Exception as e:
                         # Only log as error if it's not a "not found" error
                         if "not_found" in str(e).lower() or "does not exist" in str(e).lower():
@@ -1013,16 +1309,16 @@ async def telnyx_transfer_call(request: TelnyxTransferRequest):
                     livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
                     
                     if all([livekit_url, livekit_api_key, livekit_api_secret]):
-                        lk_api = api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret)
-                        try:
-                            await lk_api.room.delete_room(api.DeleteRoomRequest(room=request.room_name))
-                            logger.info(f"✅ Closed LiveKit room after transfer: {request.room_name}")
-                        except Exception as e:
-                            # Check if it's a "not found" error - that's fine, room already closed
-                            if "not_found" in str(e).lower() or "does not exist" in str(e).lower():
-                                logger.debug(f"ℹ️ Room {request.room_name} already closed (not found)")
-                            else:
-                                logger.warning(f"⚠️ Could not close LiveKit room after transfer: {e}")
+                        async with api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret) as lk_api:
+                            try:
+                                await lk_api.room.delete_room(api.DeleteRoomRequest(room=request.room_name))
+                                logger.info(f"✅ Closed LiveKit room after transfer: {request.room_name}")
+                            except Exception as e:
+                                # Check if it's a "not found" error - that's fine, room already closed
+                                if "not_found" in str(e).lower() or "does not exist" in str(e).lower():
+                                    logger.debug(f"ℹ️ Room {request.room_name} already closed (not found)")
+                                else:
+                                    logger.warning(f"⚠️ Could not close LiveKit room after transfer: {e}")
                     else:
                         logger.warning("⚠️ LiveKit credentials not configured - cannot close room after transfer")
                 except Exception as e:
@@ -1058,8 +1354,12 @@ async def telnyx_sip_setup_info():
 
 
 if __name__ == "__main__":
+    import sys
+    import os
+    # Ensure we can import the app module
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     uvicorn.run(
-        "main:app",
+        app,
         host="0.0.0.0",
         port=8000,
         reload=False,

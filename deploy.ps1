@@ -119,6 +119,17 @@ if ($choice -eq "1") {
     & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl enable alive5-worker"
     & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl restart alive5-worker"
     
+    # Download model files (turn detector, etc.)
+    Write-Host "Downloading model files..." -ForegroundColor $InfoColor
+    Write-Host "  - Running download-files command..." -ForegroundColor White
+    $downloadResult = & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py download-files 2>&1" 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✅ Model files downloaded successfully!" -ForegroundColor $SuccessColor
+    } else {
+        Write-Host "  ⚠️ Warning: download-files failed (packages may not be installed yet)" -ForegroundColor $WarningColor
+        Write-Host "  ⚠️ Run option 3 to install requirements first, then download-files will work" -ForegroundColor $WarningColor
+    }
+    
     Write-Host "Worker service updated and restarted!" -ForegroundColor $SuccessColor
     
 } elseif ($choice -eq "2") {
@@ -223,6 +234,17 @@ if ($choice -eq "1") {
     & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo mv /tmp/worker-service.tmp /etc/systemd/system/alive5-worker.service"
     if (Test-Path $tempFile) { Remove-Item $tempFile }
     
+    # Download model files (turn detector, etc.)
+    Write-Host "Downloading model files..." -ForegroundColor $InfoColor
+    Write-Host "  - Running download-files command..." -ForegroundColor White
+    $downloadResult = & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py download-files 2>&1" 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✅ Model files downloaded successfully!" -ForegroundColor $SuccessColor
+    } else {
+        Write-Host "  ⚠️ Warning: download-files failed (packages may not be installed yet)" -ForegroundColor $WarningColor
+        Write-Host "  ⚠️ Run option 3 to install requirements first, then download-files will work" -ForegroundColor $WarningColor
+    }
+    
     # Reload systemd and restart services
     & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl daemon-reload"
     & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl enable alive5-backend alive5-worker"
@@ -319,6 +341,21 @@ if ($choice -eq "1") {
             Write-Host "  ⚠️ AWS plugin installation also failed. Continuing with service setup..." -ForegroundColor $WarningColor
             Write-Host "  ⚠️ Note: Worker will fall back to OpenAI if Bedrock plugin is not available" -ForegroundColor $WarningColor
         }
+    }
+    
+    # Download model files (turn detector, etc.) - must be after requirements are installed
+    Write-Host "Downloading model files..." -ForegroundColor $InfoColor
+    Write-Host "  - Running download-files command..." -ForegroundColor White
+    Write-Host "    (This downloads turn detector model weights, ~66 MB for English or ~281 MB for multilingual)" -ForegroundColor Gray
+    $downloadResult = & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py download-files 2>&1" 2>&1 | ForEach-Object {
+        Write-Host $_ -ForegroundColor Gray
+        $_
+    }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✅ Model files downloaded successfully!" -ForegroundColor $SuccessColor
+    } else {
+        Write-Host "  ⚠️ Warning: download-files failed, but continuing..." -ForegroundColor $WarningColor
+        Write-Host "  ⚠️ You can manually run: python backend/alive5-worker/worker.py download-files" -ForegroundColor $WarningColor
     }
     
     # Create backend service
