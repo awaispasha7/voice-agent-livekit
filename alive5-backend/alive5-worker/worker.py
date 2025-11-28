@@ -625,6 +625,10 @@ class SimpleVoiceAgent(Agent):
     
     async def on_room_enter(self, room):
         """Called when agent enters the room - start with greeting"""
+        # Check if room is still connected before starting
+        if not room or not hasattr(room, "name"):
+            logger.warning("⚠️ Room not available, skipping greeting")
+            return
         # Start the conversation with greeting
         await self._start_conversation()
     
@@ -637,21 +641,32 @@ class SimpleVoiceAgent(Agent):
         
         logger.info(f"👋 Session ending for room: {self.room_name}")
         
+        # Mark session as closing to prevent further operations
+        if hasattr(self, "agent_session") and self.agent_session:
+            try:
+                # Check if session has a closing flag
+                if hasattr(self.agent_session, "_closing"):
+                    self.agent_session._closing = True
+            except:
+                pass
+        
         try:
             import httpx
             backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=3.0) as client:  # Reduced timeout for faster cleanup
                 response = await client.post(
                     f"{backend_url}/api/end_livechat",
                     params={"room_name": self.room_name}
                 )
                 if response.status_code == 200:
                     result = response.json()
-                    logger.info(f"✅ Livechat session ended successfully - Thread: {result.get('thread_id', 'N/A')}, CRM: {result.get('crm_id', 'N/A')}")
+                    logger.info(f"✅ Livechat session ended - Thread: {result.get('thread_id', 'N/A')}, CRM: {result.get('crm_id', 'N/A')}")
                 else:
-                    logger.warning(f"⚠️ Livechat end failed: {response.status_code} - {response.text}")
+                    logger.warning(f"⚠️ Livechat end failed: {response.status_code}")
         except Exception as e:
             logger.warning(f"⚠️ Could not end livechat: {e}")
+        
+        logger.info(f"✅ Session cleanup complete for room: {self.room_name}")
     
     async def _start_conversation(self):
         """Start the conversation - preload flows, then let LLM handle greeting"""
@@ -697,22 +712,41 @@ class SimpleVoiceAgent(Agent):
             return  # Nova Sonic will respond naturally when user speaks
         
         try:
-            # Use generate_reply to make the agent speak first (flows already cached)
-            if hasattr(self, "agent_session") and self.agent_session:
-                await self.agent_session.generate_reply()
-            else:
+            # Check if session is still active before using it
+            if not hasattr(self, "agent_session") or not self.agent_session:
                 logger.warning("⚠️ Agent session not available")
+                return
             
+            # Check if session is closing/closed
+            if hasattr(self.agent_session, "_closing") and self.agent_session._closing:
+                logger.warning("⚠️ Agent session is closing, skipping greeting")
+                return
+            
+            # Use generate_reply to make the agent speak first (flows already cached)
+            await self.agent_session.generate_reply()
+            
+        except RuntimeError as e:
+            # Handle session closing errors gracefully
+            if "closing" in str(e).lower() or "cannot use" in str(e).lower():
+                logger.info("ℹ️ Session is closing, skipping greeting (this is normal on disconnect)")
+                return
+            raise
         except Exception as e:
             # Handle Nova Sonic "unprompted generation" error gracefully
             if "unprompted generation" in str(e).lower() or "realtime" in str(e).lower():
                 logger.info("🎙️ Nova Sonic requires user input first - this is expected behavior")
                 return
             
-            logger.error(f"❌ Error starting conversation: {e}", exc_info=True)
-            # Informative fallback message
-            if hasattr(self, "agent_session") and self.agent_session:
-                await self.agent_session.say("Failed to load the bot flows. But you can still speak with me naturally.")
+            logger.error(f"❌ Error starting conversation: {e}")
+            # Only try fallback if session is still active
+            try:
+                if hasattr(self, "agent_session") and self.agent_session:
+                    # Check if session is closing before using it
+                    if not (hasattr(self.agent_session, "_closing") and self.agent_session._closing):
+                        await self.agent_session.say("Failed to load the bot flows. But you can still speak with me naturally.")
+            except RuntimeError:
+                # Session is closing, ignore
+                pass
     
     async def _publish_to_frontend(self, data_type: str, message: str = None, **kwargs):
         """Publish data to frontend for display"""
@@ -1370,7 +1404,17 @@ async def entrypoint(ctx: JobContext):
         
         # Start the conversation with greeting
         # Note: For Nova Sonic, greeting is skipped (waits for user input first)
-        await agent.on_room_enter(ctx.room)
+        # Check if room is still connected before starting greeting
+        try:
+            if ctx.room and hasattr(ctx.room, "name"):
+                await agent.on_room_enter(ctx.room)
+            else:
+                logger.warning("⚠️ Room disconnected before greeting could start")
+        except RuntimeError as e:
+            if "closing" in str(e).lower():
+                logger.info("ℹ️ Session closing during startup, skipping greeting")
+            else:
+                raise
         
         logger.info("✅ Simple agent started successfully")
         logger.info("=" * 80)

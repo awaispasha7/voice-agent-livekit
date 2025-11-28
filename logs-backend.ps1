@@ -22,8 +22,8 @@ if (-not (Test-Path "alive5-voice-ai-agent.pem")) {
 
 try {
     ssh -i alive5-voice-ai-agent.pem -o ConnectTimeout=10 ubuntu@18.210.238.67 "sudo journalctl -u alive5-backend -f --no-pager" | ForEach-Object {
-        # Remove systemd prefixes and clean up output
-        if ($_ -match '^[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+[^\s]+\s+python\[\d+\]:\s*(.*)$') {
+        # Remove systemd prefixes (format: "Nov 28 17:56:17 ip-172-26-1-10 alive5-backend[30260]: message")
+        if ($_ -match '^[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+[^\s]+\s+[^\[]+\[\d+\]:\s*(.*)$') {
             Write-Host $matches[1]
         } else {
             Write-Host $_

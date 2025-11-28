@@ -452,13 +452,44 @@ async def change_voice(request: VoiceChangeRequest):
 
 @app.delete("/api/rooms/{room_name}")
 async def delete_room(room_name: str):
-    """Delete room and clean up session"""
-    if room_name in sessions:
-        del sessions[room_name]
-    if room_name in rooms:
-        del rooms[room_name]
-    
-    return {"status": "deleted", "room_name": room_name}
+    """Delete room and clean up session - closes LiveKit room to notify worker"""
+    try:
+        logger.info(f"🗑️ Deleting room: {room_name}")
+        
+        # Close LiveKit room to trigger worker cleanup
+        try:
+            livekit_url = os.getenv("LIVEKIT_URL")
+            livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+            livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+            
+            if all([livekit_url, livekit_api_key, livekit_api_secret]):
+                async with api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret) as lk_api:
+                    try:
+                        await lk_api.room.delete_room(api.DeleteRoomRequest(room=room_name))
+                        logger.info(f"✅ LiveKit room closed: {room_name}")
+                    except Exception as e:
+                        # Room might already be closed, that's fine
+                        if "not_found" in str(e).lower() or "does not exist" in str(e).lower():
+                            logger.debug(f"ℹ️ Room {room_name} already closed")
+                        else:
+                            logger.warning(f"⚠️ Could not close LiveKit room: {e}")
+            else:
+                logger.warning("⚠️ LiveKit credentials not configured - cannot close room")
+        except Exception as e:
+            logger.warning(f"⚠️ Error closing LiveKit room: {e}")
+        
+        # Clean up session data
+        if room_name in sessions:
+            del sessions[room_name]
+        if room_name in rooms:
+            del rooms[room_name]
+        
+        logger.info(f"✅ Room deleted and cleaned up: {room_name}")
+        return {"status": "deleted", "room_name": room_name}
+        
+    except Exception as e:
+        logger.error(f"❌ Error deleting room: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/init_livechat")
 async def init_livechat(room_name: str, org_name: str, botchain_name: str):

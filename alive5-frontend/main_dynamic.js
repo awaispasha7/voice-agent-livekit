@@ -2083,6 +2083,8 @@ class DynamicVoiceAgent {
             
             console.log('🔗 Connecting to Alive5 socket with API key:', config.api_key ? `${config.api_key.substring(0, 8)}...` : 'MISSING');
             
+            // Socket.IO client library automatically handles Engine.IO handshake (including '40' frame)
+            // The client library sends the handshake automatically when io() is called
             this.alive5Socket = io('wss://api-v2-stage.alive5.com', {
                 transports: ['websocket'],
                 path: '/socket.io',
@@ -2094,27 +2096,35 @@ class DynamicVoiceAgent {
                     'thread_id': config.thread_id,
                     'crm_id': config.crm_id,
                     'channel_id': config.channel_id
-                }
+                },
+                // Ensure proper handshake
+                forceNew: true,
+                reconnection: false  // Disable auto-reconnect to match Postman behavior
             });
             
+            // Monitor connection state
             this.alive5Socket.on('connect', () => {
                 this.alive5SocketConnected = true;
                 console.log('✅ Alive5 socket connected');
+                console.log('   Socket ID:', this.alive5Socket.id);
                 console.log('   Thread ID:', this.alive5SocketConfig?.thread_id);
                 console.log('   CRM ID:', this.alive5SocketConfig?.crm_id);
+                console.log('   Channel ID:', this.alive5SocketConfig?.channel_id);
                 
-                // Auto-emit init_voice_agent when connected (if config is available)
+                // Auto-emit init_voice_agent when connected (Socket.IO client handles '40' handshake automatically)
+                // The 'connect' event fires AFTER the Engine.IO handshake ('40' frame) is complete
                 if (this.alive5SocketConfig) {
+                    // Small delay to ensure handshake is fully processed by server
                     setTimeout(() => {
                         const initPayload = {
                             thread_id: this.alive5SocketConfig.thread_id,
                             crm_id: this.alive5SocketConfig.crm_id,
                             channel_id: this.alive5SocketConfig.channel_id
                         };
-                        console.log('📤 Emitting init_voice_agent:', initPayload);
+                        console.log('📤 Emitting init_voice_agent (handshake complete):', initPayload);
                         this.emitAlive5SocketEvent('init_voice_agent', initPayload)
                             .catch(err => console.error('❌ Error emitting init_voice_agent:', err));
-                    }, 200); // Small delay to ensure connection is fully established
+                    }, 100); // Reduced delay - handshake is already complete when 'connect' fires
                 } else {
                     console.warn('⚠️ No socket config available to emit init_voice_agent');
                 }
@@ -2129,6 +2139,20 @@ class DynamicVoiceAgent {
                 console.error('❌ Alive5 socket connection error:', error);
             });
             
+            // Monitor Engine.IO connection state (handshake process)
+            this.alive5Socket.io.on('open', () => {
+                console.log('🔌 Engine.IO transport opened (handshake starting)');
+            });
+            
+            this.alive5Socket.io.on('error', (error) => {
+                console.error('❌ Engine.IO transport error:', error);
+            });
+            
+            // Verify handshake completion
+            this.alive5Socket.io.on('upgrade', () => {
+                console.log('⬆️ Engine.IO transport upgraded to WebSocket');
+            });
+            
             // Listen for acks
             this.alive5Socket.on('init_voice_agent_ack', (data) => {
                 console.log('📥 init_voice_agent_ack received:', data);
@@ -2140,11 +2164,11 @@ class DynamicVoiceAgent {
             });
             
             this.alive5Socket.on('post_message_ack', (data) => {
-                console.log('📥 post_message_ack received:', data.message_id || 'no message_id');
+                console.log('📥 post_message_ack received:', JSON.stringify(data, null, 2));
             });
             
             this.alive5Socket.on('save_crm_data_ack', (data) => {
-                console.log('📥 save_crm_data_ack received:', data.updated_fields || 'no fields');
+                console.log('📥 save_crm_data_ack received:', JSON.stringify(data, null, 2));
             });
             
         } catch (error) {
