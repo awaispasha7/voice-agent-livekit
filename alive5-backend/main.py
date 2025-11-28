@@ -11,7 +11,6 @@ import uuid
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
-import socketio
 from datetime import datetime
 from contextlib import asynccontextmanager
 
@@ -478,6 +477,9 @@ async def init_livechat(room_name: str, org_name: str, botchain_name: str):
         if not widget_id:
             raise Exception("A5_WIDGET_ID not configured in .env")
         
+        # Verify API key is loaded
+        logger.info(f"✅ API key loaded: {api_key[:8]}...{api_key[-4:] if len(api_key) > 12 else '***'}")
+        
         # Get widget data to get channel_id and crm_id
         widget_api_url = f"https://api-v2-stage.alive5.com/1.0/widget-code/get-by-widget-id"
         
@@ -556,7 +558,7 @@ async def submit_crm(request: CRMSubmissionRequest):
         if not crm_id:
             raise Exception("Session not initialized - call init_livechat first")
         
-        # Store CRM data in session
+        # Store CRM data in session (worker will send via frontend socket)
         if "crm_data" not in sessions[request.room_name]:
             sessions[request.room_name]["crm_data"] = {}
         
@@ -568,138 +570,9 @@ async def submit_crm(request: CRMSubmissionRequest):
             "submitted_at": datetime.now().isoformat()
         })
         
-        # Connect to voice agent socket
-        sio = socketio.AsyncClient()
-        
-        # Track responses
-        responses_received = []
-        response_received = asyncio.Event()
-        
-        @sio.on('connect')
-        async def on_connect():
-            logger.info(f"✅ Voice agent socket connected for CRM submission")
-            logger.info(f"   - Connection ID: {sio.sid}")
-        
-        @sio.on('disconnect')
-        async def on_disconnect(reason=None):
-            logger.info(f"🔌 Voice agent socket disconnected (reason: {reason})")
-        
-        @sio.on('connect_error')
-        async def on_connect_error(data):
-            logger.error(f"❌ Voice agent socket connection error: {data}")
-        
-        @sio.on('save_crm_data_ack')
-        async def on_save_ack(data):
-            nonlocal responses_received
-            logger.info(f"📥 Received 'save_crm_data_ack': {data}")
-            responses_received.append(data)
-            response_received.set()
-        
-        # Connect to voice agent socket
-        try:
-            query_params = {
-                'type': 'voice_agent',
-                'x-a5-apikey': api_key,
-                'thread_id': thread_id or '',
-                'crm_id': crm_id or '',
-                'channel_id': channel_id,
-                'EIO': '4',
-                'transport': 'websocket'
-            }
-            
-            await sio.connect(
-                'wss://api-v2-stage.alive5.com',
-                transports=['websocket'],
-                socketio_path='/socket.io',
-                wait_timeout=10,
-                auth=query_params  # Query params passed via auth dict
-            )
-            logger.info(f"🔌 Connected to voice agent socket for CRM submission")
-        except Exception as e:
-            logger.error(f"❌ Failed to connect to voice agent socket: {e}")
-            raise
-        
-        if not sio.connected:
-            raise Exception("Voice agent socket connection not established")
-        
-        # Send CRM data using save_crm_data events
-        updates_sent = []
-        
-        # Split full_name into first_name and last_name if provided
-        if request.full_name:
-            name_parts = request.full_name.strip().split(' ', 1)
-            if len(name_parts) >= 1:
-                await sio.emit('save_crm_data', {
-                    "crm_id": crm_id,
-                    "key": "first_name",
-                    "value": name_parts[0]
-                })
-                updates_sent.append("first_name")
-            if len(name_parts) >= 2:
-                await sio.emit('save_crm_data', {
-                    "crm_id": crm_id,
-                    "key": "last_name",
-                    "value": name_parts[1]
-                })
-                updates_sent.append("last_name")
-        
-        if request.email:
-            await sio.emit('save_crm_data', {
-                "crm_id": crm_id,
-                "key": "email",
-                "value": request.email
-            })
-            updates_sent.append("email")
-        
-        if request.phone:
-            await sio.emit('save_crm_data', {
-                "crm_id": crm_id,
-                "key": "phone",
-                "value": request.phone
-            })
-            updates_sent.append("phone")
-        
-        if request.notes:
-            await sio.emit('save_crm_data', {
-                "crm_id": crm_id,
-                "key": "notes",
-                "value": request.notes
-            })
-            updates_sent.append("notes")
-        
-        logger.info(f"📤 Sent {len(updates_sent)} save_crm_data events: {', '.join(updates_sent)}")
-        
-        # Wait for acknowledgments (timeout after 10 seconds)
-        try:
-            await asyncio.wait_for(response_received.wait(), timeout=10.0)
-            logger.info(f"✅ Received {len(responses_received)} save_crm_data_ack responses")
-        except asyncio.TimeoutError:
-            logger.warning("⚠️ No save_crm_data_ack received (may still be processing)")
-        
-        # Also send a post_message with the CRM data summary
-        if thread_id:
-            message_content = f"Name: {request.full_name}\nEmail: {request.email}"
-            if request.phone:
-                message_content += f"\nPhone: {request.phone}"
-            if request.notes:
-                message_content += f"\nNotes: {request.notes}"
-            
-            await sio.emit('post_message', {
-                "thread_id": thread_id,
-                "crm_id": crm_id,
-                "message_content": message_content,
-                "message_type": "voice_agent_post_message"
-            })
-            logger.info(f"📤 Sent post_message with CRM data summary")
-        
-        # Keep connection alive a bit longer to ensure events are processed
-        await asyncio.sleep(1.0)
-        await sio.disconnect()
-        logger.info("🔌 Disconnected from voice agent socket")
-        
         return {
             "status": "success",
-            "message": "CRM data sent to Alive5",
+            "message": "CRM data stored - will be sent via frontend socket",
             "thread_id": thread_id,
             "crm_id": crm_id
         }
@@ -724,7 +597,7 @@ async def end_livechat(room_name: str):
         
         # Clean up session
         if room_name in sessions:
-            sessions[room_name]["socket_connected"] = False
+            pass  # Session cleanup handled by session expiration
         
         logger.info(f"✅ Voice agent session ended - Thread: {thread_id}, CRM: {crm_id}")
         

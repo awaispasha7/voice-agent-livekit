@@ -508,23 +508,30 @@ class DynamicVoiceAgent {
             
             // Initialize Alive5 socket after getting connection details
             try {
-                const initResponse = await fetch(`${this.config.API_BASE_URL}/api/init_livechat?room_name=${connectionDetails.room_name}&org_name=${orgName}&botchain_name=${botchainName}`);
+                const initResponse = await fetch(`${this.config.API_BASE_URL}/api/init_livechat?room_name=${connectionDetails.room_name}&org_name=${orgName}&botchain_name=${botchainName}`, {
+                    method: 'POST'
+                });
                 if (initResponse.ok) {
                     const initData = await initResponse.json();
                     if (initData.socket_config) {
-                        await this.connectAlive5Socket(initData.socket_config);
-                        // Emit init_voice_agent after connecting
-                        if (this.alive5SocketConnected) {
-                            await this.emitAlive5SocketEvent('init_voice_agent', {
-                                thread_id: initData.socket_config.thread_id,
-                                crm_id: initData.socket_config.crm_id,
-                                channel_id: initData.socket_config.channel_id
-                            });
+                        // Verify API key is present
+                        if (!initData.socket_config.api_key) {
+                            console.error('❌ API key missing from socket_config!');
+                            console.error('Response data:', initData);
+                            return;
                         }
+                        console.log('✅ Received socket config with API key:', initData.socket_config.api_key ? 'Present' : 'MISSING');
+                        // Connect socket (init_voice_agent will be emitted automatically on connect)
+                        await this.connectAlive5Socket(initData.socket_config);
+                    } else {
+                        console.error('❌ socket_config missing from init_livechat response');
+                        console.error('Response data:', initData);
                     }
+                } else {
+                    console.error('Failed to initialize Alive5 socket:', initResponse.status, initResponse.statusText);
                 }
             } catch (error) {
-                console.warn('Could not initialize Alive5 socket:', error);
+                console.error('Could not initialize Alive5 socket:', error);
             }
             
         } catch (error) {
@@ -2050,20 +2057,15 @@ class DynamicVoiceAgent {
                 return;
             }
             
+            // Validate config
+            if (!config || !config.api_key) {
+                console.error('❌ Invalid socket config - API key missing!', config);
+                return;
+            }
+            
             this.alive5SocketConfig = config;
             
-            // Build connection URL with query parameters
-            const queryParams = new URLSearchParams({
-                'EIO': '4',
-                'transport': 'websocket',
-                'type': 'voice_agent',
-                'x-a5-apikey': config.api_key,
-                'thread_id': config.thread_id,
-                'crm_id': config.crm_id,
-                'channel_id': config.channel_id
-            });
-            
-            const socketUrl = `wss://api-v2-stage.alive5.com/socket.io/?${queryParams.toString()}`;
+            console.log('🔗 Connecting to Alive5 socket with API key:', config.api_key ? `${config.api_key.substring(0, 8)}...` : 'MISSING');
             
             this.alive5Socket = io('wss://api-v2-stage.alive5.com', {
                 transports: ['websocket'],
@@ -2082,6 +2084,17 @@ class DynamicVoiceAgent {
             this.alive5Socket.on('connect', () => {
                 this.alive5SocketConnected = true;
                 console.log('✅ Alive5 socket connected');
+                
+                // Auto-emit init_voice_agent when connected (if config is available)
+                if (this.alive5SocketConfig) {
+                    setTimeout(() => {
+                        this.emitAlive5SocketEvent('init_voice_agent', {
+                            thread_id: this.alive5SocketConfig.thread_id,
+                            crm_id: this.alive5SocketConfig.crm_id,
+                            channel_id: this.alive5SocketConfig.channel_id
+                        }).catch(err => console.error('Error emitting init_voice_agent:', err));
+                    }, 200); // Small delay to ensure connection is fully established
+                }
             });
             
             this.alive5Socket.on('disconnect', (reason) => {
@@ -2130,11 +2143,12 @@ class DynamicVoiceAgent {
         try {
             const { action, event, payload } = data;
             
-            if (action === 'connect') {
-                // Initialize socket connection
-                this.connectAlive5Socket(payload);
-            } else if (action === 'emit') {
-                // Emit socket event
+            if (action === 'emit') {
+                // Emit socket event (socket should already be connected by frontend)
+                if (!this.alive5SocketConnected) {
+                    console.warn('⚠️ Socket not connected, cannot emit:', event);
+                    return;
+                }
                 this.emitAlive5SocketEvent(event, payload);
             } else if (action === 'disconnect') {
                 // Disconnect socket

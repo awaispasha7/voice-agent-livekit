@@ -785,38 +785,6 @@ class SimpleVoiceAgent(Agent):
             # Completely isolate errors - never let them affect agent processing
             logger.warning(f"⚠️ Could not send message to Alive5 (isolated error): {e}")
     
-    async def _ensure_alive5_connection(self):
-        """Send socket connect instruction to frontend via data channel"""
-        try:
-            if not hasattr(self, 'room') or not self.room:
-                return
-            
-            import json
-            import os
-            
-            api_key = os.getenv("A5_API_KEY")
-            if not api_key:
-                logger.error("A5_API_KEY not configured")
-                return
-            
-            # Send connect instruction to frontend
-            socket_instruction = {
-                "action": "connect",
-                "payload": {
-                    "thread_id": self.alive5_thread_id,
-                    "crm_id": self.alive5_crm_id or "",
-                    "channel_id": self.alive5_channel_id,
-                    "api_key": api_key
-                }
-            }
-            
-            await self.room.local_participant.publish_data(
-                json.dumps(socket_instruction).encode('utf-8'),
-                topic="lk.alive5.socket"
-            )
-        except Exception as e:
-            logger.error(f"❌ Failed to send socket connect instruction: {e}")
-    
     def _build_query_string(self) -> dict:
         """Build query_string with collected CRM data"""
         full_name = self.collected_data.get("full_name", "")
@@ -1171,39 +1139,8 @@ async def entrypoint(ctx: JobContext):
                                     agent.alive5_channel_id = session_data.get("channel_id")
                                     agent.alive5_widget_id = session_data.get("widget_id")
                                     
-                                    # Send socket connect instruction to frontend
-                                    import json
-                                    import os
-                                    api_key = os.getenv("A5_API_KEY")
-                                    if api_key and hasattr(agent, 'room') and agent.room:
-                                        socket_instruction = {
-                                            "action": "connect",
-                                            "payload": {
-                                                "thread_id": thread_id,
-                                                "crm_id": crm_id,
-                                                "channel_id": agent.alive5_channel_id,
-                                                "api_key": api_key
-                                            }
-                                        }
-                                        await agent.room.local_participant.publish_data(
-                                            json.dumps(socket_instruction).encode('utf-8'),
-                                            topic="lk.alive5.socket"
-                                        )
-                                        
-                                        # Send init_voice_agent event
-                                        init_instruction = {
-                                            "action": "emit",
-                                            "event": "init_voice_agent",
-                                            "payload": {
-                                                "thread_id": thread_id,
-                                                "crm_id": crm_id,
-                                                "channel_id": agent.alive5_channel_id
-                                            }
-                                        }
-                                        await agent.room.local_participant.publish_data(
-                                            json.dumps(init_instruction).encode('utf-8'),
-                                            topic="lk.alive5.socket"
-                                        )
+                                    # Frontend handles socket connection and init_voice_agent
+                                    # Worker only needs to send message/CRM update instructions
                                     
                                     # Process any queued messages
                                     if agent._alive5_message_queue:
