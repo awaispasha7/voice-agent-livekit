@@ -600,6 +600,14 @@ class DynamicVoiceAgent {
             // Room disconnected
             this.isConnected = false;
             
+            // Disconnect Alive5 socket when room disconnects
+            if (this.alive5Socket && this.alive5SocketConnected) {
+                console.log('🔌 Disconnecting Alive5 socket (room disconnected)');
+                this.alive5Socket.disconnect();
+                this.alive5Socket = null;
+                this.alive5SocketConnected = false;
+            }
+            
             // Update intent display to show "Offline" when disconnected
             this.updateIntentDisplay();
             
@@ -1493,6 +1501,14 @@ class DynamicVoiceAgent {
         if (!this.room) return;
         
         try {
+            // Disconnect Alive5 socket first
+            if (this.alive5Socket && this.alive5SocketConnected) {
+                console.log('🔌 Disconnecting Alive5 socket (user disconnect)');
+                this.alive5Socket.disconnect();
+                this.alive5Socket = null;
+                this.alive5SocketConnected = false;
+            }
+            
             if (this.isConnected) {
                 await this.room.disconnect();
                 console.log('Disconnected from room:', this.currentRoomName);
@@ -2084,16 +2100,23 @@ class DynamicVoiceAgent {
             this.alive5Socket.on('connect', () => {
                 this.alive5SocketConnected = true;
                 console.log('✅ Alive5 socket connected');
+                console.log('   Thread ID:', this.alive5SocketConfig?.thread_id);
+                console.log('   CRM ID:', this.alive5SocketConfig?.crm_id);
                 
                 // Auto-emit init_voice_agent when connected (if config is available)
                 if (this.alive5SocketConfig) {
                     setTimeout(() => {
-                        this.emitAlive5SocketEvent('init_voice_agent', {
+                        const initPayload = {
                             thread_id: this.alive5SocketConfig.thread_id,
                             crm_id: this.alive5SocketConfig.crm_id,
                             channel_id: this.alive5SocketConfig.channel_id
-                        }).catch(err => console.error('Error emitting init_voice_agent:', err));
+                        };
+                        console.log('📤 Emitting init_voice_agent:', initPayload);
+                        this.emitAlive5SocketEvent('init_voice_agent', initPayload)
+                            .catch(err => console.error('❌ Error emitting init_voice_agent:', err));
                     }, 200); // Small delay to ensure connection is fully established
+                } else {
+                    console.warn('⚠️ No socket config available to emit init_voice_agent');
                 }
             });
             
@@ -2108,15 +2131,20 @@ class DynamicVoiceAgent {
             
             // Listen for acks
             this.alive5Socket.on('init_voice_agent_ack', (data) => {
-                console.log('📥 init_voice_agent_ack:', data);
+                console.log('📥 init_voice_agent_ack received:', data);
+                if (data.status === 'initialized') {
+                    console.log('✅ Voice agent initialized successfully');
+                } else {
+                    console.warn('⚠️ init_voice_agent_ack status:', data.status, data.message || '');
+                }
             });
             
             this.alive5Socket.on('post_message_ack', (data) => {
-                console.log('📥 post_message_ack:', data);
+                console.log('📥 post_message_ack received:', data.message_id || 'no message_id');
             });
             
             this.alive5Socket.on('save_crm_data_ack', (data) => {
-                console.log('📥 save_crm_data_ack:', data);
+                console.log('📥 save_crm_data_ack received:', data.updated_fields || 'no fields');
             });
             
         } catch (error) {
@@ -2132,9 +2160,10 @@ class DynamicVoiceAgent {
         }
         
         try {
+            console.log(`📤 Emitting ${eventName}:`, eventName === 'post_message' ? `${data.message_content?.substring(0, 50)}...` : data);
             this.alive5Socket.emit(eventName, data);
         } catch (error) {
-            console.error(`Error emitting ${eventName}:`, error);
+            console.error(`❌ Error emitting ${eventName}:`, error);
         }
     }
     
@@ -2147,11 +2176,18 @@ class DynamicVoiceAgent {
                 // Emit socket event (socket should already be connected by frontend)
                 if (!this.alive5SocketConnected) {
                     console.warn('⚠️ Socket not connected, cannot emit:', event);
+                    console.warn('   Attempting to reconnect...');
+                    // Try to reconnect if config is available
+                    if (this.alive5SocketConfig) {
+                        this.connectAlive5Socket(this.alive5SocketConfig);
+                    }
                     return;
                 }
+                console.log(`📨 Received instruction to emit ${event} via data channel`);
                 this.emitAlive5SocketEvent(event, payload);
             } else if (action === 'disconnect') {
                 // Disconnect socket
+                console.log('📨 Received instruction to disconnect socket');
                 if (this.alive5Socket) {
                     this.alive5Socket.disconnect();
                     this.alive5Socket = null;
@@ -2159,7 +2195,7 @@ class DynamicVoiceAgent {
                 }
             }
         } catch (error) {
-            console.error('Error handling Alive5 socket instruction:', error);
+            console.error('❌ Error handling Alive5 socket instruction:', error);
         }
     }
     

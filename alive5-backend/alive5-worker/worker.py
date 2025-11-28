@@ -635,6 +635,8 @@ class SimpleVoiceAgent(Agent):
             logger.info(f"📞 Phone call ending - skipping livechat cleanup")
             return
         
+        logger.info(f"👋 Session ending for room: {self.room_name}")
+        
         try:
             import httpx
             backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
@@ -644,9 +646,10 @@ class SimpleVoiceAgent(Agent):
                     params={"room_name": self.room_name}
                 )
                 if response.status_code == 200:
-                    logger.info(f"✅ Livechat session ended successfully")
+                    result = response.json()
+                    logger.info(f"✅ Livechat session ended successfully - Thread: {result.get('thread_id', 'N/A')}, CRM: {result.get('crm_id', 'N/A')}")
                 else:
-                    logger.warning(f"⚠️ Livechat end failed: {response.status_code}")
+                    logger.warning(f"⚠️ Livechat end failed: {response.status_code} - {response.text}")
         except Exception as e:
             logger.warning(f"⚠️ Could not end livechat: {e}")
     
@@ -940,10 +943,14 @@ class SimpleVoiceAgent(Agent):
                 }
             }
             
-            await self.room.local_participant.publish_data(
-                json.dumps(socket_instruction).encode('utf-8'),
-                topic="lk.alive5.socket"
-            )
+            try:
+                await self.room.local_participant.publish_data(
+                    json.dumps(socket_instruction).encode('utf-8'),
+                    topic="lk.alive5.socket"
+                )
+                logger.info(f"📤 Message instruction sent via data channel: {message_content[:50]}...")
+            except Exception as e:
+                logger.error(f"❌ Failed to send message instruction via data channel: {e}")
             
         except Exception as e:
             logger.error(f"❌ Could not send message to Alive5: {e}")
