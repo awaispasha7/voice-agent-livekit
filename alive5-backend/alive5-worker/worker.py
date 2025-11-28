@@ -1095,82 +1095,63 @@ async def entrypoint(ctx: JobContext):
         # Connect to the room first - using same approach as working implementation
         await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
         
-        # Initialize livechat session with Socket.io (required for CRM data submission)
-        # CRITICAL: Start this in background to avoid blocking agent startup
-        # The agent can start speaking immediately while livechat initializes
-        # NOTE: This is needed for BOTH web sessions AND phone calls to enable CRM data saving
-        async def init_livechat_background():
-            """Initialize livechat in background and set session data on agent"""
+        # Get Alive5 session data from backend (frontend already called init_livechat)
+        # CRITICAL: Frontend calls init_livechat and connects socket, so worker should use that session data
+        # Do NOT call init_livechat again - it would create a different thread_id!
+        async def get_alive5_session_data():
+            """Get Alive5 session data from backend (created by frontend's init_livechat call)"""
             try:
                 import httpx
                 from urllib.parse import quote
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(
-                        f"{backend_url}/api/init_livechat",
-                        params={
-                            "room_name": room_name_clean,
-                            "org_name": org_name,
-                            "botchain_name": botchain_name
-                        }
-                    )
-                    if response.status_code == 200:
-                        init_result = response.json()
-                        thread_id = init_result.get('thread_id')
-                        crm_id = init_result.get('crm_id')
-                        logger.info(f"✅ Livechat initialized (background) - Thread: {thread_id}, CRM: {crm_id}")
-                        
-                        # Get session data to retrieve Alive5 connection info
-                        try:
-                            encoded_room_name = quote(room_name_clean, safe='')
-                            async with httpx.AsyncClient() as session_client:
-                                session_response = await session_client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
-                                if session_response.status_code == 200:
-                                    session_data = session_response.json()
-                                    
-                                    # Verify thread_id matches between init_livechat response and session data
-                                    session_thread_id = session_data.get("thread_id")
-                                    session_crm_id = session_data.get("crm_id")
-                                    
-                                    if session_thread_id and session_thread_id != thread_id:
-                                        logger.warning(f"⚠️ Thread ID mismatch! Init returned: {thread_id}, Session has: {session_thread_id}")
-                                        logger.warning(f"   Using thread_id from init_livechat response: {thread_id}")
-                                    elif session_crm_id and session_crm_id != crm_id:
-                                        logger.warning(f"⚠️ CRM ID mismatch! Init returned: {crm_id}, Session has: {session_crm_id}")
-                                        logger.warning(f"   Using crm_id from init_livechat response: {crm_id}")
-                                    else:
-                                        logger.info(f"✅ Thread ID and CRM ID match between init_livechat and session data")
-                                    
-                                    # Set Alive5 session data in agent instance
-                                    agent.alive5_thread_id = thread_id
-                                    agent.alive5_crm_id = crm_id
-                                    agent.alive5_channel_id = session_data.get("channel_id")
-                                    agent.alive5_widget_id = session_data.get("widget_id")
-                                    
-                                    # Frontend handles socket connection and init_voice_agent
-                                    # Worker only needs to send message/CRM update instructions
-                                    
-                                    # Process any queued messages
-                                    if agent._alive5_message_queue:
-                                        queued_messages = agent._alive5_message_queue.copy()
-                                        agent._alive5_message_queue.clear()
-                                        for queued_content, queued_is_agent in queued_messages:
-                                            await agent._send_message_to_alive5_internal(queued_content, queued_is_agent)
-                                else:
-                                    logger.warning(f"⚠️ Could not get session data: {session_response.status_code}")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Could not set Alive5 session data: {e}")
-                    else:
-                        logger.warning(f"⚠️ Livechat init failed: {response.status_code}")
+                encoded_room_name = quote(room_name_clean, safe='')
+                
+                # Poll for session data (frontend may call init_livechat slightly after worker starts)
+                max_attempts = 10
+                for attempt in range(max_attempts):
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        session_response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
+                        if session_response.status_code == 200:
+                            session_data = session_response.json()
+                            thread_id = session_data.get("thread_id")
+                            crm_id = session_data.get("crm_id")
+                            channel_id = session_data.get("channel_id")
+                            widget_id = session_data.get("widget_id")
+                            
+                            if thread_id and crm_id and channel_id:
+                                # Set Alive5 session data in agent instance
+                                agent.alive5_thread_id = thread_id
+                                agent.alive5_crm_id = crm_id
+                                agent.alive5_channel_id = channel_id
+                                agent.alive5_widget_id = widget_id
+                                
+                                logger.info(f"✅ Alive5 session data loaded - Thread: {thread_id}, CRM: {crm_id}")
+                                
+                                # Process any queued messages
+                                if agent._alive5_message_queue:
+                                    queued_messages = agent._alive5_message_queue.copy()
+                                    agent._alive5_message_queue.clear()
+                                    for queued_content, queued_is_agent in queued_messages:
+                                        await agent._send_message_to_alive5_internal(queued_content, queued_is_agent)
+                                return
+                            else:
+                                logger.debug(f"⏳ Session data not ready yet (attempt {attempt + 1}/{max_attempts})")
+                        else:
+                            logger.debug(f"⏳ Session not found yet (attempt {attempt + 1}/{max_attempts})")
+                    
+                    # Wait before retrying (frontend may still be initializing)
+                    await asyncio.sleep(0.5)
+                
+                logger.warning(f"⚠️ Could not get Alive5 session data after {max_attempts} attempts")
             except Exception as e:
-                logger.warning(f"⚠️ Could not initialize livechat (background): {e}")
+                logger.warning(f"⚠️ Could not get Alive5 session data: {e}")
         
-        # Start livechat initialization in background (non-blocking)
-        # This is required for CRM data submission to work (both web and phone calls)
-        asyncio.create_task(init_livechat_background())
+        # Get session data in background (non-blocking)
+        # Frontend will call init_livechat, then we'll pick up the session data
+        asyncio.create_task(get_alive5_session_data())
         if is_phone_call:
-            logger.info(f"📞 Phone call detected - initializing livechat in background for CRM support")
+            logger.info(f"📞 Phone call detected - waiting for Alive5 session data")
         else:
-            logger.info(f"🚀 Started livechat initialization in background (agent will start immediately)")
+            logger.info(f"🚀 Waiting for Alive5 session data (frontend will initialize)")
         
         # Create and start the agent (use cleaned room name)
         agent = SimpleVoiceAgent(room_name_clean, botchain_name, org_name, special_instructions)
