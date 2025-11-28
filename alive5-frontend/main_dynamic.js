@@ -29,6 +29,11 @@ class DynamicVoiceAgent {
         this.finalTranscript = "";
         this.lastTranscriptUpdate = Date.now();
         
+        // Alive5 Socket.io connection (frontend-based for whitelisting)
+        this.alive5Socket = null;
+        this.alive5SocketConnected = false;
+        this.alive5SocketConfig = null; // {thread_id, crm_id, channel_id, api_key}
+        
         // Thinking indicator
         this.isThinking = false;
         this.thinkingInterval = null;
@@ -501,6 +506,27 @@ class DynamicVoiceAgent {
                 this.checkWorkerResponse();
             }, 20000); // 20 seconds timeout
             
+            // Initialize Alive5 socket after getting connection details
+            try {
+                const initResponse = await fetch(`${this.config.API_BASE_URL}/api/init_livechat?room_name=${connectionDetails.room_name}&org_name=${orgName}&botchain_name=${botchainName}`);
+                if (initResponse.ok) {
+                    const initData = await initResponse.json();
+                    if (initData.socket_config) {
+                        await this.connectAlive5Socket(initData.socket_config);
+                        // Emit init_voice_agent after connecting
+                        if (this.alive5SocketConnected) {
+                            await this.emitAlive5SocketEvent('init_voice_agent', {
+                                thread_id: initData.socket_config.thread_id,
+                                crm_id: initData.socket_config.crm_id,
+                                channel_id: initData.socket_config.channel_id
+                            });
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('Could not initialize Alive5 socket:', error);
+            }
+            
         } catch (error) {
             console.error('Connection failed:', error);
             this.updateStatusIndicator('error');
@@ -738,6 +764,14 @@ class DynamicVoiceAgent {
                     }
                 } catch (error) {
                     console.error('Error processing conversation control data:', error);
+                }
+            } else if (topic === 'lk.alive5.socket') {
+                // Handle Alive5 socket event instructions from backend
+                try {
+                    const data = JSON.parse(new TextDecoder().decode(payload));
+                    this.handleAlive5SocketInstruction(data);
+                } catch (error) {
+                    console.error('Error processing Alive5 socket instruction:', error);
                 }
             } else if (topic) {
                 // console.log('📨 Other data received:', { topic, participant: participant?.identity, data: new TextDecoder().decode(payload) });
@@ -2001,6 +2035,117 @@ class DynamicVoiceAgent {
         const formContainer = document.querySelector('.form-container');
         if (formContainer) {
             formContainer.appendChild(retryBtn);
+        }
+    }
+    
+    // ============================================================================
+    // Alive5 Socket.io Connection (Frontend-based for whitelisting)
+    // ============================================================================
+    
+    async connectAlive5Socket(config) {
+        /** Connect to Alive5 voice agent socket from frontend (whitelisted origin) */
+        try {
+            if (this.alive5Socket && this.alive5SocketConnected) {
+                console.log('Alive5 socket already connected');
+                return;
+            }
+            
+            this.alive5SocketConfig = config;
+            
+            // Build connection URL with query parameters
+            const queryParams = new URLSearchParams({
+                'EIO': '4',
+                'transport': 'websocket',
+                'type': 'voice_agent',
+                'x-a5-apikey': config.api_key,
+                'thread_id': config.thread_id,
+                'crm_id': config.crm_id,
+                'channel_id': config.channel_id
+            });
+            
+            const socketUrl = `wss://api-v2-stage.alive5.com/socket.io/?${queryParams.toString()}`;
+            
+            this.alive5Socket = io('wss://api-v2-stage.alive5.com', {
+                transports: ['websocket'],
+                path: '/socket.io',
+                query: {
+                    'EIO': '4',
+                    'transport': 'websocket',
+                    'type': 'voice_agent',
+                    'x-a5-apikey': config.api_key,
+                    'thread_id': config.thread_id,
+                    'crm_id': config.crm_id,
+                    'channel_id': config.channel_id
+                }
+            });
+            
+            this.alive5Socket.on('connect', () => {
+                this.alive5SocketConnected = true;
+                console.log('✅ Alive5 socket connected');
+            });
+            
+            this.alive5Socket.on('disconnect', (reason) => {
+                this.alive5SocketConnected = false;
+                console.log('🔌 Alive5 socket disconnected:', reason);
+            });
+            
+            this.alive5Socket.on('connect_error', (error) => {
+                console.error('❌ Alive5 socket connection error:', error);
+            });
+            
+            // Listen for acks
+            this.alive5Socket.on('init_voice_agent_ack', (data) => {
+                console.log('📥 init_voice_agent_ack:', data);
+            });
+            
+            this.alive5Socket.on('post_message_ack', (data) => {
+                console.log('📥 post_message_ack:', data);
+            });
+            
+            this.alive5Socket.on('save_crm_data_ack', (data) => {
+                console.log('📥 save_crm_data_ack:', data);
+            });
+            
+        } catch (error) {
+            console.error('Error connecting to Alive5 socket:', error);
+        }
+    }
+    
+    async emitAlive5SocketEvent(eventName, data) {
+        /** Emit socket event to Alive5 */
+        if (!this.alive5Socket || !this.alive5SocketConnected) {
+            console.warn('⚠️ Alive5 socket not connected, cannot emit:', eventName);
+            return;
+        }
+        
+        try {
+            this.alive5Socket.emit(eventName, data);
+        } catch (error) {
+            console.error(`Error emitting ${eventName}:`, error);
+        }
+    }
+    
+    handleAlive5SocketInstruction(data) {
+        /** Handle socket instruction from backend via LiveKit data channel */
+        try {
+            const { action, event, payload } = data;
+            
+            if (action === 'connect') {
+                // Initialize socket connection
+                this.connectAlive5Socket(payload);
+            } else if (action === 'emit') {
+                // Emit socket event
+                this.emitAlive5SocketEvent(event, payload);
+            } else if (action === 'disconnect') {
+                // Disconnect socket
+                if (this.alive5Socket) {
+                    this.alive5Socket.disconnect();
+                    this.alive5Socket = null;
+                    this.alive5SocketConnected = false;
+                }
+            }
+        } catch (error) {
+            console.error('Error handling Alive5 socket instruction:', error);
         }
     }
     

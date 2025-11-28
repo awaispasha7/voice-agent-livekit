@@ -110,7 +110,9 @@ async def handle_bedrock_knowledge_base_request(
             logger.info("   Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env")
             return await handle_faq_bot_request(query_text, bot_id=faq_bot_id, isVoice=True, waiting_callback=waiting_callback)
         
+        logger.info("=" * 80)
         logger.info(f"🔧 Bedrock Knowledge Base request: {query_text}")
+        logger.info("=" * 80)
         # if faq_bot_id:
         #     logger.info(f"   Filtering by FAQ bot ID (orgbot_name): {faq_bot_id}")
         # if org_name:
@@ -184,7 +186,7 @@ async def handle_bedrock_knowledge_base_request(
         if retrieval_results:
             # Log metadata for each result
             logger.info(f"✅ Bedrock Knowledge Base response received ({len(retrieval_results)} results)")
-            logger.info(f"📊 Results metadata:")
+            # logger.info(f"📊 Results metadata:")
             
             for i, result in enumerate(retrieval_results, 1):
                 metadata = result.get('metadata', {})
@@ -193,11 +195,11 @@ async def handle_bedrock_knowledge_base_request(
                 org_name_meta = metadata.get('org_name', 'N/A')
                 reference_url = metadata.get('reference_url', 'N/A')
                 
-                logger.info(f"   Result {i}:")
-                logger.info(f"      - Score: {score:.4f}")
-                logger.info(f"      - orgbot_name: {orgbot_name}")
-                logger.info(f"      - org_name: {org_name_meta}")
-                logger.info(f"      - reference_url: {reference_url}")
+                # logger.info(f"   Result {i}:")
+                # logger.info(f"      - Score: {score:.4f}")
+                # logger.info(f"      - orgbot_name: {orgbot_name}")
+                # logger.info(f"      - org_name: {org_name_meta}")
+                # logger.info(f"      - reference_url: {reference_url}")
                 
                 # # Log if filter matched (if filters were applied)
                 # if faq_bot_id:

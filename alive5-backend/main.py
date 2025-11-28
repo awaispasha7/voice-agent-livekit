@@ -8,10 +8,12 @@ import json
 import logging
 import asyncio
 import uuid
+import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
 import socketio
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 import httpx
 import uvicorn
@@ -20,6 +22,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from livekit import api
+
+# Try to import psutil for better resource monitoring
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
 
 # Load environment variables
 current_dir = Path(__file__).parent
@@ -43,8 +52,141 @@ if not env_loaded:
 logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 logger = logging.getLogger("simple-backend")
 
-# FastAPI app
-app = FastAPI(title="Alive5 Simple Voice Agent Backend", version="1.0")
+# Resource monitoring functions
+def get_system_resources():
+    """Get CPU and RAM usage"""
+    try:
+        if PSUTIL_AVAILABLE:
+            # Use psutil for accurate monitoring
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            memory = psutil.virtual_memory()
+            return {
+                "cpu_percent": cpu_percent,
+                "memory_total_gb": round(memory.total / (1024**3), 2),
+                "memory_used_gb": round(memory.used / (1024**3), 2),
+                "memory_available_gb": round(memory.available / (1024**3), 2),
+                "memory_percent": memory.percent
+            }
+        else:
+            # Fallback to system commands
+            # Get CPU load
+            try:
+                cpu_result = subprocess.run(
+                    ["uptime"], capture_output=True, text=True, timeout=2
+                )
+                if cpu_result.returncode == 0:
+                    # Parse load average from uptime output
+                    load_avg = cpu_result.stdout.split("load average:")[-1].strip().split(",")[0].strip()
+                    cpu_percent = float(load_avg) * 100  # Rough estimate
+                else:
+                    cpu_percent = 0.0
+            except:
+                cpu_percent = 0.0
+            
+            # Get memory
+            try:
+                mem_result = subprocess.run(
+                    ["free", "-m"], capture_output=True, text=True, timeout=2
+                )
+                if mem_result.returncode == 0:
+                    lines = mem_result.stdout.strip().split("\n")
+                    mem_line = lines[1].split()
+                    total_mb = int(mem_line[1])
+                    used_mb = int(mem_line[2])
+                    available_mb = int(mem_line[6]) if len(mem_line) > 6 else total_mb - used_mb
+                    memory_percent = (used_mb / total_mb) * 100 if total_mb > 0 else 0
+                    
+                    return {
+                        "cpu_percent": cpu_percent,
+                        "memory_total_gb": round(total_mb / 1024, 2),
+                        "memory_used_gb": round(used_mb / 1024, 2),
+                        "memory_available_gb": round(available_mb / 1024, 2),
+                        "memory_percent": round(memory_percent, 1)
+                    }
+            except:
+                pass
+            
+            return {
+                "cpu_percent": cpu_percent,
+                "memory_total_gb": 0,
+                "memory_used_gb": 0,
+                "memory_available_gb": 0,
+                "memory_percent": 0
+            }
+    except Exception as e:
+        logger.warning(f"Failed to get system resources: {e}")
+        return None
+
+async def monitor_resources():
+    """Background task to monitor and log system resources"""
+    logger.info("📊 Resource monitoring started (logging every 30 seconds)")
+    
+    while True:
+        try:
+            await asyncio.sleep(30)  # Log every 30 seconds
+            resources = get_system_resources()
+            
+            if resources:
+                # Format memory status
+                mem_status = "🟢 OK"
+                if resources["memory_percent"] > 90:
+                    mem_status = "🔴 CRITICAL"
+                elif resources["memory_percent"] > 80:
+                    mem_status = "🟡 WARNING"
+                
+                # Format CPU status
+                cpu_status = "🟢 OK"
+                if resources["cpu_percent"] > 80:
+                    cpu_status = "🟡 HIGH"
+                
+                logger.info(
+                    f"📊 RESOURCES | CPU: {resources['cpu_percent']:.1f}% {cpu_status} | "
+                    f"RAM: {resources['memory_used_gb']:.2f}GB/{resources['memory_total_gb']:.2f}GB "
+                    f"({resources['memory_percent']:.1f}%) {mem_status} | "
+                    f"Available: {resources['memory_available_gb']:.2f}GB"
+                )
+                
+                # Log warning if memory is critical
+                if resources["memory_percent"] > 90:
+                    logger.warning(
+                        f"⚠️ CRITICAL: Memory usage is {resources['memory_percent']:.1f}%! "
+                        f"Only {resources['memory_available_gb']:.2f}GB available. "
+                        f"Server may become unresponsive. Consider disabling VAD (USE_VAD=false) or upgrading instance."
+                    )
+            else:
+                logger.warning("⚠️ Could not retrieve system resources")
+                
+        except asyncio.CancelledError:
+            logger.info("📊 Resource monitoring stopped")
+            break
+        except Exception as e:
+            logger.error(f"Error in resource monitoring: {e}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown"""
+    # Startup
+    logger.info("🚀 Backend starting up...")
+    
+    # Start resource monitoring task
+    monitor_task = asyncio.create_task(monitor_resources())
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 Backend shutting down...")
+    monitor_task.cancel()
+    try:
+        await monitor_task
+    except asyncio.CancelledError:
+        pass
+
+# FastAPI app with lifespan
+app = FastAPI(
+    title="Alive5 Simple Voice Agent Backend",
+    version="1.0",
+    lifespan=lifespan
+)
 
 # CORS middleware
 app.add_middleware(
@@ -321,311 +463,78 @@ async def delete_room(room_name: str):
 
 @app.post("/api/init_livechat")
 async def init_livechat(room_name: str, org_name: str, botchain_name: str):
-    """Initialize livechat session with Alive5 Socket.io
+    """Initialize voice agent session - sends socket config to frontend via response
     
-    Step 1: Get widget data by widget ID (returns jwtToken, channel_id, thread_id, crm_id, attach_botchain)
-    Step 2: Connect to WSS with query parameters
-    Step 3: Emit init-livechat-bot to create thread/CRM
-    Step 4: Store thread_id and crm_id in session
+    Frontend will establish socket connection (whitelisted origin) and emit init_voice_agent
     """
     try:
-        logger.info(f"🚀 Initializing livechat for room: {room_name}")
+        logger.info(f"🚀 Initializing voice agent session for room: {room_name}")
         
-        # Get widget ID from environment (required)
-        widget_id = os.getenv("ALIVE5_WIDGET_ID")
+        # Get API key and widget ID from environment
+        api_key = os.getenv("A5_API_KEY")
+        widget_id = os.getenv("A5_WIDGET_ID")
+        if not api_key:
+            raise Exception("A5_API_KEY not configured in .env")
         if not widget_id:
-            raise Exception("ALIVE5_WIDGET_ID not configured in .env")
+            raise Exception("A5_WIDGET_ID not configured in .env")
         
-        # Step 1: Get widget data by widget ID
-        # Endpoint: https://api-v2-stage.alive5.com/1.0/widget-code/get-by-widget-id?id={widget_id}
+        # Get widget data to get channel_id and crm_id
         widget_api_url = f"https://api-v2-stage.alive5.com/1.0/widget-code/get-by-widget-id"
         
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                widget_api_url,
-                params={"id": widget_id}
-            )
-            
+            response = await client.get(widget_api_url, params={"id": widget_id})
             if response.status_code != 200:
-                raise Exception(f"Failed to get widget data: {response.status_code} - {response.text}")
+                raise Exception(f"Failed to get widget data: {response.status_code}")
             
             widget_data = response.json()
-            # Extract data from response.data (or response if data is at root)
             data = widget_data.get("data", widget_data)
-            
-            # Log full API response for debugging (first time only)
-            # logger.info(f"📋 Full widget API response: {widget_data}")
-            
-            jwt_token = data.get("jwtToken") or data.get("jwt_token")
             channel_id = data.get("channel_id")
-            channel_name = data.get("channel_name") or data.get("channel")  # Check for channel name
-            thread_id = data.get("thread_id") or ""  # May be empty initially
-            crm_id = data.get("crm_id") or ""  # May be empty initially
-            attach_botchain = data.get("attach_botchain") or botchain_name
-            botusername = data.get("botusername") or "voice-bot"
+            crm_id = data.get("crm_id") or ""
             
-            if not jwt_token:
-                raise Exception("jwtToken not found in widget data response")
             if not channel_id:
-                raise Exception("channel_id not found in widget data response")
-            
-            # Log channel information for debugging
-            logger.info(f"📋 Widget configuration loaded:")
-            logger.info(f"   - Channel ID: {channel_id}")
-            logger.info(f"   - Channel Name: {channel_name or '(not provided by API)'}")
-            logger.info(f"   - Thread ID: {thread_id or '(new)'}")
-            logger.info(f"   - CRM ID: {crm_id or '(new)'}")
-            logger.info(f"   - Botchain: {attach_botchain}")
-            logger.info(f"   - Bot Username: {botusername}")
+                raise Exception("channel_id not found in widget data")
         
-        # Step 2: Connect to WSS with query parameters
-        # Format: wss://api-v2-stage.alive5.com/socket.io/?authToken={jwtToken}&thread_id={thread_id}&crm_id={crm_id}&channel_id={channel_id}&is_mobile=false&EIO=4&transport=websocket
-        sio = socketio.AsyncClient()
+        # Generate new thread_id for this session (standard UUID format)
+        import uuid
+        final_thread_id = str(uuid.uuid4())  # Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
         
-        # Build URL with query parameters (as per client specification)
-        from urllib.parse import urlencode
-        query_params = {
-            'authToken': jwt_token,
-            'thread_id': thread_id or '',
-            'crm_id': crm_id or '',
-            'channel_id': channel_id,
-            'is_mobile': 'false',
-            'EIO': '4',
-            'transport': 'websocket'
-        }
-        url_with_params = f"wss://api-v2-stage.alive5.com/socket.io/?{urlencode(query_params)}"
-        logger.info(f"🔗 Connecting to Socket.io with URL: wss://api-v2-stage.alive5.com/socket.io/?authToken=***&thread_id={thread_id or ''}&crm_id={crm_id or ''}&channel_id={channel_id}&is_mobile=false&EIO=4&transport=websocket")
+        # Use CRM ID from widget API or generate new one (standard UUID format)
+        final_crm_id = crm_id
+        if not final_crm_id:
+            final_crm_id = str(uuid.uuid4())  # Standard UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
         
-        # Connect with query parameters in URL
-        await sio.connect(
-            'wss://api-v2-stage.alive5.com',
-            transports=['websocket'],
-            socketio_path='/socket.io',
-            wait_timeout=10,
-            # Also pass auth as fallback (python-socketio might need both)
-            auth={
-                'authToken': jwt_token,
-                'thread_id': thread_id or '',
-                'crm_id': crm_id or '',
-                'channel_id': channel_id,
-                'is_mobile': 'false',
-                'EIO': '4',
-                'transport': 'websocket'
-            }
-        )
-        
-        # Step 3: Emit init-livechat-bot event
-        # Format matches client's example
-        init_data = {
-            "org_name": org_name,
-            "thread_id": thread_id or None,  # May be None if new thread
-            "channel_id": channel_id,
-            "crm_id": crm_id or None,  # May be None if new thread
-            "attach_botchain": attach_botchain,
-            "widget_id": widget_id,
-            "botusername": botusername,
-            "webpage_title": "Voice Agent",
-            "webpage_url": "",
-            "message_type": "voicechat"
-        }
-        
-        # Wait for response with thread_id and crm_id
-        response_data = {}
-        response_received = asyncio.Event()
-        all_events_received = []
-        
-        @sio.on('connect')
-        async def on_connect():
-            logger.info("✅ Socket.io connected for init-livechat-bot")
-            logger.info(f"   - Connection ID: {sio.sid}")
-            logger.info(f"   - Connected: {sio.connected}")
-        
-        @sio.on('disconnect')
-        async def on_disconnect(reason=None):
-            logger.info(f"🔌 Socket.io disconnected after init-livechat-bot (reason: {reason})")
-        
-        @sio.on('connect_error')
-        async def on_connect_error(data):
-            logger.error(f"❌ Socket.io connection error: {data}")
-        
-        @sio.on('livechat-initialized')
-        async def on_init(data):
-            nonlocal response_data
-            logger.info(f"📥 Received 'livechat-initialized' event: {data}")
-            response_data = data
-            response_received.set()
-        
-        # Listen for any other events that might be responses
-        @sio.on('*')
-        async def on_any_event(event, *args):
-            logger.info(f"📥 Received Socket.io event: {event} with data: {args}")
-            all_events_received.append((event, args))
-            # Check if this event contains thread_id or crm_id
-            for arg in args:
-                if isinstance(arg, dict):
-                    if 'thread_id' in arg or 'crm_id' in arg:
-                        nonlocal response_data
-                        response_data.update(arg)
-                        response_received.set()
-        
-        # Verify connection before emitting
-        if not sio.connected:
-            logger.error("❌ Socket.io not connected - cannot emit event")
-            raise Exception("Socket.io connection not established")
-        
-        # logger.info(f"📤 Emitting 'init-livechat-bot' event (connection ID: {sio.sid})")
-        await sio.emit('init-livechat-bot', init_data)
-        # logger.info(f"   - Event name: 'init-livechat-bot'")
-        # logger.info(f"   - Payload keys: {list(init_data.keys())}")
-        # logger.info(f"   - Connection status: {sio.connected}")
-        
-        # Wait for response (timeout after 10 seconds - increased for slow API)
-        try:
-            await asyncio.wait_for(response_received.wait(), timeout=10.0)
-            logger.info(f"✅ Received response to init-livechat-bot: {response_data}")
-        except asyncio.TimeoutError:
-            # Note: Alive5 may process events server-side without sending response events
-            # This is normal behavior - check the dashboard to verify the chat was created
-            logger.info("ℹ️ No response event received from Alive5 (this may be normal - events processed server-side)")
-            if all_events_received:
-                logger.info(f"📋 All events received during wait: {all_events_received}")
-            else:
-                logger.info("ℹ️ No Socket.io response events received (Alive5 may process events server-side)")
-            # Use thread_id/crm_id from widget data if available
-            if thread_id:
-                response_data["thread_id"] = thread_id
-            if crm_id:
-                response_data["crm_id"] = crm_id
-        
-        # Step 4: Store in session
-        # For voice agent sessions, ALWAYS create new thread_id and crm_id
-        # Don't reuse widget's thread_id - each voice session should be a fresh conversation
-        final_thread_id = response_data.get("thread_id") or f"uid-{uuid.uuid4().hex[:16]}-{uuid.uuid4().hex[:12]}-{uuid.uuid4().hex[:12]}-{uuid.uuid4().hex[:12]}-{uuid.uuid4().hex[:12]}"
-        final_crm_id = response_data.get("crm_id") or f"{uuid.uuid4().hex[:8]}-{uuid.uuid4().hex[:4]}-{uuid.uuid4().hex[:4]}-{uuid.uuid4().hex[:4]}-{uuid.uuid4().hex[:12]}"
-        
+        # Store in session for worker to use
         if room_name in sessions:
             sessions[room_name]["thread_id"] = final_thread_id
             sessions[room_name]["crm_id"] = final_crm_id
-            sessions[room_name]["auth_token"] = jwt_token
+            sessions[room_name]["api_key"] = api_key
             sessions[room_name]["channel_id"] = channel_id
             sessions[room_name]["widget_id"] = widget_id
-            sessions[room_name]["attach_botchain"] = attach_botchain
-            sessions[room_name]["socket_connected"] = True
         
-        # Keep connection alive a bit longer to ensure events are processed
-        await asyncio.sleep(1.0)
-        if sio.connected:
-            await sio.disconnect()
-            logger.info("🔌 Disconnected from Socket.io after init-livechat-bot")
+        logger.info(f"✅ Voice agent session configured - Thread: {final_thread_id[:20]}..., CRM: {final_crm_id[:20]}...")
         
-        # Send an initial message in a separate connection to activate the thread
-        # This is required because the server disconnects immediately after init-livechat-bot
-        # We'll create a new connection just for this message, similar to CRM submission
-        try:
-            logger.info(f"📤 Creating separate connection to send initial message for thread activation")
-            sio_initial = socketio.AsyncClient()
-            
-            await sio_initial.connect(
-                'wss://api-v2-stage.alive5.com',
-                transports=['websocket'],
-                socketio_path='/socket.io',
-                wait_timeout=10,
-                auth={
-                    'authToken': jwt_token,
-                    'thread_id': final_thread_id or '',
-                    'crm_id': final_crm_id or '',
-                    'channel_id': channel_id,
-                    'is_mobile': 'false',
-                    'EIO': '4',
-                    'transport': 'websocket'
-                }
-            )
-            
-            # For voice agent sessions, we ALWAYS create a new thread/conversation
-            # Use the final_thread_id and final_crm_id we generated earlier (not widget's IDs)
-            from datetime import datetime
-            timestamp = int(datetime.now().timestamp() * 1000)
-            
-            # Build initial message data with new thread
-            initial_message_data = {
-                "channel_id": channel_id,
-                "Message_content": "Voice agent session started",
-                "message_type": "voicechat",
-                "org_name": org_name,
-                "thread_id": final_thread_id,
-                "crm_id": final_crm_id,
-                "attach_botchain": attach_botchain,
-                "webpage_title": "Voice Agent",
-                "webpage_url": "",
-                "assignedTo": "",
-                "user_interacted": "bot_initiated",
-                "Widget_id": widget_id
-            }
-            
-            # ALWAYS include newThread object for voice agent sessions (required to create conversation in dashboard)
-            # This ensures each voice session creates a new visible conversation
-            initial_message_data["newThread"] = {
-                "assignedTo": "",
-                "botchain_label": attach_botchain or "",
-                "channel_id": channel_id,
-                "connect_botchain": attach_botchain or "",
-                "connect_orgbot": "",
-                "created_at": timestamp,
-                "crm_id": final_crm_id,
-                "lastmessage_at": timestamp,
-                "org_name": org_name,
-                "status_timestamp": f"open||{timestamp}",
-                "thread_session": "{}",
-                "thread_start_chat": timestamp,
-                "thread_status": "chatting",
-                "thread_type": "livechat",
-                "time_ping": timestamp,
-                "timestamp": timestamp,
-                "transaction_id": "",
-                "updated_at": timestamp,
-                "viewed_by": [],
-                "widget_id": widget_id,
-                "thread_id": final_thread_id,
-                "crmData": {
-                    "allow_zapier_syns": True,
-                    "assigned_user": [],
-                    "created_at": timestamp,
-                    "crm_id": final_crm_id,
-                    "crm_thread_type": "livechat",
-                    "crm_type": "livechat",
-                    "org_name": org_name,
-                    "updated_at": timestamp
-                },
-                "tempMessageId": f"uid-{timestamp}"
-            }
-            
-            logger.info(f"📤 Emitting initial 'livechat-message' with newThread object (voice session)")
-            logger.info(f"   - Full payload: {initial_message_data}")
-            await sio_initial.emit('livechat-message', initial_message_data)
-            logger.info(f"✅ Initial message emitted successfully")
-            
-            await asyncio.sleep(0.5)  # Small delay to ensure message is processed
-            await sio_initial.disconnect()
-            logger.info("🔌 Disconnected from Socket.io after initial message")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not send initial message (non-critical): {e}")
-            # Don't fail the entire init if initial message fails - it's not critical
-        
-        logger.info(f"✅ Livechat initialized - Thread: {final_thread_id}, CRM: {final_crm_id}")
-        
+        # Return socket config for frontend to connect
         return {
             "status": "success",
             "thread_id": final_thread_id,
-            "crm_id": final_crm_id
+            "crm_id": final_crm_id,
+            "channel_id": channel_id,
+            "api_key": api_key,
+            "socket_config": {
+                "thread_id": final_thread_id,
+                "crm_id": final_crm_id,
+                "channel_id": channel_id,
+                "api_key": api_key
+            }
         }
         
     except Exception as e:
-        logger.error(f"❌ Error initializing livechat: {e}", exc_info=True)
+        logger.error(f"❌ Error initializing voice agent session: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/submit_crm")
 async def submit_crm(request: CRMSubmissionRequest):
-    """Submit collected CRM data via Socket.io livechat-message event
+    """Submit collected CRM data via voice agent socket save_crm_data events
     
     Uses existing thread_id and crm_id from init_livechat
     """
@@ -635,15 +544,16 @@ async def submit_crm(request: CRMSubmissionRequest):
         logger.info(f"   Email: {request.email}")
         logger.info(f"   Notes: {request.notes}")
         
-        # Get session data (includes auth_token, thread_id, crm_id from init)
+        # Get session data (includes api_key, thread_id, crm_id from init)
         session = sessions.get(request.room_name, {})
-        auth_token = session.get("auth_token")
+        api_key = session.get("api_key") or os.getenv("A5_API_KEY")
         thread_id = session.get("thread_id")
         crm_id = session.get("crm_id")
         channel_id = session.get("channel_id")
-        widget_id = session.get("widget_id")
         
-        if not auth_token:
+        if not api_key:
+            raise Exception("A5_API_KEY not configured - cannot submit CRM data")
+        if not crm_id:
             raise Exception("Session not initialized - call init_livechat first")
         
         # Store CRM data in session
@@ -658,175 +568,134 @@ async def submit_crm(request: CRMSubmissionRequest):
             "submitted_at": datetime.now().isoformat()
         })
         
-        # Connect to Socket.io (use staging API, same as init_livechat)
+        # Connect to voice agent socket
         sio = socketio.AsyncClient()
         
-        # Track emission status
-        emission_success = False
-        emission_error = None
+        # Track responses
+        responses_received = []
         response_received = asyncio.Event()
         
         @sio.on('connect')
         async def on_connect():
-            logger.info(f"✅ Socket.io connected for CRM submission")
+            logger.info(f"✅ Voice agent socket connected for CRM submission")
             logger.info(f"   - Connection ID: {sio.sid}")
-            logger.info(f"   - Connected: {sio.connected}")
         
         @sio.on('disconnect')
         async def on_disconnect(reason=None):
-            logger.info(f"🔌 Socket.io disconnected after CRM submission (reason: {reason})")
+            logger.info(f"🔌 Voice agent socket disconnected (reason: {reason})")
         
         @sio.on('connect_error')
         async def on_connect_error(data):
-            logger.error(f"❌ Socket.io connection error during CRM submission: {data}")
+            logger.error(f"❌ Voice agent socket connection error: {data}")
         
-        @sio.on('error')
-        async def on_error(data):
-            nonlocal emission_error
-            emission_error = data
-            logger.error(f"❌ Socket.io error during CRM submission: {data}")
+        @sio.on('save_crm_data_ack')
+        async def on_save_ack(data):
+            nonlocal responses_received
+            logger.info(f"📥 Received 'save_crm_data_ack': {data}")
+            responses_received.append(data)
             response_received.set()
         
-        @sio.on('livechat-message-response')
-        async def on_message_response(data):
-            nonlocal emission_success
-            emission_success = True
-            logger.info(f"✅ Received 'livechat-message-response' event: {data}")
-            response_received.set()
-        
-        @sio.on('message-saved')
-        async def on_message_saved(data):
-            nonlocal emission_success
-            emission_success = True
-            logger.info(f"✅ Received 'message-saved' event: {data}")
-            response_received.set()
-        
-        # Listen for any other events that might indicate success
-        all_events_received = []
-        
-        @sio.on('*')
-        async def on_any_event(event, *args):
-            logger.info(f"📥 Received Socket.io event during CRM submission: {event} with data: {args}")
-            all_events_received.append((event, args))
-            # If we get any response, consider it a success (Alive5 might use different event names)
-            if event not in ['connect', 'disconnect', 'error']:
-                nonlocal emission_success
-                emission_success = True
-                response_received.set()
-        
-        # Build URL with query parameters (as per client specification)
-        from urllib.parse import urlencode
-        query_params = {
-            'authToken': auth_token,
-            'thread_id': thread_id or '',
-            'crm_id': crm_id or '',
-            'channel_id': channel_id,
-            'is_mobile': 'false',
-            'EIO': '4',
-            'transport': 'websocket'
-        }
-        logger.info(f"🔗 Connecting to Socket.io for CRM submission with authToken=***&thread_id={thread_id or ''}&crm_id={crm_id or ''}&channel_id={channel_id}")
-        
+        # Connect to voice agent socket
         try:
+            query_params = {
+                'type': 'voice_agent',
+                'x-a5-apikey': api_key,
+                'thread_id': thread_id or '',
+                'crm_id': crm_id or '',
+                'channel_id': channel_id,
+                'EIO': '4',
+                'transport': 'websocket'
+            }
+            
             await sio.connect(
                 'wss://api-v2-stage.alive5.com',
                 transports=['websocket'],
                 socketio_path='/socket.io',
                 wait_timeout=10,
-                auth={
-                    'authToken': auth_token,
-                    'thread_id': thread_id or "",
-                    'crm_id': crm_id or "",
-                    'channel_id': channel_id,
-                    'is_mobile': 'false',
-                    'EIO': '4',
-                    'transport': 'websocket'
-                }
+                auth=query_params  # Query params passed via auth dict
             )
-            logger.info(f"🔌 Connected to Socket.io for CRM submission")
-            logger.info(f"   - Connection ID: {sio.sid}")
-            logger.info(f"   - Connected: {sio.connected}")
+            logger.info(f"🔌 Connected to voice agent socket for CRM submission")
         except Exception as e:
-            logger.error(f"❌ Failed to connect to Socket.io: {e}")
+            logger.error(f"❌ Failed to connect to voice agent socket: {e}")
             raise
         
-        # Prepare message data as per client specification
-        message_content = f"Name: {request.full_name}\nEmail: {request.email}"
-        if request.phone:
-            message_content += f"\nPhone: {request.phone}"
-        if request.notes:
-            message_content += f"\nNotes: {request.notes}"
-        
-        message_data = {
-            "channel_id": channel_id,
-            "Message_content": message_content,
-            "message_type": "voicechat",
-            "org_name": request.org_name,
-            "thread_id": thread_id,
-            "crm_id": crm_id,
-            "newThread": False,  # Thread already exists from init
-            "attach_botchain": session.get("attach_botchain") or request.botchain_name,
-            "webpage_title": "Voice Agent",
-            "webpage_url": "",
-            "assignedTo": "",
-            "user_interacted": "additional_action",
-            "Widget_id": widget_id
-        }
-        
-        # Emit livechat-message event
-        logger.info(f"📤 Emitting livechat-message with data:")
-        logger.info(f"   - Thread ID: {thread_id}")
-        logger.info(f"   - CRM ID: {crm_id}")
-        logger.info(f"   - Channel ID: {channel_id}")
-        logger.info(f"   - Message Content: {message_content[:100]}...")
-        
-        # Verify connection before emitting
         if not sio.connected:
-            logger.error("❌ Socket.io not connected - cannot emit event")
-            raise Exception("Socket.io connection not established")
+            raise Exception("Voice agent socket connection not established")
         
-        logger.info(f"📡 Emitting 'livechat-message' event (connection ID: {sio.sid})")
+        # Send CRM data using save_crm_data events
+        updates_sent = []
+        
+        # Split full_name into first_name and last_name if provided
+        if request.full_name:
+            name_parts = request.full_name.strip().split(' ', 1)
+            if len(name_parts) >= 1:
+                await sio.emit('save_crm_data', {
+                    "crm_id": crm_id,
+                    "key": "first_name",
+                    "value": name_parts[0]
+                })
+                updates_sent.append("first_name")
+            if len(name_parts) >= 2:
+                await sio.emit('save_crm_data', {
+                    "crm_id": crm_id,
+                    "key": "last_name",
+                    "value": name_parts[1]
+                })
+                updates_sent.append("last_name")
+        
+        if request.email:
+            await sio.emit('save_crm_data', {
+                "crm_id": crm_id,
+                "key": "email",
+                "value": request.email
+            })
+            updates_sent.append("email")
+        
+        if request.phone:
+            await sio.emit('save_crm_data', {
+                "crm_id": crm_id,
+                "key": "phone",
+                "value": request.phone
+            })
+            updates_sent.append("phone")
+        
+        if request.notes:
+            await sio.emit('save_crm_data', {
+                "crm_id": crm_id,
+                "key": "notes",
+                "value": request.notes
+            })
+            updates_sent.append("notes")
+        
+        logger.info(f"📤 Sent {len(updates_sent)} save_crm_data events: {', '.join(updates_sent)}")
+        
+        # Wait for acknowledgments (timeout after 10 seconds)
         try:
-            logger.info(f"   - Full payload: {message_data}")
-            await sio.emit('livechat-message', message_data)
-            logger.info(f"   - Event name: 'livechat-message'")
-            logger.info(f"   - Payload keys: {list(message_data.keys())}")
-            logger.info(f"   - Connection status: {sio.connected}")
-            logger.info(f"   - Waiting for response...")
+            await asyncio.wait_for(response_received.wait(), timeout=10.0)
+            logger.info(f"✅ Received {len(responses_received)} save_crm_data_ack responses")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ No save_crm_data_ack received (may still be processing)")
+        
+        # Also send a post_message with the CRM data summary
+        if thread_id:
+            message_content = f"Name: {request.full_name}\nEmail: {request.email}"
+            if request.phone:
+                message_content += f"\nPhone: {request.phone}"
+            if request.notes:
+                message_content += f"\nNotes: {request.notes}"
             
-            # Wait for response (with timeout - increased to 10 seconds)
-            try:
-                await asyncio.wait_for(response_received.wait(), timeout=10.0)
-                if emission_success:
-                    logger.info(f"✅ CRM data confirmed saved to Alive5 (thread: {thread_id}, crm: {crm_id})")
-                elif emission_error:
-                    logger.warning(f"⚠️ CRM submission may have failed: {emission_error}")
-                else:
-                    logger.warning(f"⚠️ No response received from Alive5 (event may still be processing)")
-            except asyncio.TimeoutError:
-                # Note: Alive5 may process events server-side without sending response events
-                # This is normal behavior - check the dashboard to verify the message was saved
-                logger.info(f"ℹ️ No response event received from Alive5 (this may be normal - events processed server-side)")
-                if all_events_received:
-                    logger.info(f"📋 All events received during wait: {all_events_received}")
-                else:
-                    logger.info("ℹ️ No Socket.io response events received (Alive5 may process events server-side)")
-                logger.info(f"💡 IMPORTANT: Check Alive5 dashboard to verify the message was saved:")
-                logger.info(f"   - Thread ID: {thread_id}")
-                logger.info(f"   - CRM ID: {crm_id}")
-                logger.info(f"   - Channel ID: {channel_id}")
-                logger.info(f"   - Dashboard URL: https://app-stage.alive5.com/alivechat")
-                logger.info(f"   - Make sure you're viewing the correct channel in the dashboard")
-                logger.info(f"   - Widget is configured to start chats in channel: 'general' (check widget settings)")
-                logger.info(f"   - Even without response events, the data may have been saved successfully")
-        except Exception as e:
-            logger.error(f"❌ Error emitting livechat-message: {e}")
-            raise
+            await sio.emit('post_message', {
+                "thread_id": thread_id,
+                "crm_id": crm_id,
+                "message_content": message_content,
+                "message_type": "voice_agent_post_message"
+            })
+            logger.info(f"📤 Sent post_message with CRM data summary")
         
         # Keep connection alive a bit longer to ensure events are processed
         await asyncio.sleep(1.0)
         await sio.disconnect()
-        logger.info("🔌 Disconnected from Socket.io after livechat-message")
+        logger.info("🔌 Disconnected from voice agent socket")
         
         return {
             "status": "success",
@@ -846,44 +715,18 @@ async def end_livechat(room_name: str):
         logger.info(f"👋 Ending livechat for room: {room_name}")
         
         session = sessions.get(room_name, {})
-        auth_token = session.get("auth_token")
         thread_id = session.get("thread_id")
         crm_id = session.get("crm_id")
-        channel_id = session.get("channel_id")
         
-        if not auth_token:
+        if not thread_id:
             logger.warning("No active session to end")
             return {"status": "no_session"}
-        
-        # Connect and emit visitor-chat-end
-        sio = socketio.AsyncClient()
-        
-        await sio.connect(
-            'https://api-v2.alive5.com',
-            transports=['websocket', 'polling'],
-            auth={
-                'authToken': auth_token,
-                'thread_id': thread_id or "",
-                'crm_id': crm_id or "",
-                'channel_id': channel_id
-            },
-            socketio_path='/socket.io'
-        )
-        
-        end_data = {
-            "thread_id": thread_id,
-            "crm_id": crm_id,
-            "channel_id": channel_id
-        }
-        
-        await sio.emit('visitor-chat-end', end_data)
-        logger.info(f"✅ Livechat session ended")
-        
-        await sio.disconnect()
         
         # Clean up session
         if room_name in sessions:
             sessions[room_name]["socket_connected"] = False
+        
+        logger.info(f"✅ Voice agent session ended - Thread: {thread_id}, CRM: {crm_id}")
         
         return {"status": "success", "message": "Session ended"}
         

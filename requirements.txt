@@ -17,5 +17,6 @@ openai>=1.0.0
 httpx
 python-socketio[asyncio-client]
 boto3>=1.34.0
+psutil>=5.9.0  # For system resource monitoring (CPU, RAM)
 
 

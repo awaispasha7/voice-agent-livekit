@@ -61,7 +61,12 @@ if ($choice -eq "1") {
     
     # Create directory on server
     Write-Host "  - Creating directory structure..." -ForegroundColor White
-    & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/alive5-worker"
+    $mkdirResult = & ssh -i $KEY -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=5 "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/alive5-worker" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ❌ Error creating directory structure. Exit code: $LASTEXITCODE" -ForegroundColor $ErrorColor
+        Write-Host "  Error output: $mkdirResult" -ForegroundColor $ErrorColor
+        return
+    }
     
     # Deploy worker files
     $scpTarget = "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/backend/alive5-worker/"
@@ -86,10 +91,13 @@ if ($choice -eq "1") {
     Write-Host "Creating/updating worker service..." -ForegroundColor $InfoColor
     
     # Build simplified service content - applications will load .env file themselves
+    # Enhanced with better restart policies and resource limits
     $serviceLines = @(
         "[Unit]",
         "Description=Alive5 Voice Agent Worker",
         "After=network.target",
+        "StartLimitIntervalSec=300",
+        "StartLimitBurst=5",
         "",
         "[Service]",
         "Type=simple",
@@ -99,6 +107,16 @@ if ($choice -eq "1") {
         "ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py dev",
         "Restart=always",
         "RestartSec=10",
+        "TimeoutStartSec=60",
+        "TimeoutStopSec=30",
+        "# Resource limits to prevent memory exhaustion",
+        "# Uncomment and adjust if needed:",
+        "# MemoryMax=1.5G",
+        "# MemoryHigh=1.2G",
+        "# CPUQuota=200%",
+        "StandardOutput=journal",
+        "StandardError=journal",
+        "SyslogIdentifier=alive5-worker",
         "",
         "[Install]",
         "WantedBy=multi-user.target"
@@ -119,17 +137,6 @@ if ($choice -eq "1") {
     & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl enable alive5-worker"
     & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl restart alive5-worker"
     
-    # Download model files (turn detector, etc.)
-    Write-Host "Downloading model files..." -ForegroundColor $InfoColor
-    Write-Host "  - Running download-files command..." -ForegroundColor White
-    $downloadResult = & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py download-files 2>&1" 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✅ Model files downloaded successfully!" -ForegroundColor $SuccessColor
-    } else {
-        Write-Host "  ⚠️ Warning: download-files failed (packages may not be installed yet)" -ForegroundColor $WarningColor
-        Write-Host "  ⚠️ Run option 3 to install requirements first, then download-files will work" -ForegroundColor $WarningColor
-    }
-    
     Write-Host "Worker service updated and restarted!" -ForegroundColor $SuccessColor
     
 } elseif ($choice -eq "2") {
@@ -137,7 +144,12 @@ if ($choice -eq "1") {
     
     # Create directories on server
     Write-Host "  - Creating directory structure..." -ForegroundColor White
-    & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/alive5-worker"
+    $mkdirResult = & ssh -i $KEY -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=5 "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/alive5-worker" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ❌ Error creating directory structure. Exit code: $LASTEXITCODE" -ForegroundColor $ErrorColor
+        Write-Host "  Error output: $mkdirResult" -ForegroundColor $ErrorColor
+        return
+    }
     
     # Deploy backend files
     $backendTarget = "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/backend/"
@@ -234,17 +246,6 @@ if ($choice -eq "1") {
     & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo mv /tmp/worker-service.tmp /etc/systemd/system/alive5-worker.service"
     if (Test-Path $tempFile) { Remove-Item $tempFile }
     
-    # Download model files (turn detector, etc.)
-    Write-Host "Downloading model files..." -ForegroundColor $InfoColor
-    Write-Host "  - Running download-files command..." -ForegroundColor White
-    $downloadResult = & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py download-files 2>&1" 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✅ Model files downloaded successfully!" -ForegroundColor $SuccessColor
-    } else {
-        Write-Host "  ⚠️ Warning: download-files failed (packages may not be installed yet)" -ForegroundColor $WarningColor
-        Write-Host "  ⚠️ Run option 3 to install requirements first, then download-files will work" -ForegroundColor $WarningColor
-    }
-    
     # Reload systemd and restart services
     & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl daemon-reload"
     & ssh -i $KEY -o StrictHostKeyChecking=no $sshTarget "sudo systemctl enable alive5-backend alive5-worker"
@@ -258,7 +259,12 @@ if ($choice -eq "1") {
     
     # Create directories on server
     Write-Host "  - Creating directory structure..." -ForegroundColor White
-    & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/alive5-worker"
+    $mkdirResult = & ssh -i $KEY -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=5 "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/alive5-worker" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ❌ Error creating directory structure. Exit code: $LASTEXITCODE" -ForegroundColor $ErrorColor
+        Write-Host "  Error output: $mkdirResult" -ForegroundColor $ErrorColor
+        return
+    }
     
     # Deploy backend files
     $backendTarget = "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/backend/"
