@@ -1022,8 +1022,11 @@ class SimpleVoiceAgent(Agent):
                     "thread_id": self.alive5_thread_id,
                     "crm_id": self.alive5_crm_id or "",
                     "message_content": message_content,
-                    "message_type": "voice_agent_post_message",
-                    "is_agent": is_agent  # Frontend will use this to set created_by and user_id
+                    "message_type": "livechat",  # Changed to match what Alive5 expects
+                    "is_agent": is_agent,  # Frontend will use this to set created_by and user_id
+                    # Pre-set created_by and user_id here as well (frontend will override if needed)
+                    "created_by": "Voice_Agent" if is_agent else "Person",
+                    "user_id": "Voice_Agent" if is_agent else "Person"
                 }
             }
             

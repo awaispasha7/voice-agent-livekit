@@ -2195,6 +2195,21 @@ class DynamicVoiceAgent {
             } else {
                 console.log(`📤 Emitting ${eventName}:`, data);
             }
+            // CRITICAL: Log exactly what we're sending to socket
+            if (eventName === 'post_message') {
+                console.error(`🚀🚀🚀 FINAL EMIT - Sending to socket:`, JSON.stringify({
+                    event: eventName,
+                    data: {
+                        thread_id: data.thread_id,
+                        message_content: data.message_content?.substring(0, 50),
+                        created_by: data.created_by,
+                        user_id: data.user_id,
+                        crm_id: data.crm_id,
+                        channel_id: data.channel_id,
+                        message_type: data.message_type
+                    }
+                }, null, 2));
+            }
             this.alive5Socket.emit(eventName, data);
         } catch (error) {
             console.error(`❌ Error emitting ${eventName}:`, error);
@@ -2255,21 +2270,56 @@ class DynamicVoiceAgent {
                         }
                     }
                     
-                    // Log the original payload to debug
-                    console.log(`🔍 Processing post_message - is_agent:`, payload.is_agent, `(type: ${typeof payload.is_agent}), message: ${payload.message_content?.substring(0, 40)}...`);
+                    // Log the original payload to debug - FORCE LOGGING
+                    console.error(`🔍🔍🔍 DEBUG: Processing post_message`);
+                    console.error(`   Original payload:`, JSON.stringify(payload, null, 2));
+                    console.error(`   is_agent value:`, payload.is_agent, `(type: ${typeof payload.is_agent})`);
+                    console.error(`   message_content:`, payload.message_content?.substring(0, 50));
                     
                     // Check is_agent flag (explicitly check for true, default to false for user messages)
                     // Handle both boolean true and string "true" cases
                     const isAgent = payload.is_agent === true || payload.is_agent === "true" || payload.is_agent === 1;
                     
+                    console.error(`   Calculated isAgent:`, isAgent);
+                    
                     // Set created_by and user_id: "Person" for user, "Voice_Agent" for agent
-                    payload.created_by = isAgent ? "Voice_Agent" : "Person";
-                    payload.user_id = isAgent ? "Voice_Agent" : "Person";
+                    // CRITICAL: Use Object.defineProperty to ensure values can't be easily overridden
+                    const newCreatedBy = isAgent ? "Voice_Agent" : "Person";
+                    const newUserId = isAgent ? "Voice_Agent" : "Person";
+                    
+                    // Force set with writable: true so they can be sent, but make them explicit
+                    Object.defineProperty(payload, 'created_by', {
+                        value: newCreatedBy,
+                        writable: true,
+                        enumerable: true,
+                        configurable: true
+                    });
+                    Object.defineProperty(payload, 'user_id', {
+                        value: newUserId,
+                        writable: true,
+                        enumerable: true,
+                        configurable: true
+                    });
+                    
+                    // Also ensure message_type matches what Alive5 expects
+                    if (!payload.message_type || payload.message_type === "voice_agent_post_message") {
+                        payload.message_type = "livechat";
+                    }
+                    
+                    console.error(`   SET created_by to: "${payload.created_by}"`);
+                    console.error(`   SET user_id to: "${payload.user_id}"`);
+                    console.error(`   SET message_type to: "${payload.message_type}"`);
                     
                     // Remove is_agent flag as it's not needed in the final payload
                     delete payload.is_agent;
                     
-                    console.log(`📝 Message attribution set - is_agent: ${isAgent}, created_by: "${payload.created_by}", user_id: "${payload.user_id}"`);
+                    console.error(`   Final payload before emit:`, JSON.stringify({
+                        message_content: payload.message_content?.substring(0, 50),
+                        created_by: payload.created_by,
+                        user_id: payload.user_id,
+                        message_type: payload.message_type,
+                        thread_id: payload.thread_id
+                    }, null, 2));
                 }
                 
                 console.log(`📨 Received instruction to emit ${event} via data channel`);
