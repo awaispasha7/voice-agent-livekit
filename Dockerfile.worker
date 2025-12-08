@@ -1,0 +1,33 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+# Install opentelemetry-instrumentation which provides _decorator module needed by livekit-agents
+# Constrain opentelemetry packages to < 1.22.0 to avoid LogData removal
+# Install before requirements.txt to ensure compatible versions
+RUN pip install --no-cache-dir --use-deprecated=legacy-resolver \
+    "opentelemetry-api<1.22.0" \
+    "opentelemetry-sdk<1.22.0" \
+    "opentelemetry-instrumentation"
+# Then install all other requirements using legacy resolver to avoid dependency backtracking issues
+# This matches the approach in deploy.ps1
+RUN pip install --no-cache-dir --use-deprecated=legacy-resolver -r requirements.txt
+
+COPY alive5-backend ./alive5-backend
+
+# Copy entrypoint script that downloads models at startup (after all packages are installed)
+COPY alive5-backend/alive5-worker/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+ENV PYTHONUNBUFFERED=1
+
+# Worker connects out to LiveKit; it doesn't expose an HTTP port.
+# Use entrypoint script to download models at startup, then run worker
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+
+

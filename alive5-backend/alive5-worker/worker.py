@@ -15,6 +15,8 @@ os.environ["LIVEKIT_LOG_LEVEL"] = "WARN"
 os.environ["RUST_LOG"] = "warn"
 # Suppress transformers warnings about PyTorch/TensorFlow (turn detector uses ONNX)
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+# Disable LiveKit telemetry to avoid opentelemetry dependency issues
+os.environ["LIVEKIT_TELEMETRY_ENABLED"] = "false"
 
 # Simple logging configuration - just remove timestamps
 logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
@@ -650,6 +652,32 @@ class SimpleVoiceAgent(Agent):
             except:
                 pass
         
+        # Send SESSION_END message via socket before calling backend
+        try:
+            if hasattr(self, 'room') and self.room and hasattr(self, 'alive5_thread_id') and self.alive5_thread_id:
+                import json
+                socket_instruction = {
+                    "action": "emit",
+                    "event": "post_message",
+                    "payload": {
+                        "thread_id": self.alive5_thread_id,
+                        "crm_id": self.alive5_crm_id or "",
+                        "message_content": "SESSION_END",
+                        "message_type": "livechat",
+                        "created_by": "Voice_Agent"
+                    }
+                }
+                try:
+                    await self.room.local_participant.publish_data(
+                        json.dumps(socket_instruction).encode('utf-8'),
+                        topic="lk.alive5.socket"
+                    )
+                    logger.info(f"📤 SESSION_END message sent via data channel")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to send SESSION_END via data channel: {e}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not send SESSION_END message: {e}")
+        
         try:
             import httpx
             backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
@@ -966,6 +994,8 @@ class SimpleVoiceAgent(Agent):
             
             # Send socket instruction to frontend via data channel
             import json
+            # Set created_by based on message source: "Person" for user, "Voice_Agent" for agent
+            created_by = "Voice_Agent" if is_agent else "Person"
             socket_instruction = {
                 "action": "emit",
                 "event": "post_message",
@@ -973,7 +1003,8 @@ class SimpleVoiceAgent(Agent):
                     "thread_id": self.alive5_thread_id,
                     "crm_id": self.alive5_crm_id or "",
                     "message_content": message_content,
-                    "message_type": "voice_agent_post_message"
+                    "message_type": "voice_agent_post_message",
+                    "created_by": created_by
                 }
             }
             
@@ -989,6 +1020,62 @@ class SimpleVoiceAgent(Agent):
         except Exception as e:
             logger.error(f"❌ Could not send message to Alive5: {e}")
     
+    async def _auto_detect_and_save_data(self, user_text: str):
+        """Automatically detect if user provided name/email/phone and save it if not already saved"""
+        try:
+            import re
+            user_text_clean = user_text.strip()
+            
+            # Check if we already have this data saved
+            # Only auto-save if the field is empty (not already saved)
+            
+            # Detect email pattern
+            email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+            email_match = re.search(email_pattern, user_text_clean)
+            if email_match and not self.collected_data.get("email"):
+                email = email_match.group(0)
+                logger.info(f"🔍 Auto-detected email in user message: {email}")
+                # Call save_collected_data via the function (which will update CRM)
+                await self.save_collected_data(None, "email", email)
+            
+            # Detect phone pattern (US format: (xxx) xxx-xxxx, xxx-xxx-xxxx, xxx.xxx.xxxx, or 10+ digits)
+            phone_pattern = r'(\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})'
+            phone_match = re.search(phone_pattern, user_text_clean)
+            if phone_match and not self.collected_data.get("phone"):
+                # Extract and normalize phone number
+                phone_parts = phone_match.groups()
+                phone = ''.join(filter(str.isdigit, ''.join(phone_parts[1:])))  # Get last 3 groups, remove non-digits
+                if len(phone) == 10:  # Valid US phone number
+                    phone_formatted = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
+                    logger.info(f"🔍 Auto-detected phone in user message: {phone_formatted}")
+                    await self.save_collected_data(None, "phone", phone_formatted)
+            
+            # Detect name pattern (2-4 words, capitalized, not too long, doesn't look like email/phone)
+            # Only if it's a short response (likely a name answer)
+            if len(user_text_clean.split()) <= 4 and len(user_text_clean) < 50:
+                # Check if it looks like a name (has capital letters, not all caps, not email/phone)
+                if (not email_match and not phone_match and 
+                    re.search(r'[A-Z][a-z]+', user_text_clean) and  # Has capitalized words
+                    not self.collected_data.get("full_name")):
+                    # Additional check: if user said something like "My name is X" or "It's X" or just "X"
+                    name_patterns = [
+                        r'(?:my name is|i\'?m|it\'?s|this is|call me|i am)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+                        r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})$'  # Just a name (1-3 words, capitalized)
+                    ]
+                    for pattern in name_patterns:
+                        name_match = re.search(pattern, user_text_clean, re.IGNORECASE)
+                        if name_match:
+                            name = name_match.group(1) if name_match.groups() else user_text_clean
+                            # Only save if it looks like a real name (not "Yes", "No", "Great", etc.)
+                            common_words = {'yes', 'no', 'ok', 'okay', 'sure', 'great', 'thanks', 'thank', 'you', 'hi', 'hello'}
+                            if name.lower() not in common_words and len(name.split()) <= 3:
+                                logger.info(f"🔍 Auto-detected name in user message: {name}")
+                                await self.save_collected_data(None, "full_name", name)
+                                break
+        except Exception as e:
+            # Don't let auto-detection errors break the conversation
+            logger.debug(f"⚠️ Auto-detection error (non-critical): {e}")
+    
     async def on_user_turn_completed(self, turn_ctx, new_message):
         """Handle user input and publish to frontend"""
         # CRITICAL: Call parent method FIRST to maintain conversation state
@@ -1001,6 +1088,9 @@ class SimpleVoiceAgent(Agent):
             # Publish user transcript to frontend (non-blocking)
             asyncio.create_task(self._publish_to_frontend("user_transcript", user_text, speaker="User"))
             # logger.info(f"USER: {user_text}")
+        
+            # Auto-detect and save name/email/phone if not already saved (fallback if LLM didn't call save_collected_data)
+            asyncio.create_task(self._auto_detect_and_save_data(user_text))
         
             # Send user message to Alive5 (non-blocking to avoid interfering with agent processing)
             asyncio.create_task(self._send_message_to_alive5(user_text, is_agent=False))

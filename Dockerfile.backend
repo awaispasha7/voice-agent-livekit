@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies (extend as needed if you hit runtime errors)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+# Use legacy resolver to avoid dependency backtracking issues (matches deploy.ps1 approach)
+RUN pip install --no-cache-dir --use-deprecated=legacy-resolver -r requirements.txt
+
+COPY alive5-backend ./alive5-backend
+
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+
+CMD ["python", "alive5-backend/main.py"]
+
+

@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - .env
+    environment:
+      # not a hardcoded IP. The backend listens on 8000 inside the container.
+      BACKEND_URL: https://18.210.238.67.nip.io/:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+
