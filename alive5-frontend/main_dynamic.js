@@ -2184,7 +2184,17 @@ class DynamicVoiceAgent {
         }
         
         try {
-            console.log(`📤 Emitting ${eventName}:`, eventName === 'post_message' ? `${data.message_content?.substring(0, 50)}...` : data);
+            // Log full payload for post_message to debug created_by/user_id
+            if (eventName === 'post_message') {
+                console.log(`📤 Emitting ${eventName}:`, {
+                    message_content: data.message_content?.substring(0, 50) + '...',
+                    created_by: data.created_by,
+                    user_id: data.user_id,
+                    thread_id: data.thread_id
+                });
+            } else {
+                console.log(`📤 Emitting ${eventName}:`, data);
+            }
             this.alive5Socket.emit(eventName, data);
         } catch (error) {
             console.error(`❌ Error emitting ${eventName}:`, error);
@@ -2207,18 +2217,62 @@ class DynamicVoiceAgent {
                     }
                     return;
                 }
-                console.log(`📨 Received instruction to emit ${event} via data channel`);
                 
-                // For post_message events, set created_by and user_id based on is_agent flag
+                // For post_message events, prevent duplicates and set created_by/user_id
                 if (event === 'post_message' && payload) {
-                    const isAgent = payload.is_agent === true;
+                    // Create a unique key for this message to prevent duplicates
+                    // Use a combination of thread_id, message_content hash, and current time to ensure uniqueness
+                    const contentHash = payload.message_content ? 
+                        payload.message_content.substring(0, 100).replace(/\s+/g, ' ') : '';
+                    const messageKey = `${payload.thread_id}_${contentHash}_${Date.now()}`;
+                    
+                    // Initialize duplicate tracking if not exists
+                    if (!this._lastEmittedMessages) {
+                        this._lastEmittedMessages = new Map(); // Use Map to store timestamp for cleanup
+                    }
+                    
+                    // Check if we've already emitted this exact message recently (within 2 seconds)
+                    const now = Date.now();
+                    for (const [key, timestamp] of this._lastEmittedMessages.entries()) {
+                        // Clean up old entries (older than 5 seconds)
+                        if (now - timestamp > 5000) {
+                            this._lastEmittedMessages.delete(key);
+                        } else if (key.startsWith(`${payload.thread_id}_${contentHash}`) && (now - timestamp) < 2000) {
+                            console.warn(`⚠️ Skipping duplicate post_message (sent ${now - timestamp}ms ago): ${payload.message_content?.substring(0, 30)}...`);
+                            return;
+                        }
+                    }
+                    
+                    // Add to tracking map with timestamp
+                    this._lastEmittedMessages.set(messageKey, now);
+                    
+                    // Clean up old entries if map gets too large
+                    if (this._lastEmittedMessages.size > 100) {
+                        for (const [key, timestamp] of this._lastEmittedMessages.entries()) {
+                            if (now - timestamp > 5000) {
+                                this._lastEmittedMessages.delete(key);
+                            }
+                        }
+                    }
+                    
+                    // Log the original payload to debug
+                    console.log(`🔍 Processing post_message - is_agent:`, payload.is_agent, `(type: ${typeof payload.is_agent}), message: ${payload.message_content?.substring(0, 40)}...`);
+                    
+                    // Check is_agent flag (explicitly check for true, default to false for user messages)
+                    // Handle both boolean true and string "true" cases
+                    const isAgent = payload.is_agent === true || payload.is_agent === "true" || payload.is_agent === 1;
+                    
                     // Set created_by and user_id: "Person" for user, "Voice_Agent" for agent
                     payload.created_by = isAgent ? "Voice_Agent" : "Person";
                     payload.user_id = isAgent ? "Voice_Agent" : "Person";
+                    
                     // Remove is_agent flag as it's not needed in the final payload
                     delete payload.is_agent;
+                    
+                    console.log(`📝 Message attribution set - is_agent: ${isAgent}, created_by: "${payload.created_by}", user_id: "${payload.user_id}"`);
                 }
                 
+                console.log(`📨 Received instruction to emit ${event} via data channel`);
                 this.emitAlive5SocketEvent(event, payload);
             } else if (action === 'disconnect') {
                 // Disconnect socket
