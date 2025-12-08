@@ -631,6 +631,9 @@ class SimpleVoiceAgent(Agent):
         if not room or not hasattr(room, "name"):
             logger.warning("⚠️ Room not available, skipping greeting")
             return
+        # Track session start time
+        import time
+        self._session_start_time = int(time.time() * 1000)
         # Start the conversation with greeting
         await self._start_conversation()
     
@@ -656,15 +659,32 @@ class SimpleVoiceAgent(Agent):
         try:
             if hasattr(self, 'room') and self.room and hasattr(self, 'alive5_thread_id') and self.alive5_thread_id:
                 import json
+                import time
+                # Get current timestamp in milliseconds
+                current_timestamp = int(time.time() * 1000)
+                # Get session start time (use current time if not available)
+                session_start = getattr(self, '_session_start_time', current_timestamp)
+                
                 socket_instruction = {
                     "action": "emit",
                     "event": "post_message",
                     "payload": {
                         "thread_id": self.alive5_thread_id,
                         "crm_id": self.alive5_crm_id or "",
+                        "channel_id": getattr(self, 'alive5_channel_id', ''),
                         "message_content": "SESSION_END",
                         "message_type": "livechat",
-                        "created_by": "Voice_Agent"
+                        "created_by": "Awais",
+                        "user_id": "Voice_Agent",  # Will be updated by frontend/backend with actual user_id
+                        "org_name": getattr(self, 'alive5_org_name', getattr(self, 'org_name', 'alive5stage0')),
+                        "event_mode": "redis",
+                        "putInRedis": True,
+                        "route": "123",  # Default route, can be updated if needed
+                        "session_start": session_start,
+                        "updated_at": current_timestamp,
+                        "timestamp": current_timestamp,
+                        "created_at": current_timestamp,
+                        "thread_type": "livechat"
                     }
                 }
                 try:
@@ -994,8 +1014,7 @@ class SimpleVoiceAgent(Agent):
             
             # Send socket instruction to frontend via data channel
             import json
-            # Set created_by based on message source: "Person" for user, "Voice_Agent" for agent
-            created_by = "Voice_Agent" if is_agent else "Person"
+            # Include is_agent flag so frontend can set created_by and user_id correctly
             socket_instruction = {
                 "action": "emit",
                 "event": "post_message",
@@ -1004,7 +1023,7 @@ class SimpleVoiceAgent(Agent):
                     "crm_id": self.alive5_crm_id or "",
                     "message_content": message_content,
                     "message_type": "voice_agent_post_message",
-                    "created_by": created_by
+                    "is_agent": is_agent  # Frontend will use this to set created_by and user_id
                 }
             }
             

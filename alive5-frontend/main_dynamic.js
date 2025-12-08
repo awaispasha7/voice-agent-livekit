@@ -2208,6 +2208,17 @@ class DynamicVoiceAgent {
                     return;
                 }
                 console.log(`📨 Received instruction to emit ${event} via data channel`);
+                
+                // For post_message events, set created_by and user_id based on is_agent flag
+                if (event === 'post_message' && payload) {
+                    const isAgent = payload.is_agent === true;
+                    // Set created_by and user_id: "Person" for user, "Voice_Agent" for agent
+                    payload.created_by = isAgent ? "Voice_Agent" : "Person";
+                    payload.user_id = isAgent ? "Voice_Agent" : "Person";
+                    // Remove is_agent flag as it's not needed in the final payload
+                    delete payload.is_agent;
+                }
+                
                 this.emitAlive5SocketEvent(event, payload);
             } else if (action === 'disconnect') {
                 // Disconnect socket
