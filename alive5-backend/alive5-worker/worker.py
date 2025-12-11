@@ -1003,7 +1003,8 @@ class SimpleVoiceAgent(Agent):
             
             # Send socket instruction to frontend via data channel
             import json
-            # Include is_agent flag so frontend can set created_by and user_id correctly
+            # Include is_agent flag so frontend can add voiceAgentId for agent messages
+            # Server will map voiceAgentId to created_by and user_id automatically
             socket_instruction = {
                 "action": "emit",
                 "event": "post_message",
@@ -1012,10 +1013,8 @@ class SimpleVoiceAgent(Agent):
                     "crm_id": self.alive5_crm_id or "",
                     "message_content": message_content,
                     "message_type": "livechat",  # Changed to match what Alive5 expects
-                    "is_agent": is_agent,  # Frontend will use this to set created_by and user_id
-                    # Pre-set created_by and user_id here as well (frontend will override if needed)
-                    "created_by": "Voice_Agent" if is_agent else "Person",
-                    "user_id": "Voice_Agent" if is_agent else "Person"
+                    "is_agent": is_agent  # Frontend will use this to add voiceAgentId for agent messages
+                    # DO NOT set created_by or user_id - server will set these based on voiceAgentId presence
                 }
             }
             

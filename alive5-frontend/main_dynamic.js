@@ -2178,10 +2178,16 @@ class DynamicVoiceAgent {
                 if (data.status === 'initialized') {
                     console.log('✅ Voice agent initialized successfully');
                     // Store voice_agent_id for use in messages
-                    if (data.voice_agent_id) {
+                    // Check both possible field names (voice_agent_id and voiceAgentId)
+                    const voiceAgentId = data.voice_agent_id || data.voiceAgentId;
+                    if (voiceAgentId) {
                         this.alive5SocketConfig = this.alive5SocketConfig || {};
-                        this.alive5SocketConfig.voice_agent_id = data.voice_agent_id;
-                        console.log('💾 Stored voice_agent_id:', data.voice_agent_id);
+                        this.alive5SocketConfig.voice_agent_id = voiceAgentId;
+                        console.log('💾 Stored voice_agent_id:', voiceAgentId);
+                        console.log('   Full socket config:', JSON.stringify(this.alive5SocketConfig, null, 2));
+                    } else {
+                        console.error('❌ init_voice_agent_ack received but no voice_agent_id field found!');
+                        console.error('   Available fields:', Object.keys(data));
                     }
                 } else {
                     console.warn('⚠️ init_voice_agent_ack status:', data.status, data.message || '');
@@ -2297,23 +2303,31 @@ class DynamicVoiceAgent {
                     
                     // According to Alive5 docs: "Messages having voiceAgentId map to created_by and user_id fields 
                     // hence marking it as an alive5 agent. Absence of this field makes it a consumer event."
-                    // So we use voiceAgentId presence to determine agent vs person, not is_agent flag
+                    // IMPORTANT: The field name should be "voiceAgentId" (camelCase) as per docs, but let's try both formats
                     
-                    // Check if this is an agent message (has is_agent flag or voiceAgentId)
-                    const isAgent = payload.is_agent === true || payload.is_agent === "true" || payload.is_agent === 1 || payload.voiceAgentId;
+                    // Check if this is an agent message - ONLY use is_agent flag from worker
+                    // The worker sends is_agent: true for agent messages, is_agent: false for user messages
+                    const isAgent = payload.is_agent === true || payload.is_agent === "true" || payload.is_agent === 1;
                     
                     // Get voice_agent_id from stored config (set from init_voice_agent_ack)
                     const voiceAgentId = this.alive5SocketConfig?.voice_agent_id;
                     
+                    // CRITICAL: Remove any existing voiceAgentId/voice_agent_id first to ensure clean state
+                    delete payload.voiceAgentId;
+                    delete payload.voice_agent_id;
+                    
                     // For agent messages: include voiceAgentId (server will map to created_by/user_id)
                     // For user messages: don't include voiceAgentId (server will treat as consumer/Person)
-                    if (isAgent && voiceAgentId) {
-                        payload.voiceAgentId = voiceAgentId;
-                        console.log(`   Adding voiceAgentId for agent message: ${voiceAgentId}`);
+                    if (isAgent) {
+                        if (voiceAgentId) {
+                            // Use camelCase as per documentation: "voiceAgentId"
+                            payload.voiceAgentId = voiceAgentId;
+                            console.log(`   ✅ Agent message - adding voiceAgentId: ${voiceAgentId}`);
+                        } else {
+                            console.warn(`   ⚠️ Agent message but voiceAgentId not available yet (init_voice_agent_ack not received?)`);
+                        }
                     } else {
-                        // Remove voiceAgentId if present (user message)
-                        delete payload.voiceAgentId;
-                        console.log(`   User message - no voiceAgentId`);
+                        console.log(`   👤 User message - no voiceAgentId (consumer/Person)`);
                     }
                     
                     // Also ensure message_type matches what Alive5 expects
@@ -2321,10 +2335,12 @@ class DynamicVoiceAgent {
                         payload.message_type = "livechat";
                     }
                     
-                    // Remove is_agent flag as it's not needed (we use voiceAgentId instead)
+                    // Remove is_agent flag and created_by/user_id (server will set these based on voiceAgentId)
                     delete payload.is_agent;
+                    delete payload.created_by;
+                    delete payload.user_id;
                     
-                    console.log(`   Final payload: voiceAgentId=${payload.voiceAgentId || 'none'}, message_type=${payload.message_type}`);
+                    console.log(`   Final payload: voiceAgentId=${payload.voiceAgentId || 'none'}, message_type=${payload.message_type}, isAgent=${isAgent}`);
                     
                 }
                 
