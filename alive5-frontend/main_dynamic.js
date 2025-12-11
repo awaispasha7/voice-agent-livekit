@@ -1511,7 +1511,6 @@ class DynamicVoiceAgent {
                         thread_id: this.alive5SocketConfig.thread_id,
                         voice_agent_id: this.alive5SocketConfig.voice_agent_id || ""
                     };
-                    console.log('📤 Emitting end_voice_chat (user disconnect):', endPayload);
                     this.emitAlive5SocketEvent('end_voice_chat', endPayload);
                     // Small delay to ensure event is sent before disconnect
                     await new Promise(resolve => setTimeout(resolve, 200));
@@ -1522,7 +1521,6 @@ class DynamicVoiceAgent {
             
             // Disconnect Alive5 socket
             if (this.alive5Socket && this.alive5SocketConnected) {
-                console.log('🔌 Disconnecting Alive5 socket (user disconnect)');
                 this.alive5Socket.disconnect();
                 this.alive5Socket = null;
                 this.alive5SocketConnected = false;
@@ -2100,8 +2098,6 @@ class DynamicVoiceAgent {
             
             this.alive5SocketConfig = config;
             
-            console.log('🔗 Connecting to Alive5 socket with API key:', config.api_key ? `${config.api_key.substring(0, 8)}...` : 'MISSING');
-            
             // Socket.IO client library automatically handles Engine.IO handshake (including '40' frame)
             // The client library sends the handshake automatically when io() is called
             this.alive5Socket = io('wss://api-stage.alive5.com', {
@@ -2125,17 +2121,12 @@ class DynamicVoiceAgent {
             this.alive5Socket.on('connect', () => {
                 this.alive5SocketConnected = true;
                 console.log('✅ Alive5 socket connected');
-                console.log('   Socket ID:', this.alive5Socket.id);
-                console.log('   Thread ID:', this.alive5SocketConfig?.thread_id);
-                console.log('   CRM ID:', this.alive5SocketConfig?.crm_id);
-                console.log('   Channel ID:', this.alive5SocketConfig?.channel_id);
                 
                 // According to docs: server sets socket.voiceAgentId on connect
                 // Try to get it from socket object (may be available after handshake)
                 if (this.alive5Socket.voiceAgentId) {
                     this.alive5SocketConfig = this.alive5SocketConfig || {};
                     this.alive5SocketConfig.voice_agent_id = this.alive5Socket.voiceAgentId;
-                    console.log('💾 Got voiceAgentId from socket object:', this.alive5Socket.voiceAgentId);
                 }
                 
                 // Auto-emit init_voice_agent when connected (Socket.IO client handles '40' handshake automatically)
@@ -2148,7 +2139,6 @@ class DynamicVoiceAgent {
                             crm_id: this.alive5SocketConfig.crm_id,
                             channel_id: this.alive5SocketConfig.channel_id
                         };
-                        console.log('📤 Emitting init_voice_agent (handshake complete):', initPayload);
                         this.emitAlive5SocketEvent('init_voice_agent', initPayload)
                             .catch(err => console.error('❌ Error emitting init_voice_agent:', err));
                     }, 100); // Reduced delay - handshake is already complete when 'connect' fires
@@ -2159,33 +2149,19 @@ class DynamicVoiceAgent {
             
             this.alive5Socket.on('disconnect', (reason) => {
                 this.alive5SocketConnected = false;
-                console.log('🔌 Alive5 socket disconnected:', reason);
             });
             
             this.alive5Socket.on('connect_error', (error) => {
                 console.error('❌ Alive5 socket connection error:', error);
             });
             
-            // Monitor Engine.IO connection state (handshake process)
-            this.alive5Socket.io.on('open', () => {
-                console.log('🔌 Engine.IO transport opened (handshake starting)');
-            });
-            
             this.alive5Socket.io.on('error', (error) => {
                 console.error('❌ Engine.IO transport error:', error);
             });
             
-            // Verify handshake completion
-            this.alive5Socket.io.on('upgrade', () => {
-                console.log('⬆️ Engine.IO transport upgraded to WebSocket');
-            });
-            
             // Listen for acks
             this.alive5Socket.on('init_voice_agent_ack', (data) => {
-                console.log('📥 init_voice_agent_ack received:', JSON.stringify(data, null, 2));
                 if (data.status === 'initialized') {
-                    console.log('✅ Voice agent initialized successfully');
-                    
                     // Try multiple sources for voice_agent_id:
                     // 1. From ACK response (voice_agent_id or voiceAgentId)
                     // 2. From socket object (socket.voiceAgentId - set by server on connect)
@@ -2194,7 +2170,6 @@ class DynamicVoiceAgent {
                     
                     if (!voiceAgentId && this.alive5Socket.voiceAgentId) {
                         voiceAgentId = this.alive5Socket.voiceAgentId;
-                        console.log('   Got voiceAgentId from socket object:', voiceAgentId);
                     }
                     
                     // If still not found, try assigned_to (might be the agent ID)
@@ -2202,32 +2177,18 @@ class DynamicVoiceAgent {
                         // Check if assigned_to looks like a voice agent ID
                         if (data.assigned_to.startsWith('voice_agent_') || data.assigned_to.includes('voice')) {
                             voiceAgentId = data.assigned_to;
-                            console.log('   Using assigned_to as voiceAgentId:', voiceAgentId);
                         }
                     }
                     
                     if (voiceAgentId) {
                         this.alive5SocketConfig = this.alive5SocketConfig || {};
                         this.alive5SocketConfig.voice_agent_id = voiceAgentId;
-                        console.log('💾 Stored voice_agent_id:', voiceAgentId);
-                        console.log('   Full socket config:', JSON.stringify(this.alive5SocketConfig, null, 2));
                     } else {
                         console.error('❌ Could not find voice_agent_id from any source!');
-                        console.error('   ACK fields:', Object.keys(data));
-                        console.error('   Socket.voiceAgentId:', this.alive5Socket.voiceAgentId);
-                        console.error('   assigned_to:', data.assigned_to);
                     }
                 } else {
                     console.warn('⚠️ init_voice_agent_ack status:', data.status, data.message || '');
                 }
-            });
-            
-            this.alive5Socket.on('post_message_ack', (data) => {
-                console.log('📥 post_message_ack received:', JSON.stringify(data, null, 2));
-            });
-            
-            this.alive5Socket.on('save_crm_data_ack', (data) => {
-                console.log('📥 save_crm_data_ack received:', JSON.stringify(data, null, 2));
             });
             
         } catch (error) {
@@ -2243,32 +2204,6 @@ class DynamicVoiceAgent {
         }
         
         try {
-            // Log full payload for post_message to debug created_by/user_id
-            if (eventName === 'post_message') {
-                console.log(`📤 Emitting ${eventName}:`, {
-                    message_content: data.message_content?.substring(0, 50) + '...',
-                    created_by: data.created_by,
-                    user_id: data.user_id,
-                    thread_id: data.thread_id
-                });
-            } else {
-                console.log(`📤 Emitting ${eventName}:`, data);
-            }
-            // CRITICAL: Log exactly what we're sending to socket
-            // if (eventName === 'post_message') {
-            //     console.error(`🚀🚀🚀 FINAL EMIT - Sending to socket:`, JSON.stringify({
-            //         event: eventName,
-            //         data: {
-            //             thread_id: data.thread_id,
-            //             message_content: data.message_content?.substring(0, 50),
-            //             created_by: data.created_by,
-            //             user_id: data.user_id,
-            //             crm_id: data.crm_id,
-            //             channel_id: data.channel_id,
-            //             message_type: data.message_type
-            //         }
-            //     }, null, 2));
-            // }
             this.alive5Socket.emit(eventName, data);
         } catch (error) {
             console.error(`❌ Error emitting ${eventName}:`, error);
@@ -2284,7 +2219,6 @@ class DynamicVoiceAgent {
                 // Emit socket event (socket should already be connected by frontend)
                 if (!this.alive5SocketConnected) {
                     console.warn('⚠️ Socket not connected, cannot emit:', event);
-                    console.warn('   Attempting to reconnect...');
                     // Try to reconnect if config is available
                     if (this.alive5SocketConfig) {
                         this.connectAlive5Socket(this.alive5SocketConfig);
@@ -2312,8 +2246,7 @@ class DynamicVoiceAgent {
                         if (now - timestamp > 5000) {
                             this._lastEmittedMessages.delete(key);
                         } else if (key.startsWith(`${payload.thread_id}_${contentHash}`) && (now - timestamp) < 2000) {
-                            console.warn(`⚠️ Skipping duplicate post_message (sent ${now - timestamp}ms ago): ${payload.message_content?.substring(0, 30)}...`);
-                            return;
+                            return; // Skip duplicate
                         }
                     }
                     
@@ -2343,7 +2276,6 @@ class DynamicVoiceAgent {
                     // Fallback: Try to get from socket object (server may set it there)
                     if (!voiceAgentId && this.alive5Socket?.voiceAgentId) {
                         voiceAgentId = this.alive5Socket.voiceAgentId;
-                        console.log(`   Got voiceAgentId from socket object: ${voiceAgentId}`);
                         // Store it for future use
                         if (this.alive5SocketConfig) {
                             this.alive5SocketConfig.voice_agent_id = voiceAgentId;
@@ -2360,12 +2292,7 @@ class DynamicVoiceAgent {
                         if (voiceAgentId) {
                             // Use camelCase as per documentation: "voiceAgentId"
                             payload.voiceAgentId = voiceAgentId;
-                            console.log(`   ✅ Agent message - adding voiceAgentId: ${voiceAgentId}`);
                         } else {
-                            console.warn(`   ⚠️ Agent message but voiceAgentId not available!`);
-                            console.warn(`      Socket config:`, this.alive5SocketConfig);
-                            console.warn(`      Socket.voiceAgentId:`, this.alive5Socket?.voiceAgentId);
-                            
                             // TEMPORARY FIX: Generate a consistent voice agent ID if not available
                             // Use socket ID to create a consistent ID for this session
                             // Format: voice_agent_<first8chars_of_socket_id>
@@ -2377,13 +2304,10 @@ class DynamicVoiceAgent {
                                 if (this.alive5SocketConfig) {
                                     this.alive5SocketConfig.voice_agent_id = tempVoiceAgentId;
                                 }
-                                console.warn(`      Generated and stored temporary voiceAgentId: ${tempVoiceAgentId}`);
                             } else {
-                                console.error(`      Cannot generate voiceAgentId - socket ID not available!`);
+                                console.error('❌ Cannot generate voiceAgentId - socket ID not available!');
                             }
                         }
-                    } else {
-                        console.log(`   👤 User message - no voiceAgentId (consumer/Person)`);
                     }
                     
                     // Also ensure message_type matches what Alive5 expects
@@ -2396,8 +2320,6 @@ class DynamicVoiceAgent {
                     delete payload.created_by;
                     delete payload.user_id;
                     
-                    console.log(`   Final payload: voiceAgentId=${payload.voiceAgentId || 'none'}, message_type=${payload.message_type}, isAgent=${isAgent}`);
-                    
                 }
                 
                 // For end_voice_chat, ensure voice_agent_id is included if available
@@ -2405,15 +2327,12 @@ class DynamicVoiceAgent {
                     const voiceAgentId = this.alive5SocketConfig?.voice_agent_id;
                     if (voiceAgentId) {
                         payload.voice_agent_id = voiceAgentId;
-                        console.log(`   Added voice_agent_id to end_voice_chat: ${voiceAgentId}`);
                     }
                 }
                 
-                console.log(`📨 Received instruction to emit ${event} via data channel`);
                 this.emitAlive5SocketEvent(event, payload);
             } else if (action === 'disconnect') {
                 // Disconnect socket
-                console.log('📨 Received instruction to disconnect socket');
                 if (this.alive5Socket) {
                     this.alive5Socket.disconnect();
                     this.alive5Socket = null;
