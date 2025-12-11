@@ -557,7 +557,8 @@ async def init_livechat(room_name: str, org_name: str, botchain_name: str):
                 "thread_id": final_thread_id,
                 "crm_id": final_crm_id,
                 "channel_id": channel_id,
-                "api_key": api_key
+                "api_key": api_key,
+                "org_name": org_name  # Include org_name for end_voice_chat
             }
         }
         

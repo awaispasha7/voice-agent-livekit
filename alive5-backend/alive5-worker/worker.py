@@ -655,36 +655,25 @@ class SimpleVoiceAgent(Agent):
             except:
                 pass
         
-        # Send SESSION_END message via socket before calling backend
+        # Send end_voice_chat event via socket before calling backend
+        # According to Alive5 docs: end_voice_chat closes the chat and thread
         try:
             if hasattr(self, 'room') and self.room and hasattr(self, 'alive5_thread_id') and self.alive5_thread_id:
                 import json
-                import time
-                # Get current timestamp in milliseconds
-                current_timestamp = int(time.time() * 1000)
-                # Get session start time (use current time if not available)
-                session_start = getattr(self, '_session_start_time', current_timestamp)
+                
+                # Get voice_agent_id (stored from init_voice_agent_ack, or use default)
+                voice_agent_id = getattr(self, 'alive5_voice_agent_id', '')
+                org_name = getattr(self, 'alive5_org_name', getattr(self, 'org_name', 'alive5stage0'))
                 
                 socket_instruction = {
                     "action": "emit",
-                    "event": "post_message",
+                    "event": "end_voice_chat",
                     "payload": {
+                        "end_by": "voice_agent",  # Agent ended the call (session cleanup)
+                        "message_content": "Voice call completed by agent",
+                        "org_name": org_name,
                         "thread_id": self.alive5_thread_id,
-                        "crm_id": self.alive5_crm_id or "",
-                        "channel_id": getattr(self, 'alive5_channel_id', ''),
-                        "message_content": "SESSION_END",
-                        "message_type": "livechat",
-                        "created_by": "Awais",
-                        "user_id": "Voice_Agent",  # Will be updated by frontend/backend with actual user_id
-                        "org_name": getattr(self, 'alive5_org_name', getattr(self, 'org_name', 'alive5stage0')),
-                        "event_mode": "redis",
-                        "putInRedis": True,
-                        "route": "123",  # Default route, can be updated if needed
-                        "session_start": session_start,
-                        "updated_at": current_timestamp,
-                        "timestamp": current_timestamp,
-                        "created_at": current_timestamp,
-                        "thread_type": "livechat"
+                        "voice_agent_id": voice_agent_id
                     }
                 }
                 try:
@@ -692,11 +681,11 @@ class SimpleVoiceAgent(Agent):
                         json.dumps(socket_instruction).encode('utf-8'),
                         topic="lk.alive5.socket"
                     )
-                    logger.info(f"📤 SESSION_END message sent via data channel")
+                    logger.info(f"📤 end_voice_chat event sent via data channel")
                 except Exception as e:
-                    logger.warning(f"⚠️ Failed to send SESSION_END via data channel: {e}")
+                    logger.warning(f"⚠️ Failed to send end_voice_chat via data channel: {e}")
         except Exception as e:
-            logger.warning(f"⚠️ Could not send SESSION_END message: {e}")
+            logger.warning(f"⚠️ Could not send end_voice_chat event: {e}")
         
         try:
             import httpx

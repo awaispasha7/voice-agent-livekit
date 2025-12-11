@@ -1501,7 +1501,26 @@ class DynamicVoiceAgent {
         if (!this.room) return;
         
         try {
-            // Disconnect Alive5 socket first
+            // Send end_voice_chat event before disconnecting (if socket is connected)
+            if (this.alive5Socket && this.alive5SocketConnected && this.alive5SocketConfig) {
+                try {
+                    const endPayload = {
+                        end_by: "person",  // User ended the call
+                        message_content: "Voice call completed by user",
+                        org_name: this.alive5SocketConfig.org_name || "alive5stage0",
+                        thread_id: this.alive5SocketConfig.thread_id,
+                        voice_agent_id: this.alive5SocketConfig.voice_agent_id || ""
+                    };
+                    console.log('📤 Emitting end_voice_chat (user disconnect):', endPayload);
+                    this.emitAlive5SocketEvent('end_voice_chat', endPayload);
+                    // Small delay to ensure event is sent before disconnect
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                } catch (error) {
+                    console.warn('⚠️ Failed to emit end_voice_chat:', error);
+                }
+            }
+            
+            // Disconnect Alive5 socket
             if (this.alive5Socket && this.alive5SocketConnected) {
                 console.log('🔌 Disconnecting Alive5 socket (user disconnect)');
                 this.alive5Socket.disconnect();
@@ -2085,7 +2104,7 @@ class DynamicVoiceAgent {
             
             // Socket.IO client library automatically handles Engine.IO handshake (including '40' frame)
             // The client library sends the handshake automatically when io() is called
-            this.alive5Socket = io('wss://api-v2-stage.alive5.com', {
+            this.alive5Socket = io('wss://api-stage.alive5.com', {
                 transports: ['websocket'],
                 path: '/socket.io',
                 query: {
@@ -2155,9 +2174,15 @@ class DynamicVoiceAgent {
             
             // Listen for acks
             this.alive5Socket.on('init_voice_agent_ack', (data) => {
-                console.log('📥 init_voice_agent_ack received:', data);
+                console.log('📥 init_voice_agent_ack received:', JSON.stringify(data, null, 2));
                 if (data.status === 'initialized') {
                     console.log('✅ Voice agent initialized successfully');
+                    // Store voice_agent_id for use in messages
+                    if (data.voice_agent_id) {
+                        this.alive5SocketConfig = this.alive5SocketConfig || {};
+                        this.alive5SocketConfig.voice_agent_id = data.voice_agent_id;
+                        console.log('💾 Stored voice_agent_id:', data.voice_agent_id);
+                    }
                 } else {
                     console.warn('⚠️ init_voice_agent_ack status:', data.status, data.message || '');
                 }
@@ -2270,56 +2295,46 @@ class DynamicVoiceAgent {
                         }
                     }
                     
-                    // Log the original payload to debug - FORCE LOGGING
-                    console.error(`🔍🔍🔍 DEBUG: Processing post_message`);
-                    console.error(`   Original payload:`, JSON.stringify(payload, null, 2));
-                    console.error(`   is_agent value:`, payload.is_agent, `(type: ${typeof payload.is_agent})`);
-                    console.error(`   message_content:`, payload.message_content?.substring(0, 50));
+                    // According to Alive5 docs: "Messages having voiceAgentId map to created_by and user_id fields 
+                    // hence marking it as an alive5 agent. Absence of this field makes it a consumer event."
+                    // So we use voiceAgentId presence to determine agent vs person, not is_agent flag
                     
-                    // Check is_agent flag (explicitly check for true, default to false for user messages)
-                    // Handle both boolean true and string "true" cases
-                    const isAgent = payload.is_agent === true || payload.is_agent === "true" || payload.is_agent === 1;
+                    // Check if this is an agent message (has is_agent flag or voiceAgentId)
+                    const isAgent = payload.is_agent === true || payload.is_agent === "true" || payload.is_agent === 1 || payload.voiceAgentId;
                     
-                    console.error(`   Calculated isAgent:`, isAgent);
+                    // Get voice_agent_id from stored config (set from init_voice_agent_ack)
+                    const voiceAgentId = this.alive5SocketConfig?.voice_agent_id;
                     
-                    // Set created_by and user_id: "Person" for user, "Voice_Agent" for agent
-                    // CRITICAL: Use Object.defineProperty to ensure values can't be easily overridden
-                    const newCreatedBy = isAgent ? "Voice_Agent" : "Person";
-                    const newUserId = isAgent ? "Voice_Agent" : "Person";
-                    
-                    // Force set with writable: true so they can be sent, but make them explicit
-                    Object.defineProperty(payload, 'created_by', {
-                        value: newCreatedBy,
-                        writable: true,
-                        enumerable: true,
-                        configurable: true
-                    });
-                    Object.defineProperty(payload, 'user_id', {
-                        value: newUserId,
-                        writable: true,
-                        enumerable: true,
-                        configurable: true
-                    });
+                    // For agent messages: include voiceAgentId (server will map to created_by/user_id)
+                    // For user messages: don't include voiceAgentId (server will treat as consumer/Person)
+                    if (isAgent && voiceAgentId) {
+                        payload.voiceAgentId = voiceAgentId;
+                        console.log(`   Adding voiceAgentId for agent message: ${voiceAgentId}`);
+                    } else {
+                        // Remove voiceAgentId if present (user message)
+                        delete payload.voiceAgentId;
+                        console.log(`   User message - no voiceAgentId`);
+                    }
                     
                     // Also ensure message_type matches what Alive5 expects
                     if (!payload.message_type || payload.message_type === "voice_agent_post_message") {
                         payload.message_type = "livechat";
                     }
                     
-                    console.error(`   SET created_by to: "${payload.created_by}"`);
-                    console.error(`   SET user_id to: "${payload.user_id}"`);
-                    console.error(`   SET message_type to: "${payload.message_type}"`);
-                    
-                    // Remove is_agent flag as it's not needed in the final payload
+                    // Remove is_agent flag as it's not needed (we use voiceAgentId instead)
                     delete payload.is_agent;
                     
-                    console.error(`   Final payload before emit:`, JSON.stringify({
-                        message_content: payload.message_content?.substring(0, 50),
-                        created_by: payload.created_by,
-                        user_id: payload.user_id,
-                        message_type: payload.message_type,
-                        thread_id: payload.thread_id
-                    }, null, 2));
+                    console.log(`   Final payload: voiceAgentId=${payload.voiceAgentId || 'none'}, message_type=${payload.message_type}`);
+                    
+                }
+                
+                // For end_voice_chat, ensure voice_agent_id is included if available
+                if (event === 'end_voice_chat' && payload && !payload.voice_agent_id) {
+                    const voiceAgentId = this.alive5SocketConfig?.voice_agent_id;
+                    if (voiceAgentId) {
+                        payload.voice_agent_id = voiceAgentId;
+                        console.log(`   Added voice_agent_id to end_voice_chat: ${voiceAgentId}`);
+                    }
                 }
                 
                 console.log(`📨 Received instruction to emit ${event} via data channel`);
