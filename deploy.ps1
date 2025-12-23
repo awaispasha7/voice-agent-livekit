@@ -68,6 +68,10 @@ if ($choice -eq "1") {
         return
     }
     
+    # Create directory structure on server
+    Write-Host "  - Creating directory structure..." -ForegroundColor White
+    & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/alive5-worker /home/ubuntu/alive5-voice-agent/backend/agentcore" 2>&1 | Out-Null
+    
     # Deploy worker files
     $scpTarget = "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/backend/alive5-worker/"
     Write-Host "  - Deploying worker.py..." -ForegroundColor White
@@ -78,6 +82,19 @@ if ($choice -eq "1") {
     
     Write-Host "  - Deploying system_prompt.py..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/system_prompt.py $scpTarget
+    
+    Write-Host "  - Deploying AgentCore integration files..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/agentcore_integration.py $scpTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/agentcore_llm_wrapper.py $scpTarget
+    
+    # Deploy AgentCore module files
+    $agentcoreTarget = "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/backend/agentcore/"
+    Write-Host "  - Deploying AgentCore module files..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/__init__.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/agent.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/client.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/memory.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/gateway_tools.py $agentcoreTarget
     
     Write-Host "  - Deploying .env file..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no .env "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/"
@@ -144,7 +161,7 @@ if ($choice -eq "1") {
     
     # Create directories on server
     Write-Host "  - Creating directory structure..." -ForegroundColor White
-    $mkdirResult = & ssh -i $KEY -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=5 "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/alive5-worker" 2>&1
+    $mkdirResult = & ssh -i $KEY -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=5 "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/alive5-worker /home/ubuntu/alive5-voice-agent/backend/agentcore" 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ❌ Error creating directory structure. Exit code: $LASTEXITCODE" -ForegroundColor $ErrorColor
         Write-Host "  Error output: $mkdirResult" -ForegroundColor $ErrorColor
@@ -179,6 +196,19 @@ if ($choice -eq "1") {
     
     Write-Host "  - Deploying system_prompt.py..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/system_prompt.py $scpTarget
+    
+    Write-Host "  - Deploying AgentCore integration files..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/agentcore_integration.py $scpTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/agentcore_llm_wrapper.py $scpTarget
+    
+    # Deploy AgentCore module files
+    $agentcoreTarget = "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/backend/agentcore/"
+    Write-Host "  - Deploying AgentCore module files..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/__init__.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/agent.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/client.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/memory.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/gateway_tools.py $agentcoreTarget
     
     Write-Host "Worker files deployed successfully!" -ForegroundColor $SuccessColor
     
@@ -282,6 +312,10 @@ if ($choice -eq "1") {
     
     Write-Host "Backend files deployed successfully!" -ForegroundColor $SuccessColor
     
+    # Create directory structure on server
+    Write-Host "  - Creating directory structure..." -ForegroundColor White
+    & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "mkdir -p /home/ubuntu/alive5-voice-agent/backend/alive5-worker /home/ubuntu/alive5-voice-agent/backend/agentcore" 2>&1 | Out-Null
+    
     # Deploy worker files
     Write-Host "Deploying worker files..." -ForegroundColor $InfoColor
     
@@ -294,6 +328,19 @@ if ($choice -eq "1") {
     
     Write-Host "  - Deploying system_prompt.py..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/system_prompt.py $scpTarget
+    
+    Write-Host "  - Deploying AgentCore integration files..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/agentcore_integration.py $scpTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/agentcore_llm_wrapper.py $scpTarget
+    
+    # Deploy AgentCore module files
+    $agentcoreTarget = "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/backend/agentcore/"
+    Write-Host "  - Deploying AgentCore module files..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/__init__.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/agent.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/client.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/memory.py $agentcoreTarget
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/gateway_tools.py $agentcoreTarget
     
     Write-Host "Worker files deployed successfully!" -ForegroundColor $SuccessColor
     

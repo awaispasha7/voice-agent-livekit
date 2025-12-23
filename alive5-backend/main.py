@@ -220,8 +220,13 @@ class CRMSubmissionRequest(BaseModel):
     botchain_name: str
     org_name: str
     full_name: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    account_id: Optional[str] = None
+    company: Optional[str] = None
+    company_title: Optional[str] = None
     notes: Optional[str] = None
 
 class TelnyxWebhookRequest(BaseModel):
@@ -235,9 +240,63 @@ class TelnyxTransferRequest(BaseModel):
     transfer_to: str
 
 
-# In-memory storage (simple approach)
+# Session storage - use AgentCore Memory if enabled, otherwise fallback to in-memory
+# Import AgentCore Memory
+try:
+    from agentcore.memory import AgentCoreMemory
+    memory_client = AgentCoreMemory()
+    USE_AGENTCORE_MEMORY = memory_client.is_enabled()
+except ImportError:
+    memory_client = None
+    USE_AGENTCORE_MEMORY = False
+
+# Fallback in-memory storage (used if AgentCore Memory is disabled)
 sessions: Dict[str, Dict[str, Any]] = {}
 rooms: Dict[str, Dict[str, Any]] = {}
+
+# Helper functions for session management
+async def get_session_data(room_name: str) -> Optional[Dict[str, Any]]:
+    """Get session data from Memory or fallback dict"""
+    if USE_AGENTCORE_MEMORY and memory_client:
+        session = await memory_client.get_session(room_name)
+        if session:
+            return session
+    
+    # Fallback to in-memory dict
+    return sessions.get(room_name)
+
+async def store_session_data(room_name: str, session_data: Dict[str, Any]):
+    """Store session data in Memory or fallback dict"""
+    if USE_AGENTCORE_MEMORY and memory_client:
+        await memory_client.store_session(room_name, session_data)
+    else:
+        sessions[room_name] = session_data
+
+async def update_session_data(room_name: str, updates: Dict[str, Any]):
+    """Update session data in Memory or fallback dict"""
+    session = await get_session_data(room_name)
+    if not session:
+        session = {}
+    
+    # Deep update
+    def deep_update(base, updates):
+        for key, value in updates.items():
+            if isinstance(value, dict) and key in base and isinstance(base[key], dict):
+                deep_update(base[key], value)
+            else:
+                base[key] = value
+    
+    deep_update(session, updates)
+    await store_session_data(room_name, session)
+
+async def delete_session_data(room_name: str):
+    """Delete session data (Memory doesn't support delete, so we store empty dict)"""
+    if USE_AGENTCORE_MEMORY and memory_client:
+        # Memory doesn't have explicit delete, but we can store empty dict
+        await memory_client.store_session(room_name, {})
+    else:
+        if room_name in sessions:
+            del sessions[room_name]
 
 # Load available voices from cached_voices.json
 def load_available_voices():
@@ -333,7 +392,7 @@ async def get_connection_details(request: ConnectionDetailsRequest):
                     logger.warning(f"⚠️ Could not verify room existence: {list_error}, but continuing...")
         
         # Store session data
-        sessions[room_name] = {
+        session_data = {
             "room_name": room_name,
             "user_name": request.user_name,
             "user_data": {
@@ -347,6 +406,9 @@ async def get_connection_details(request: ConnectionDetailsRequest):
             },
             "created_at": datetime.now().isoformat()
         }
+        
+        # Store using helper function
+        await store_session_data(room_name, session_data)
         
         # Create room token
         token = api.AccessToken(livekit_api_key, livekit_api_secret)
@@ -388,6 +450,24 @@ async def get_session(room_name: str):
     
     # Log for debugging
     logger.debug(f"📋 Session lookup - Room name: {room_name_decoded}, Cleaned: {room_name_clean}")
+    
+    # Try helper function first (handles Memory and fallback)
+    session = await get_session_data(room_name_clean)
+    if session:
+        return session
+    
+    # Try decoded name
+    session = await get_session_data(room_name_decoded)
+    if session:
+        return session
+    
+    # Try original
+    session = await get_session_data(room_name)
+    if session:
+        return session
+    
+    # Fallback: Try to find a matching session (in case of encoding issues)
+    # Only check in-memory dict for this (Memory lookup already tried above)
     logger.debug(f"   Available sessions: {list(sessions.keys())[:5]}...")  # Show first 5
     
     # Try cleaned name first
@@ -423,11 +503,16 @@ async def get_session(room_name: str):
 @app.post("/api/sessions/update")
 async def update_session(request: SessionUpdateRequest):
     """Update session data"""
-    if request.room_name not in sessions:
+    # Get existing session
+    session = await get_session_data(request.room_name)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    sessions[request.room_name]["user_data"].update(request.user_data)
-    sessions[request.room_name]["updated_at"] = datetime.now().isoformat()
+    # Update session data
+    await update_session_data(request.room_name, {
+        "user_data": request.user_data,
+        "updated_at": datetime.now().isoformat()
+    })
     
     return {"status": "updated"}
 
@@ -436,17 +521,31 @@ async def change_voice(request: VoiceChangeRequest):
     """Change voice for a session"""
     logger.info(f"Voice change request: room={request.room_name}, voice={request.voice_id}")
     
-    if request.room_name not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+    # Get session
+    session = None
+    if USE_AGENTCORE_MEMORY and memory_client:
+        session = await memory_client.get_session(request.room_name)
+    
+    if not session:
+        if request.room_name not in sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        session = sessions[request.room_name]
     
     # Validate voice_id exists
     if request.voice_id not in AVAILABLE_VOICES:
         raise HTTPException(status_code=400, detail="Invalid voice ID")
     
-    sessions[request.room_name]["user_data"]["selected_voice"] = request.voice_id
-    sessions[request.room_name]["selected_voice"] = request.voice_id
-    sessions[request.room_name]["voice_id"] = request.voice_id
-    sessions[request.room_name]["updated_at"] = datetime.now().isoformat()
+    # Update voice
+    session["user_data"]["selected_voice"] = request.voice_id
+    session["selected_voice"] = request.voice_id
+    session["voice_id"] = request.voice_id
+    session["updated_at"] = datetime.now().isoformat()
+    
+    # Store back
+    if USE_AGENTCORE_MEMORY and memory_client:
+        await memory_client.store_session(request.room_name, session)
+    else:
+        sessions[request.room_name] = session
     
     return {"status": "success", "voice_name": AVAILABLE_VOICES[request.voice_id]}
 
@@ -479,8 +578,7 @@ async def delete_room(room_name: str):
             logger.warning(f"⚠️ Error closing LiveKit room: {e}")
         
         # Clean up session data
-        if room_name in sessions:
-            del sessions[room_name]
+        await delete_session_data(room_name)
         if room_name in rooms:
             del rooms[room_name]
         
@@ -537,12 +635,13 @@ async def init_livechat(room_name: str, org_name: str, botchain_name: str):
             final_crm_id = str(uuid.uuid4())  # Standard UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
         
         # Store in session for worker to use
-        if room_name in sessions:
-            sessions[room_name]["thread_id"] = final_thread_id
-            sessions[room_name]["crm_id"] = final_crm_id
-            sessions[room_name]["api_key"] = api_key
-            sessions[room_name]["channel_id"] = channel_id
-            sessions[room_name]["widget_id"] = widget_id
+        await update_session_data(room_name, {
+            "thread_id": final_thread_id,
+            "crm_id": final_crm_id,
+            "api_key": api_key,
+            "channel_id": channel_id,
+            "widget_id": widget_id
+        })
         
         logger.info(f"✅ Voice agent session configured - Thread: {final_thread_id[:20]}..., CRM: {final_crm_id[:20]}...")
         
@@ -574,12 +673,12 @@ async def submit_crm(request: CRMSubmissionRequest):
     """
     try:
         logger.info(f"📝 CRM submission received for room: {request.room_name}")
-        logger.info(f"   Name: {request.full_name}")
+        logger.info(f"   Name: {request.full_name or ((request.first_name or '') + ' ' + (request.last_name or '')).strip()}")
         logger.info(f"   Email: {request.email}")
         logger.info(f"   Notes: {request.notes}")
         
         # Get session data (includes api_key, thread_id, crm_id from init)
-        session = sessions.get(request.room_name, {})
+        session = await get_session_data(request.room_name) or {}
         api_key = session.get("api_key") or os.getenv("A5_API_KEY")
         thread_id = session.get("thread_id")
         crm_id = session.get("crm_id")
@@ -591,16 +690,21 @@ async def submit_crm(request: CRMSubmissionRequest):
             raise Exception("Session not initialized - call init_livechat first")
         
         # Store CRM data in session (worker will send via frontend socket)
-        if "crm_data" not in sessions[request.room_name]:
-            sessions[request.room_name]["crm_data"] = {}
-        
-        sessions[request.room_name]["crm_data"].update({
+        crm_data = session.get("crm_data", {})
+        crm_data.update({
             "full_name": request.full_name,
+            "first_name": request.first_name,
+            "last_name": request.last_name,
             "email": request.email,
             "phone": request.phone,
+            "account_id": request.account_id,
+            "company": request.company,
+            "company_title": request.company_title,
             "notes": request.notes,
             "submitted_at": datetime.now().isoformat()
         })
+        
+        await update_session_data(request.room_name, {"crm_data": crm_data})
         
         return {
             "status": "success",
@@ -619,7 +723,7 @@ async def end_livechat(room_name: str):
     try:
         logger.info(f"👋 Ending livechat for room: {room_name}")
         
-        session = sessions.get(room_name, {})
+        session = await get_session_data(room_name) or {}
         thread_id = session.get("thread_id")
         crm_id = session.get("crm_id")
         
@@ -774,12 +878,12 @@ async def telnyx_webhook(request: Request):
                 }
                 
                 # Store with correct room name
-                sessions[room_name] = session_data
+                await store_session_data(room_name, session_data)
                 
                 # Also store with double-prefixed name (workaround for dispatch rule issue)
                 # This allows the session to be found even if LiveKit creates room with wrong name
                 double_prefixed_name = f"telnyx_call__{room_name}"
-                sessions[double_prefixed_name] = session_data
+                await store_session_data(double_prefixed_name, session_data)
                 logger.info(f"📝 Stored session under both names: {room_name} and {double_prefixed_name}")
                 
                 # Answer the call and transfer to LiveKit
@@ -954,9 +1058,8 @@ async def telnyx_webhook(request: Request):
             
             # Delete all sessions with this call_control_id (handles both correct and double-prefixed names)
             for room_name_key in session_to_delete:
-                if room_name_key in sessions:
-                    del sessions[room_name_key]
-                    logger.info(f"✅ Removed session: {room_name_key}")
+                await delete_session_data(room_name_key)
+                logger.info(f"✅ Removed session: {room_name_key}")
             
             return {"status": "ok"}
         
@@ -1041,10 +1144,11 @@ async def telnyx_transfer_call(request: TelnyxTransferRequest):
                 #         logger.warning(f"⚠️ Error sending DTMF (call may still work): {e}")
                 
                 # Mark session as transferred
-                if request.room_name in sessions:
-                    sessions[request.room_name]["transferred"] = True
-                    sessions[request.room_name]["transferred_to"] = request.transfer_to
-                    sessions[request.room_name]["transferred_at"] = datetime.now().isoformat()
+                await update_session_data(request.room_name, {
+                    "transferred": True,
+                    "transferred_to": request.transfer_to,
+                    "transferred_at": datetime.now().isoformat()
+                })
                 
                 # Close LiveKit room after successful transfer to stop the agent session
                 # The call is now with the human agent, so the AI agent should stop listening

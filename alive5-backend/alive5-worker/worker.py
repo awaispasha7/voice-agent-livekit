@@ -34,6 +34,18 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from system_prompt import get_system_prompt
 from functions import handle_load_bot_flows, handle_faq_bot_request, handle_bedrock_knowledge_base_request
 
+# Import AgentCore integration
+try:
+    from agentcore_integration import AgentCoreIntegration
+    from agentcore.memory import AgentCoreMemory
+    from agentcore.gateway_tools import AgentCoreGateway
+    from agentcore_llm_wrapper import AgentCoreLLMWrapper
+    AGENTCORE_INTEGRATION_AVAILABLE = True
+except ImportError:
+    AGENTCORE_INTEGRATION_AVAILABLE = False
+    AgentCoreLLMWrapper = None
+    logger.warning("AgentCore integration not available. Will use direct LLM and functions.")
+
 # Load environment variables
 load_dotenv(Path(__file__).parent / "../../.env")
 
@@ -138,8 +150,13 @@ class SimpleVoiceAgent(Agent):
         # CRM data collection
         self.collected_data = {
             "full_name": None,
+            "first_name": None,
+            "last_name": None,
             "email": None,
             "phone": None,
+            "account_id": None,
+            "company": None,
+            "company_title": None,
             "notes_entry": []
         }
         
@@ -231,6 +248,38 @@ class SimpleVoiceAgent(Agent):
                     raise Exception(f"Could not initialize any LLM. Original error: {e}, Fallback error: {e2}")
                 self._inference_model_id = None
         
+        # Initialize AgentCore integration if available
+        self.agentcore_integration = None
+        self.agentcore_memory = None
+        self.agentcore_gateway = None
+        
+        if AGENTCORE_INTEGRATION_AVAILABLE:
+            try:
+                self.agentcore_integration = AgentCoreIntegration()
+                self.agentcore_memory = AgentCoreMemory()
+                self.agentcore_gateway = AgentCoreGateway()
+                
+                if self.agentcore_integration.is_enabled():
+                    logger.info("✅ AgentCore integration enabled - will use AgentCore Runtime for LLM")
+                if self.agentcore_memory and self.agentcore_memory.is_enabled():
+                    logger.info("✅ AgentCore Memory enabled - will use persistent storage")
+                if self.agentcore_gateway and self.agentcore_gateway.is_enabled():
+                    logger.info("✅ AgentCore Gateway enabled - will use Gateway for functions")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to initialize AgentCore integration: {e}")
+                self.agentcore_integration = None
+        
+        # Wrap LLM with AgentCore wrapper if enabled
+        if self.agentcore_integration and self.agentcore_integration.is_enabled() and AgentCoreLLMWrapper:
+            llm_instance = AgentCoreLLMWrapper(
+                base_llm=llm_instance,
+                agentcore_integration=self.agentcore_integration,
+                session_id=room_name,
+                botchain_name=botchain_name,
+                org_name=org_name
+            )
+            logger.info("✅ LLM wrapped with AgentCore - calls will route to AgentCore Runtime")
+        
         # Initialize the base Agent class with special instructions
         system_prompt = get_system_prompt(botchain_name, org_name, special_instructions)
         super().__init__(instructions=system_prompt, llm=llm_instance)
@@ -244,6 +293,9 @@ class SimpleVoiceAgent(Agent):
         **IMPORTANT: This function only works for phone calls, not web sessions.**
         For web sessions, it will return a message explaining that transfer is not available.
         
+        If AgentCore Gateway is enabled, this will route through Gateway.
+        Otherwise, uses direct function call.
+        
         Args:
             transfer_number: Phone number to transfer to (e.g., "+18555518858"). 
                            Optional - if not provided, uses default call center number from environment.
@@ -253,6 +305,20 @@ class SimpleVoiceAgent(Agent):
             Success status and message. If this is a web session (no call_control_id), 
             returns success=False with message explaining transfer is not available for web interface.
         """
+        # Try Gateway first if enabled
+        if self.agentcore_gateway and self.agentcore_gateway.is_enabled():
+            try:
+                result = await self.agentcore_gateway.call_tool(
+                    "transfer_call_to_human",
+                    room_name=self.room_name,
+                    transfer_number=transfer_number
+                )
+                if result.get("success") is not None:
+                    return result
+            except Exception as e:
+                logger.warning(f"Gateway call failed, falling back to direct: {e}")
+        
+        # Fallback to direct function call
         try:
             # Get transfer number or use default
             if not transfer_number:
@@ -370,6 +436,9 @@ class SimpleVoiceAgent(Agent):
         Call this function whenever a flow question has a 'save_data_to' field and the user provides an answer.
         This will immediately update the widget/portal with the new CRM data.
         
+        If AgentCore Gateway is enabled, this will route through Gateway.
+        Otherwise, uses direct function call.
+        
         Args:
             field_name: The field name from save_data_to (e.g., "full_name", "email", "phone", "notes_entry")
             value: The user's response to save.
@@ -377,27 +446,98 @@ class SimpleVoiceAgent(Agent):
         Returns:
             Success status and a message.
         """
-        logger.info(f"💾 Saving collected data: {field_name} = {value}")
+        def _normalize_field_name(name: str) -> str:
+            n = (name or "").strip()
+            n_l = n.lower().replace("-", "_").replace(" ", "_")
+            # Common aliases from flows / UI / integrations
+            if n_l in {"fullname", "full_name", "name"}:
+                return "full_name"
+            if n_l in {"first", "first_name", "firstname"}:
+                return "first_name"
+            if n_l in {"last", "last_name", "lastname"}:
+                return "last_name"
+            if n_l in {"email", "email_address"}:
+                return "email"
+            if n_l in {"phone", "phone_number", "phone_mobile", "phonemobile"}:
+                return "phone"
+            if n_l in {"notes_entry", "notes", "note"}:
+                return "notes_entry"
+            if n_l in {"accountid", "account_id", "account"}:
+                return "account_id"
+            if n_l in {"company"}:
+                return "company"
+            if n_l in {"companytitle", "company_title", "title", "company_position"}:
+                return "company_title"
+            # Fallback: keep original normalized token so we can at least store it
+            return n_l or n
+
+        normalized_field = _normalize_field_name(field_name)
+
+        # Try Gateway first if enabled
+        if self.agentcore_gateway and self.agentcore_gateway.is_enabled():
+            try:
+                result = await self.agentcore_gateway.call_tool(
+                    "save_collected_data",
+                    room_name=self.room_name,
+                    field_name=normalized_field,
+                    value=value
+                )
+                if result.get("success") is not None:
+                    # Also update local collected_data for consistency
+                    if result.get("success"):
+                        if normalized_field in ["full_name", "first_name", "last_name", "email", "phone", "account_id", "company", "company_title"]:
+                            self.collected_data[normalized_field] = value
+                        elif normalized_field == "notes_entry":
+                            if "notes_entry" not in self.collected_data:
+                                self.collected_data["notes_entry"] = []
+                            self.collected_data["notes_entry"].append(value)
+                    return result
+            except Exception as e:
+                logger.warning(f"Gateway call failed, falling back to direct: {e}")
+        
+        # Fallback to direct function call
+        logger.info(f"💾 Saving collected data: {normalized_field} = {value}")
         
         try:
             # Update internal collected_data
-            if field_name == "full_name":
+            if normalized_field == "full_name":
                 self.collected_data["full_name"] = value
                 # Attempt to split into first and last name for CRM update
                 name_parts = value.strip().split(' ', 1)
                 first_name = name_parts[0] if name_parts else ""
                 last_name = name_parts[1] if len(name_parts) > 1 else ""
+                # Also store split fields for downstream payload builders
+                if first_name:
+                    self.collected_data["first_name"] = first_name
+                if last_name:
+                    self.collected_data["last_name"] = last_name
                 # Update CRM immediately in real-time
                 await self._update_crm_data(first_name=first_name, last_name=last_name)
-            elif field_name == "email":
+            elif normalized_field == "first_name":
+                self.collected_data["first_name"] = value
+                # Update CRM immediately in real-time
+                await self._update_crm_data(first_name=value)
+            elif normalized_field == "last_name":
+                self.collected_data["last_name"] = value
+                await self._update_crm_data(last_name=value)
+            elif normalized_field == "email":
                 self.collected_data["email"] = value
                 # Update CRM immediately in real-time
                 await self._update_crm_data(email=value)
-            elif field_name == "phone":
+            elif normalized_field == "phone":
                 self.collected_data["phone"] = value
                 # Update CRM immediately in real-time
                 await self._update_crm_data(phone=value)
-            elif field_name == "notes_entry":
+            elif normalized_field == "account_id":
+                self.collected_data["account_id"] = value
+                await self._update_crm_data(account_id=value)
+            elif normalized_field == "company":
+                self.collected_data["company"] = value
+                await self._update_crm_data(company=value)
+            elif normalized_field == "company_title":
+                self.collected_data["company_title"] = value
+                await self._update_crm_data(company_title=value)
+            elif normalized_field == "notes_entry":
                 if "notes_entry" not in self.collected_data:
                     self.collected_data["notes_entry"] = []
                 self.collected_data["notes_entry"].append(value)
@@ -411,12 +551,12 @@ class SimpleVoiceAgent(Agent):
                     "message": f"Unknown field_name: {field_name}"
                 }
             
-            logger.info(f"✅ Data saved and CRM updated in real-time for {field_name}")
+            logger.info(f"✅ Data saved and CRM updated in real-time for {normalized_field}")
             logger.info(f"   - Current collected_data: {self.collected_data}")
             
             return {
                 "success": True,
-                "message": f"Data for {field_name} saved successfully and CRM updated in real-time."
+                "message": f"Data for {normalized_field} saved successfully and CRM updated in real-time."
             }
         except Exception as e:
             logger.error(f"❌ Error saving collected data: {e}", exc_info=True)
@@ -491,13 +631,27 @@ class SimpleVoiceAgent(Agent):
     
     @function_tool()
     async def faq_bot_request(self, context: RunContext, faq_question: str, bot_id: str = None, isVoice: bool = None) -> Dict[str, Any]:
-        """Call the FAQ bot API to get answers about company services, pricing, features, or company information.
+        """Query FAQ bot for company/service information
         
-        Args:
-            faq_question: The user's question about the company
-            bot_id: The FAQ bot ID (if None, uses session data)
-            isVoice: Whether this is a voice interaction (if None, uses agent's faq_isVoice setting)
+        If AgentCore Gateway is enabled, this will route through Gateway.
+        Otherwise, uses direct function call.
         """
+        # Try Gateway first if enabled
+        if self.agentcore_gateway and self.agentcore_gateway.is_enabled():
+            try:
+                result = await self.agentcore_gateway.call_tool(
+                    "faq_bot_request",
+                    query_text=faq_question,
+                    faq_bot_id=bot_id or self.faq_bot_id,
+                    org_name=self.org_name,
+                    is_voice=isVoice if isVoice is not None else True
+                )
+                if result.get("success"):
+                    return result
+            except Exception as e:
+                logger.warning(f"Gateway call failed, falling back to direct: {e}")
+        
+        # Fallback to direct function call (original implementation)
         # logger.info(f"🔧 FAQ bot request: {faq_question}")
         
         # Use dynamic FAQ bot ID from agent instance or session data if not provided
@@ -861,19 +1015,25 @@ class SimpleVoiceAgent(Agent):
     
     def _build_query_string(self) -> dict:
         """Build query_string with collected CRM data"""
-        full_name = self.collected_data.get("full_name", "")
-        name_parts = full_name.split(' ', 1) if full_name else ["", ""]
+        # Prefer explicit first/last; fallback to split full_name
+        first_name = self.collected_data.get("first_name", "") or ""
+        last_name = self.collected_data.get("last_name", "") or ""
+        if not (first_name or last_name):
+            full_name = self.collected_data.get("full_name", "")
+            name_parts = full_name.split(' ', 1) if full_name else ["", ""]
+            first_name = name_parts[0] if len(name_parts) > 0 else ""
+            last_name = name_parts[1] if len(name_parts) > 1 else ""
         
         return {
-            "first_name": name_parts[0] if len(name_parts) > 0 else "",
-            "last_name": name_parts[1] if len(name_parts) > 1 else "",
+            "first_name": first_name,
+            "last_name": last_name,
             "email": self.collected_data.get("email", ""),
             "notes": " | ".join(self.collected_data.get("notes_entry", [])) if self.collected_data.get("notes_entry") else "",
             "crm_id": self.alive5_crm_id or "",
             "agent_email": "",
-            "accountid": "",
-            "company": "",
-            "companytitle": "",
+            "accountid": self.collected_data.get("account_id", "") or "",
+            "company": self.collected_data.get("company", "") or "",
+            "companytitle": self.collected_data.get("company_title", "") or "",
             "phone_mobile": self.collected_data.get("phone", ""),
             "cartid": "",
             "utm_source": "",
@@ -897,8 +1057,14 @@ class SimpleVoiceAgent(Agent):
     
     def _build_crm_data(self, timestamp: int) -> dict:
         """Build crmData object with collected CRM data"""
-        full_name = self.collected_data.get("full_name", "")
-        name_parts = full_name.split(' ', 1) if full_name else ["", ""]
+        # Prefer explicit first/last; fallback to split full_name
+        first_name = self.collected_data.get("first_name", "") or ""
+        last_name = self.collected_data.get("last_name", "") or ""
+        if not (first_name or last_name):
+            full_name = self.collected_data.get("full_name", "")
+            name_parts = full_name.split(' ', 1) if full_name else ["", ""]
+            first_name = name_parts[0] if len(name_parts) > 0 else ""
+            last_name = name_parts[1] if len(name_parts) > 1 else ""
         
         return {
             "allow_zapier_syns": True,
@@ -909,14 +1075,28 @@ class SimpleVoiceAgent(Agent):
             "crm_type": "livechat",
             "org_name": self.alive5_org_name,
             "updated_at": timestamp,
-            "firstName": name_parts[0] if len(name_parts) > 0 else "",
-            "lastName": name_parts[1] if len(name_parts) > 1 else "",
+            "firstName": first_name,
+            "lastName": last_name,
             "email": self.collected_data.get("email", ""),
             "phoneMobile": self.collected_data.get("phone", ""),
-            "notes": " | ".join(self.collected_data.get("notes_entry", [])) if self.collected_data.get("notes_entry") else ""
+            "notes": " | ".join(self.collected_data.get("notes_entry", [])) if self.collected_data.get("notes_entry") else "",
+            # Keep these fields if CRM accepts them; safe to include as blanks if unused
+            "accountId": self.collected_data.get("account_id", "") or "",
+            "company": self.collected_data.get("company", "") or "",
+            "companyTitle": self.collected_data.get("company_title", "") or ""
         }
     
-    async def _update_crm_data(self, first_name: str = None, last_name: str = None, email: str = None, phone: str = None, notes: str = None):
+    async def _update_crm_data(
+        self,
+        first_name: str = None,
+        last_name: str = None,
+        email: str = None,
+        phone: str = None,
+        notes: str = None,
+        account_id: str = None,
+        company: str = None,
+        company_title: str = None
+    ):
         """Update CRM data using new voice agent socket save_crm_data event"""
         try:
             if not self.alive5_crm_id:
@@ -933,9 +1113,11 @@ class SimpleVoiceAgent(Agent):
                     last_name = name_parts[1]
                 else:
                     self.collected_data["full_name"] = first_name
+                self.collected_data["first_name"] = first_name
             if last_name:
                 if self.collected_data.get("full_name"):
                     self.collected_data["full_name"] = f"{first_name or ''} {last_name}".strip()
+                self.collected_data["last_name"] = last_name
             if email:
                 self.collected_data["email"] = email
             if phone:
@@ -949,6 +1131,12 @@ class SimpleVoiceAgent(Agent):
                     self.collected_data["notes_entry"] = notes.split(" | ")
                 else:
                     self.collected_data["notes_entry"] = [notes] if notes else []
+            if account_id:
+                self.collected_data["account_id"] = account_id
+            if company:
+                self.collected_data["company"] = company
+            if company_title:
+                self.collected_data["company_title"] = company_title
             
             # Send CRM update instructions to frontend via data channel
             if not hasattr(self, 'room') or not self.room:
@@ -956,17 +1144,28 @@ class SimpleVoiceAgent(Agent):
             
             import json
             
+            def _add_updates(key_base: str, value_str: str, aliases: List[str]):
+                for k in aliases:
+                    updates.append({"key": k, "value": value_str})
+
+            # Some environments expect different key formats; emit a small set of safe aliases.
             updates = []
             if first_name:
-                updates.append({"key": "first_name", "value": first_name})
+                _add_updates("first_name", first_name, ["first_name", "firstName"])
             if last_name:
-                updates.append({"key": "last_name", "value": last_name})
+                _add_updates("last_name", last_name, ["last_name", "lastName"])
             if email:
-                updates.append({"key": "email", "value": email})
+                _add_updates("email", email, ["email"])
             if phone:
-                updates.append({"key": "phone", "value": phone})
+                _add_updates("phone", phone, ["phone", "phone_mobile", "phoneMobile"])
             if notes:
-                updates.append({"key": "notes", "value": notes})
+                _add_updates("notes", notes, ["notes"])
+            if account_id:
+                _add_updates("account_id", account_id, ["accountid", "account_id", "accountId"])
+            if company:
+                _add_updates("company", company, ["company"])
+            if company_title:
+                _add_updates("company_title", company_title, ["companytitle", "company_title", "companyTitle"])
             
             for update in updates:
                 socket_instruction = {
