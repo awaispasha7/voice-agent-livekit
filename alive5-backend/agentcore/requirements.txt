@@ -1,0 +1,30 @@
+livekit>=1.0.18,<2.0.0
+livekit-api>=1.0.0,<2.0.0
+
+livekit-agents>=1.2.0,<2.0.0
+livekit-plugins-openai>=1.2.0,<2.0.0
+livekit-plugins-deepgram>=1.2.0,<2.0.0
+livekit-plugins-cartesia>=1.2.0,<2.0.0
+livekit-plugins-silero>=1.2.0,<2.0.0
+livekit-plugins-noise-cancellation==0.2.5
+livekit-plugins-turn-detector>=1.2.0,<2.0.0
+livekit-plugins-aws[realtime]>=1.2.0,<2.0.0
+
+python-dotenv
+fastapi>=0.115.0  # Updated to support newer starlette (required by bedrock-agentcore-starter-toolkit)
+uvicorn[standard]>=0.30.0  # Updated to match newer starlette
+openai>=1.0.0
+httpx
+python-socketio[asyncio-client]
+boto3>=1.34.0
+psutil>=5.9.0  # For system resource monitoring (CPU, RAM)
+
+# AgentCore dependencies (for hybrid approach)
+bedrock-agentcore>=1.0.0  # AgentCore Runtime SDK
+bedrock-agentcore-starter-toolkit>=0.2.0  # AgentCore CLI and tools (latest is 0.2.5)
+
+# Note: opentelemetry packages are installed transitively by livekit-agents
+# We disable telemetry anyway (LIVEKIT_TELEMETRY_ENABLED=false), so let livekit-agents resolve compatible versions
+# Explicitly pinning causes version conflicts - let pip resolve what livekit-agents needs
+
+

@@ -43,12 +43,18 @@ if AGENTCORE_AVAILABLE:
 else:
     app = None
 
+# Safe decorator that becomes a no-op if AgentCore runtime isn't installed.
+def _agentcore_entrypoint(fn):
+    if AGENTCORE_AVAILABLE and app:
+        return app.entrypoint(fn)
+    return fn
+
 # Initialize Memory and Gateway
 memory_client = AgentCoreMemory() if MEMORY_AVAILABLE else None
 gateway_client = AgentCoreGateway() if GATEWAY_AVAILABLE else None
 
 
-@app.entrypoint if AGENTCORE_AVAILABLE else None
+@_agentcore_entrypoint
 async def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     AgentCore entrypoint handler for voice agent

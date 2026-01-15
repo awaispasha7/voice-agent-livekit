@@ -1,0 +1,97 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BedrockFullAccessForAgentCore",
+      "Effect": "Allow",
+      "Action": "bedrock:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ECRForAgentCoreContainers",
+      "Effect": "Allow",
+      "Action": "ecr:*",
+      "Resource": [
+        "arn:aws:ecr:us-east-1:864798833616:repository/bedrock-agentcore-*",
+        "*"
+      ]
+    },
+    {
+      "Sid": "CodeBuildForAgentCore",
+      "Effect": "Allow",
+      "Action": "codebuild:*",
+      "Resource": [
+        "arn:aws:codebuild:us-east-1:864798833616:project/bedrock-agentcore-*",
+        "*"
+      ]
+    },
+    {
+      "Sid": "CloudWatchLogsForAgentCore",
+      "Effect": "Allow",
+      "Action": "logs:*",
+      "Resource": [
+        "arn:aws:logs:us-east-1:864798833616:log-group:/aws/bedrock-agentcore/*",
+        "arn:aws:logs:us-east-1:864798833616:log-group:/aws/vendedlogs/bedrock-agentcore/*",
+        "arn:aws:logs:us-east-1:864798833616:log-group:/aws/codebuild/bedrock-agentcore-*"
+      ]
+    },
+    {
+      "Sid": "IAMForAgentCoreRolesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:GetRole",
+        "iam:PutRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:PassRole",
+        "iam:TagRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:GetRolePolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::864798833616:role/bedrock-agentcore-*",
+        "arn:aws:iam::864798833616:role/BedrockAgentCore*"
+      ]
+    },
+    {
+      "Sid": "CloudFormationForAgentCore",
+      "Effect": "Allow",
+      "Action": "cloudformation:*",
+      "Resource": [
+        "arn:aws:cloudformation:us-east-1:864798833616:stack/bedrock-agentcore-*",
+        "arn:aws:cloudformation:us-east-1:864798833616:stack/BedrockAgentCore*"
+      ]
+    },
+    {
+      "Sid": "S3ForAgentCoreArtifacts",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::bedrock-agentcore-*",
+        "arn:aws:s3:::bedrock-agentcore-*/*"
+      ]
+    },
+    {
+      "Sid": "LambdaForAgentCore",
+      "Effect": "Allow",
+      "Action": "lambda:*",
+      "Resource": "arn:aws:lambda:us-east-1:864798833616:function:bedrock-agentcore-*"
+    },
+    {
+      "Sid": "APIGatewayForAgentCore",
+      "Effect": "Allow",
+      "Action": "apigateway:*",
+      "Resource": "arn:aws:apigateway:us-east-1::/restapis/*/resources/*"
+    },
+    {
+      "Sid": "STSGetCallerIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    }
+  ]
+}
+

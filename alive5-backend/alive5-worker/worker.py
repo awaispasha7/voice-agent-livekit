@@ -8,7 +8,7 @@ import os
 import random
 import sys
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Set environment variables to control LiveKit logging BEFORE any imports
 os.environ["LIVEKIT_LOG_LEVEL"] = "WARN"
@@ -440,12 +440,13 @@ class SimpleVoiceAgent(Agent):
         Otherwise, uses direct function call.
         
         Args:
-            field_name: The field name from save_data_to (e.g., "full_name", "email", "phone", "notes_entry")
+            field_name: The field name from save_data_to (e.g., "full_name", "email", "phone", "notes_entry", "company", "company_title", "account_id")
             value: The user's response to save.
         
         Returns:
             Success status and a message.
         """
+        logger.info(f"🔔 save_collected_data CALLED: field_name='{field_name}', value='{value[:50] if value else 'None'}...'")
         def _normalize_field_name(name: str) -> str:
             n = (name or "").strip()
             n_l = n.lower().replace("-", "_").replace(" ", "_")
@@ -470,40 +471,116 @@ class SimpleVoiceAgent(Agent):
                 return "company_title"
             # Fallback: keep original normalized token so we can at least store it
             return n_l or n
+        
+        def _normalize_phone_number(phone: str) -> str:
+            """Normalize US phone numbers to include +1 prefix"""
+            import re
+            if not phone:
+                return phone
+            
+            # Remove all non-digit characters except +
+            digits_only = re.sub(r'[^\d+]', '', phone)
+            
+            # If it already starts with +1, return as is
+            if digits_only.startswith('+1'):
+                return digits_only
+            
+            # If it starts with 1 (without +), add +
+            if digits_only.startswith('1') and len(digits_only) == 11:
+                return '+' + digits_only
+            
+            # If it's 10 digits (US number without country code), add +1
+            if len(digits_only) == 10:
+                return '+1' + digits_only
+            
+            # If it's 11 digits starting with 1, add +
+            if len(digits_only) == 11 and digits_only[0] == '1':
+                return '+' + digits_only
+            
+            # Return original if we can't normalize
+            return phone
 
         normalized_field = _normalize_field_name(field_name)
 
+        # Normalize phone number if needed (before Gateway or direct path)
+        normalized_value = value
+        if normalized_field == "phone":
+            normalized_value = _normalize_phone_number(value)
+            if normalized_value != value:
+                logger.info(f"📞 Normalized phone number: {value} -> {normalized_value}")
+        
         # Try Gateway first if enabled
         if self.agentcore_gateway and self.agentcore_gateway.is_enabled():
             try:
+                logger.info(f"🔧 Gateway enabled - calling save_collected_data via Gateway for {normalized_field}")
                 result = await self.agentcore_gateway.call_tool(
                     "save_collected_data",
                     room_name=self.room_name,
                     field_name=normalized_field,
-                    value=value
+                    value=normalized_value  # Use normalized value
                 )
+                logger.info(f"🔧 Gateway result for {normalized_field}: {result}")
                 if result.get("success") is not None:
                     # Also update local collected_data for consistency
                     if result.get("success"):
                         if normalized_field in ["full_name", "first_name", "last_name", "email", "phone", "account_id", "company", "company_title"]:
-                            self.collected_data[normalized_field] = value
+                            self.collected_data[normalized_field] = normalized_value  # Use normalized value
+                            logger.info(f"✅ Updated local collected_data[{normalized_field}] = {normalized_value}")
                         elif normalized_field == "notes_entry":
                             if "notes_entry" not in self.collected_data:
                                 self.collected_data["notes_entry"] = []
-                            self.collected_data["notes_entry"].append(value)
+                            self.collected_data["notes_entry"].append(normalized_value)
+                        # IMPORTANT: Gateway call doesn't emit realtime CRM updates.
+                        # Keep behavior consistent with the direct path by emitting the CRM update here too.
+                        logger.info(f"📤 Triggering CRM update for {normalized_field} via Gateway path")
+                        if normalized_field == "full_name":
+                            name_parts = normalized_value.strip().split(' ', 1)
+                            first_name = name_parts[0] if name_parts else ""
+                            last_name = name_parts[1] if len(name_parts) > 1 else ""
+                            if first_name:
+                                self.collected_data["first_name"] = first_name
+                            if last_name:
+                                self.collected_data["last_name"] = last_name
+                            await self._update_crm_data(first_name=first_name, last_name=last_name)
+                        elif normalized_field == "first_name":
+                            await self._update_crm_data(first_name=normalized_value)
+                        elif normalized_field == "last_name":
+                            await self._update_crm_data(last_name=normalized_value)
+                        elif normalized_field == "email":
+                            await self._update_crm_data(email=normalized_value)
+                        elif normalized_field == "phone":
+                            await self._update_crm_data(phone=normalized_value)  # Use normalized value
+                        elif normalized_field == "account_id":
+                            logger.info(f"💼 Gateway path: Triggering CRM update for account_id: {normalized_value}")
+                            await self._update_crm_data(account_id=normalized_value)
+                        elif normalized_field == "company":
+                            logger.info(f"💼 Gateway path: Triggering CRM update for company: {normalized_value}")
+                            await self._update_crm_data(company=normalized_value)
+                        elif normalized_field == "company_title":
+                            logger.info(f"💼 Gateway path: Triggering CRM update for company_title: {normalized_value}")
+                            await self._update_crm_data(company_title=normalized_value)
+                        elif normalized_field == "notes_entry":
+                            notes_str = " | ".join(self.collected_data.get("notes_entry", []))
+                            logger.info(f"📝 Gateway path: Triggering CRM update for notes: {notes_str[:50]}...")
+                            await self._update_crm_data(notes=notes_str)
+                        logger.info(f"✅ Gateway path: CRM update completed for {normalized_field}")
+                    else:
+                        logger.warning(f"⚠️ Gateway call returned success=False for {normalized_field}: {result.get('message', 'Unknown error')}")
                     return result
+                else:
+                    logger.warning(f"⚠️ Gateway call returned no success field for {normalized_field}, falling back to direct")
             except Exception as e:
-                logger.warning(f"Gateway call failed, falling back to direct: {e}")
+                logger.error(f"❌ Gateway call failed for {normalized_field}, falling back to direct: {e}", exc_info=True)
         
         # Fallback to direct function call
-        logger.info(f"💾 Saving collected data: {normalized_field} = {value}")
+        logger.info(f"💾 Saving collected data: {normalized_field} = {normalized_value}")
         
         try:
             # Update internal collected_data
             if normalized_field == "full_name":
-                self.collected_data["full_name"] = value
+                self.collected_data["full_name"] = normalized_value
                 # Attempt to split into first and last name for CRM update
-                name_parts = value.strip().split(' ', 1)
+                name_parts = normalized_value.strip().split(' ', 1)
                 first_name = name_parts[0] if name_parts else ""
                 last_name = name_parts[1] if len(name_parts) > 1 else ""
                 # Also store split fields for downstream payload builders
@@ -514,35 +591,38 @@ class SimpleVoiceAgent(Agent):
                 # Update CRM immediately in real-time
                 await self._update_crm_data(first_name=first_name, last_name=last_name)
             elif normalized_field == "first_name":
-                self.collected_data["first_name"] = value
+                self.collected_data["first_name"] = normalized_value
                 # Update CRM immediately in real-time
-                await self._update_crm_data(first_name=value)
+                await self._update_crm_data(first_name=normalized_value)
             elif normalized_field == "last_name":
-                self.collected_data["last_name"] = value
-                await self._update_crm_data(last_name=value)
+                self.collected_data["last_name"] = normalized_value
+                await self._update_crm_data(last_name=normalized_value)
             elif normalized_field == "email":
-                self.collected_data["email"] = value
+                self.collected_data["email"] = normalized_value
                 # Update CRM immediately in real-time
-                await self._update_crm_data(email=value)
+                await self._update_crm_data(email=normalized_value)
             elif normalized_field == "phone":
-                self.collected_data["phone"] = value
+                self.collected_data["phone"] = normalized_value  # Use normalized value
                 # Update CRM immediately in real-time
-                await self._update_crm_data(phone=value)
+                await self._update_crm_data(phone=normalized_value)  # Use normalized value
             elif normalized_field == "account_id":
-                self.collected_data["account_id"] = value
-                await self._update_crm_data(account_id=value)
+                self.collected_data["account_id"] = normalized_value
+                await self._update_crm_data(account_id=normalized_value)
             elif normalized_field == "company":
-                self.collected_data["company"] = value
-                await self._update_crm_data(company=value)
+                self.collected_data["company"] = normalized_value
+                logger.info(f"💼 Saving company: {normalized_value}")
+                await self._update_crm_data(company=normalized_value)
             elif normalized_field == "company_title":
-                self.collected_data["company_title"] = value
-                await self._update_crm_data(company_title=value)
+                self.collected_data["company_title"] = normalized_value
+                logger.info(f"💼 Saving company title: {normalized_value}")
+                await self._update_crm_data(company_title=normalized_value)
             elif normalized_field == "notes_entry":
                 if "notes_entry" not in self.collected_data:
                     self.collected_data["notes_entry"] = []
-                self.collected_data["notes_entry"].append(value)
+                self.collected_data["notes_entry"].append(normalized_value)
                 # Send all notes as a single string
                 notes_str = " | ".join(self.collected_data.get("notes_entry", []))
+                logger.info(f"📝 Saving notes: {notes_str[:50]}...")
                 await self._update_crm_data(notes=notes_str)
             else:
                 logger.warning(f"⚠️ Unknown field_name for saving data: {field_name}")
@@ -1099,8 +1179,9 @@ class SimpleVoiceAgent(Agent):
     ):
         """Update CRM data using new voice agent socket save_crm_data event"""
         try:
+            logger.info(f"🔄 _update_crm_data called with: first_name={first_name}, last_name={last_name}, email={email}, phone={phone}, account_id={account_id}, company={company}, company_title={company_title}")
             if not self.alive5_crm_id:
-                logger.warning("⚠️ Cannot update CRM data - session not initialized")
+                logger.warning(f"⚠️ Cannot update CRM data - session not initialized (crm_id={self.alive5_crm_id}, thread_id={self.alive5_thread_id})")
                 return
             
             # Update collected_data
@@ -1135,8 +1216,10 @@ class SimpleVoiceAgent(Agent):
                 self.collected_data["account_id"] = account_id
             if company:
                 self.collected_data["company"] = company
+                logger.debug(f"💼 Updated collected_data with company: {company}")
             if company_title:
                 self.collected_data["company_title"] = company_title
+                logger.debug(f"💼 Updated collected_data with company_title: {company_title}")
             
             # Send CRM update instructions to frontend via data channel
             if not hasattr(self, 'room') or not self.room:
@@ -1150,22 +1233,30 @@ class SimpleVoiceAgent(Agent):
 
             # Some environments expect different key formats; emit a small set of safe aliases.
             updates = []
-            if first_name:
-                _add_updates("first_name", first_name, ["first_name", "firstName"])
-            if last_name:
-                _add_updates("last_name", last_name, ["last_name", "lastName"])
-            if email:
-                _add_updates("email", email, ["email"])
-            if phone:
-                _add_updates("phone", phone, ["phone", "phone_mobile", "phoneMobile"])
-            if notes:
-                _add_updates("notes", notes, ["notes"])
-            if account_id:
-                _add_updates("account_id", account_id, ["accountid", "account_id", "accountId"])
-            if company:
-                _add_updates("company", company, ["company"])
-            if company_title:
-                _add_updates("company_title", company_title, ["companytitle", "company_title", "companyTitle"])
+            if first_name and first_name.strip():
+                _add_updates("first_name", first_name.strip(), ["first_name", "firstName"])
+            if last_name and last_name.strip():
+                _add_updates("last_name", last_name.strip(), ["last_name", "lastName"])
+            if email and email.strip():
+                _add_updates("email", email.strip(), ["email"])
+            if phone and phone.strip():
+                _add_updates("phone", phone.strip(), ["phone", "phone_mobile", "phoneMobile"])
+            if notes and notes.strip():
+                _add_updates("notes", notes.strip(), ["notes"])
+            if account_id and str(account_id).strip():
+                # Send camelCase version first (matches _build_crm_data format), then aliases
+                account_id_str = str(account_id).strip()
+                _add_updates("accountId", account_id_str, ["accountId", "account_id", "accountid"])
+                logger.info(f"💼 Sending accountId to CRM: {account_id_str}")
+            if company and company.strip():
+                company_str = company.strip()
+                _add_updates("company", company_str, ["company"])
+                logger.info(f"💼 Sending company to CRM: {company_str}")
+            if company_title and company_title.strip():
+                # Send camelCase version first (matches _build_crm_data format), then aliases
+                company_title_str = company_title.strip()
+                _add_updates("companyTitle", company_title_str, ["companyTitle", "company_title", "companytitle"])
+                logger.info(f"💼 Sending companyTitle to CRM: {company_title_str}")
             
             for update in updates:
                 socket_instruction = {
@@ -1173,15 +1264,18 @@ class SimpleVoiceAgent(Agent):
                     "event": "save_crm_data",
                     "payload": {
                         "crm_id": self.alive5_crm_id or "",
+                        "thread_id": self.alive5_thread_id or "",
                         "key": update["key"],
                         "value": update["value"]
                     }
                 }
                 
+                logger.info(f"📤 Sending CRM update: key={update['key']}, value={update['value'][:50]}...")
                 await self.room.local_participant.publish_data(
                     json.dumps(socket_instruction).encode('utf-8'),
                     topic="lk.alive5.socket"
                 )
+                logger.debug(f"✅ CRM update sent via data channel: {update['key']}")
                 
         except Exception as e:
             logger.warning(f"⚠️ Could not update CRM data: {e}")
@@ -1255,9 +1349,60 @@ class SimpleVoiceAgent(Agent):
                 phone_parts = phone_match.groups()
                 phone = ''.join(filter(str.isdigit, ''.join(phone_parts[1:])))  # Get last 3 groups, remove non-digits
                 if len(phone) == 10:  # Valid US phone number
-                    phone_formatted = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
-                    logger.info(f"🔍 Auto-detected phone in user message: {phone_formatted}")
-                    await self.save_collected_data(None, "phone", phone_formatted)
+                    # Normalize to +1 format (save_collected_data will handle normalization, but we can format it here too)
+                    phone_normalized = f"+1{phone}"
+                    logger.info(f"🔍 Auto-detected phone in user message: {phone_normalized}")
+                    await self.save_collected_data(None, "phone", phone_normalized)
+            
+            # Auto-detect company if user mentions it and we don't have it yet
+            # Look for patterns like "company is X", "I work at X", "organization is X", etc.
+            if not self.collected_data.get("company"):
+                company_patterns = [
+                    r'(?:company|organization|org|employer|work at|work for|with)\s+(?:is|are|called|named)?\s+([A-Z][A-Za-z0-9\s&.,-]{2,30})',
+                    r'(?:I\s+)?(?:work\s+at|work\s+for|am\s+with)\s+([A-Z][A-Za-z0-9\s&.,-]{2,30})',
+                    r'([A-Z][A-Za-z0-9\s&.,-]{2,30})\s+(?:is\s+my\s+company|is\s+the\s+company)',
+                ]
+                for pattern in company_patterns:
+                    company_match = re.search(pattern, user_text_clean, re.IGNORECASE)
+                    if company_match:
+                        company = company_match.group(1).strip()
+                        # Filter out common false positives
+                        if company.lower() not in ['google', 'microsoft', 'apple', 'amazon', 'the', 'a', 'an'] or len(company) > 5:
+                            logger.info(f"🔍 Auto-detected company in user message: {company}")
+                            await self.save_collected_data(None, "company", company)
+                            break
+            
+            # Auto-detect account ID if user mentions it and we don't have it yet
+            # Look for patterns like "account id is X", "account number is X", "ID is X", etc.
+            if not self.collected_data.get("account_id"):
+                account_id_patterns = [
+                    r'(?:account\s+id|account\s+number|account\s+#|account\s+ID|ID)\s+(?:is|is\s+)?([A-Za-z0-9-]{2,20})',
+                    r'(?:my\s+)?(?:account\s+id|account\s+number|ID)\s+(?:is\s+)?([A-Za-z0-9-]{2,20})',
+                ]
+                for pattern in account_id_patterns:
+                    account_match = re.search(pattern, user_text_clean, re.IGNORECASE)
+                    if account_match:
+                        account_id = account_match.group(1).strip()
+                        logger.info(f"🔍 Auto-detected account_id in user message: {account_id}")
+                        await self.save_collected_data(None, "account_id", account_id)
+                        break
+            
+            # Auto-detect company title if user mentions it and we don't have it yet
+            # Look for patterns like "title is X", "I'm a X", "position is X", etc.
+            if not self.collected_data.get("company_title"):
+                title_patterns = [
+                    r'(?:title|position|role|job\s+title)\s+(?:is|is\s+)?([A-Z][A-Za-z\s-]{2,40})',
+                    r'(?:I\s+am\s+(?:a|an)\s+|I\'m\s+(?:a|an)\s+)([A-Z][A-Za-z\s-]{2,40})(?:\s+at|\s+for|$)',
+                ]
+                for pattern in title_patterns:
+                    title_match = re.search(pattern, user_text_clean, re.IGNORECASE)
+                    if title_match:
+                        title = title_match.group(1).strip()
+                        # Filter out common false positives
+                        if title.lower() not in ['the', 'a', 'an', 'manager', 'director'] or len(title) > 5:
+                            logger.info(f"🔍 Auto-detected company_title in user message: {title}")
+                            await self.save_collected_data(None, "company_title", title)
+                            break
             
             # Detect name pattern (2-4 words, capitalized, not too long, doesn't look like email/phone)
             # Only if it's a short response (likely a name answer)

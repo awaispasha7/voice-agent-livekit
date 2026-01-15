@@ -1,0 +1,145 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BedrockFullAccess",
+      "Effect": "Allow",
+      "Action": "bedrock:*",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1"
+        }
+      }
+    },
+    {
+      "Sid": "ECRForAgentCore",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr:CreateRepository",
+        "ecr:DescribeRepositories",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
+        "ecr:PutImage",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload"
+      ],
+      "Resource": [
+        "arn:aws:ecr:us-east-1:864798833616:repository/bedrock-agentcore-*"
+      ]
+    },
+    {
+      "Sid": "CodeBuildForAgentCore",
+      "Effect": "Allow",
+      "Action": [
+        "codebuild:CreateProject",
+        "codebuild:UpdateProject",
+        "codebuild:BatchGetProjects",
+        "codebuild:StartBuild",
+        "codebuild:BatchGetBuilds"
+      ],
+      "Resource": [
+        "arn:aws:codebuild:us-east-1:864798833616:project/bedrock-agentcore-*",
+        "arn:aws:codebuild:us-east-1:864798833616:build/bedrock-agentcore-*"
+      ]
+    },
+    {
+      "Sid": "CloudWatchLogsForAgentCore",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": [
+        "arn:aws:logs:us-east-1:864798833616:log-group:/aws/bedrock-agentcore/*",
+        "arn:aws:logs:us-east-1:864798833616:log-group:/aws/vendedlogs/bedrock-agentcore/*",
+        "arn:aws:logs:us-east-1:864798833616:log-group:/aws/codebuild/bedrock-agentcore-*"
+      ]
+    },
+    {
+      "Sid": "IAMForAgentCoreRoles_UltraRestrictive",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole",
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::864798833616:role/bedrock-agentcore-*",
+        "arn:aws:iam::864798833616:role/BedrockAgentCore*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "CloudFormationForAgentCore",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:GetTemplate"
+      ],
+      "Resource": [
+        "arn:aws:cloudformation:us-east-1:864798833616:stack/bedrock-agentcore-*",
+        "arn:aws:cloudformation:us-east-1:864798833616:stack/BedrockAgentCore*"
+      ]
+    },
+    {
+      "Sid": "S3ForAgentCoreArtifactsOnly",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:PutBucketVersioning",
+        "s3:PutBucketTagging"
+      ],
+      "Resource": [
+        "arn:aws:s3:::bedrock-agentcore-*",
+        "arn:aws:s3:::bedrock-agentcore-*/*"
+      ]
+    },
+    {
+      "Sid": "LambdaForAgentCore",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateFunction",
+        "lambda:UpdateFunctionCode",
+        "lambda:GetFunction",
+        "lambda:InvokeFunction"
+      ],
+      "Resource": "arn:aws:lambda:us-east-1:864798833616:function:bedrock-agentcore-*"
+    },
+    {
+      "Sid": "APIGatewayForAgentCore",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:POST",
+        "apigateway:PUT",
+        "apigateway:GET"
+      ],
+      "Resource": "arn:aws:apigateway:us-east-1::/restapis"
+    },
+    {
+      "Sid": "STSGetIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    }
+  ]
+}
+

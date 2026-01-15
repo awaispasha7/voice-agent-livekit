@@ -20,8 +20,16 @@ try:
     from bedrock_agentcore.gateway import GatewayClient, GatewayTool
     AGENTCORE_GATEWAY_AVAILABLE = True
 except ImportError:
+    GatewayClient = None
+    GatewayTool = None
     AGENTCORE_GATEWAY_AVAILABLE = False
     logger.warning("bedrock-agentcore gateway not available. Will use direct function calls.")
+
+def _gateway_tool(fn):
+    """Decorator that becomes a no-op when AgentCore Gateway isn't installed/enabled."""
+    if AGENTCORE_GATEWAY_AVAILABLE and GatewayTool:
+        return GatewayTool(fn)
+    return fn
 
 
 # Import existing function handlers
@@ -34,7 +42,7 @@ from functions import (
 )
 
 
-@GatewayTool if AGENTCORE_GATEWAY_AVAILABLE else None
+@_gateway_tool
 async def load_bot_flows(
     botchain_name: str,
     org_name: str = "alive5stage0"
@@ -52,7 +60,7 @@ async def load_bot_flows(
     return await handle_load_bot_flows(botchain_name, org_name)
 
 
-@GatewayTool if AGENTCORE_GATEWAY_AVAILABLE else None
+@_gateway_tool
 async def faq_bot_request(
     query_text: str,
     faq_bot_id: Optional[str] = None,
@@ -79,7 +87,7 @@ async def faq_bot_request(
     )
 
 
-@GatewayTool if AGENTCORE_GATEWAY_AVAILABLE else None
+@_gateway_tool
 async def bedrock_knowledge_base_query(
     query_text: str,
     max_results: int = 5,
@@ -106,7 +114,7 @@ async def bedrock_knowledge_base_query(
     )
 
 
-@GatewayTool if AGENTCORE_GATEWAY_AVAILABLE else None
+@_gateway_tool
 async def transfer_call_to_human(
     room_name: str,
     transfer_number: Optional[str] = None
@@ -182,7 +190,7 @@ async def transfer_call_to_human(
             }
 
 
-@GatewayTool if AGENTCORE_GATEWAY_AVAILABLE else None
+@_gateway_tool
 async def save_collected_data(
     room_name: str,
     field_name: str,
@@ -221,6 +229,34 @@ async def save_collected_data(
         if n_l in {"companytitle", "company_title", "title", "company_position"}:
             return "company_title"
         return n_l or n
+    
+    def _normalize_phone_number(phone: str) -> str:
+        """Normalize US phone numbers to include +1 prefix"""
+        import re
+        if not phone:
+            return phone
+        
+        # Remove all non-digit characters except +
+        digits_only = re.sub(r'[^\d+]', '', phone)
+        
+        # If it already starts with +1, return as is
+        if digits_only.startswith('+1'):
+            return digits_only
+        
+        # If it starts with 1 (without +), add +
+        if digits_only.startswith('1') and len(digits_only) == 11:
+            return '+' + digits_only
+        
+        # If it's 10 digits (US number without country code), add +1
+        if len(digits_only) == 10:
+            return '+1' + digits_only
+        
+        # If it's 11 digits starting with 1, add +
+        if len(digits_only) == 11 and digits_only[0] == '1':
+            return '+' + digits_only
+        
+        # Return original if we can't normalize
+        return phone
 
     import httpx
     from urllib.parse import quote
@@ -248,15 +284,16 @@ async def save_collected_data(
             name_parts = value.strip().split(' ', 1)
             first_name = name_parts[0] if name_parts else ""
             last_name = name_parts[1] if len(name_parts) > 1 else ""
-            user_data["collected_data"] = collected_data
-            # Update session with first_name and last_name for CRM
-            user_data["first_name"] = first_name
-            user_data["last_name"] = last_name
             # Also store split name fields in collected_data for consistency
             if first_name:
                 collected_data["first_name"] = first_name
             if last_name:
                 collected_data["last_name"] = last_name
+            # Update collected_data in user_data before setting individual fields
+            user_data["collected_data"] = collected_data
+            # Update session with first_name and last_name for CRM
+            user_data["first_name"] = first_name
+            user_data["last_name"] = last_name
         elif normalized_field == "first_name":
             collected_data["first_name"] = value
             user_data["first_name"] = value
@@ -266,13 +303,16 @@ async def save_collected_data(
             user_data["last_name"] = value
             user_data["collected_data"] = collected_data
         elif normalized_field == "email":
+            # Ensure email is properly saved to both collected_data and user_data
             collected_data["email"] = value
             user_data["collected_data"] = collected_data
             user_data["email"] = value
         elif normalized_field == "phone":
-            collected_data["phone"] = value
+            # Normalize phone number to include +1 prefix for US numbers
+            normalized_phone = _normalize_phone_number(value)
+            collected_data["phone"] = normalized_phone
             user_data["collected_data"] = collected_data
-            user_data["phone"] = value
+            user_data["phone"] = normalized_phone
         elif normalized_field == "account_id":
             collected_data["account_id"] = value
             user_data["collected_data"] = collected_data
