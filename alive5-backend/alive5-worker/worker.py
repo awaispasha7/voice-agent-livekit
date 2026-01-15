@@ -33,6 +33,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from system_prompt import get_system_prompt
 from functions import handle_load_bot_flows, handle_faq_bot_request, handle_bedrock_knowledge_base_request
+from tags_config import get_available_tags
 
 # Import AgentCore integration
 try:
@@ -508,7 +509,7 @@ class SimpleVoiceAgent(Agent):
             normalized_value = _normalize_phone_number(value)
             if normalized_value != value:
                 logger.info(f"📞 Normalized phone number: {value} -> {normalized_value}")
-        
+
         # Try Gateway first if enabled
         if self.agentcore_gateway and self.agentcore_gateway.is_enabled():
             try:
@@ -645,69 +646,197 @@ class SimpleVoiceAgent(Agent):
                 "message": f"Error saving data: {str(e)}"
             }
     
-    # COMMENTED OUT: CRM data submission - focusing on message replication only
-    # @function_tool()
-    # async def submit_crm_data(self, context: RunContext) -> Dict[str, Any]:
-    #     """Submit collected customer data to CRM at the end of conversation.
-    #     Call this when you have collected the customer's information (name, email, notes) and the conversation is ending.
-    #     
-    #     NOTE: This function submits data in the background. The agent should tell the user to hold on while saving.
-    #     """
-    #     try:
-    #         logger.info(f"📤 submit_crm_data() called - preparing to submit CRM data")
-    #         # Log collected data before submission
-    #         logger.info(f"📋 Collected data before submission:")
-    #         logger.info(f"   - full_name: {self.collected_data.get('full_name')}")
-    #         logger.info(f"   - email: {self.collected_data.get('email')}")
-    #         logger.info(f"   - phone: {self.collected_data.get('phone')}")
-    #         logger.info(f"   - notes_entry: {self.collected_data.get('notes_entry')}")
-    #         
-    #         # Prepare data for submission
-    #         crm_data = {
-    #             "room_name": self.room_name,
-    #             "botchain_name": self.botchain_name,
-    #             "org_name": self.org_name,
-    #             "full_name": self.collected_data.get("full_name"),
-    #             "email": self.collected_data.get("email"),
-    #             "phone": self.collected_data.get("phone"),
-    #             "notes": " | ".join(self.collected_data.get("notes_entry", [])) if self.collected_data.get("notes_entry") else None
-    #         }
-    #         
-    #         # Submit to backend API in background (non-blocking)
-    #         # This prevents awkward silence while waiting for API response
-    #         async def submit_in_background():
-    #             try:
-    #                 import httpx
-    #                 backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
-    #                 async with httpx.AsyncClient(timeout=60.0) as client:  # Increased timeout for slow API
-    #                     response = await client.post(
-    #                         f"{backend_url}/api/submit_crm",
-    #                         json=crm_data
-    #                     )
-    #                     
-    #                     if response.status_code == 200:
-    #                         logger.info(f"✅ CRM data submitted successfully (background)")
-    #                     else:
-    #                         logger.error(f"❌ CRM submission failed: {response.status_code}")
-    #             except Exception as e:
-    #                 logger.error(f"❌ Error submitting CRM data (background): {e}")
-    #         
-    #         # Start submission in background
-    #         asyncio.create_task(submit_in_background())
-    #         
-    #         # Return immediately so agent can continue speaking
-    #         # Agent should tell user "Please hold on while I save your information"
-    #         return {
-    #             "success": True,
-    #             "message": "I'm saving your information now. Please hold on for just a moment.",
-    #             "submitting": True  # Indicates submission is in progress
-    #         }
-    #     except Exception as e:
-    #         logger.error(f"❌ Error preparing CRM submission: {e}")
-    #         return {
-    #             "success": False,
-    #             "message": "Information noted, though there was a technical issue with submission."
-    #         }
+    @function_tool()
+    async def apply_tag(self, context: RunContext, conversation_summary: Optional[str] = None) -> Dict[str, Any]:
+        """Apply a tag to the conversation based on conversation context.
+        
+        This function is called automatically when a bot flow reaches a "Tag this Conversation" action bot.
+        It analyzes the conversation context and selects THE SINGLE MOST appropriate tag from the available tag list.
+        The tag is then applied to the CRM record via save_crm_data socket event.
+        
+        Args:
+            conversation_summary: Optional summary of the conversation (if provided, will be used for tag selection)
+        
+        Returns:
+            Success status and selected tags
+        """
+        # Try Gateway first if enabled
+        if self.agentcore_gateway and self.agentcore_gateway.is_enabled():
+            try:
+                logger.info("🔧 Gateway enabled - calling apply_tag via Gateway")
+                result = await self.agentcore_gateway.call_tool(
+                    "apply_tag",
+                    room_name=self.room_name,
+                    conversation_summary=conversation_summary
+                )
+                logger.info(f"🔧 Gateway result for apply_tag: {result}")
+                if result.get("success") is not None:
+                    if result.get("success"):
+                        # Gateway selected tags - apply them via _update_crm_data for socket event
+                        selected_tags = result.get("tags", [])
+                        if selected_tags:
+                            logger.info(f"📤 Triggering CRM update for tags via Gateway path: {selected_tags}")
+                            await self._update_crm_data(tags=selected_tags)
+                            logger.info(f"✅ Gateway path: Tags applied successfully: {selected_tags}")
+                        return result
+                    else:
+                        logger.warning(f"⚠️ Gateway call returned success=False for apply_tag: {result.get('message', 'Unknown error')}")
+                        return result
+                else:
+                    logger.warning(f"⚠️ Gateway call returned no success field for apply_tag, falling back to direct")
+            except Exception as e:
+                logger.error(f"❌ Gateway call failed for apply_tag, falling back to direct: {e}", exc_info=True)
+        
+        # Fallback to direct function call
+        try:
+            logger.info("🏷️ apply_tag() called - analyzing conversation to select tags")
+            
+            # Get available tags
+            available_tags = get_available_tags()
+            if not available_tags:
+                logger.warning("⚠️ No tags available in configuration")
+                return {
+                    "success": False,
+                    "message": "No tags are configured"
+                }
+            
+            # Build conversation context for tag selection
+            conversation_context = []
+            
+            # Add collected data summary
+            if self.collected_data:
+                context_parts = []
+                if self.collected_data.get("company"):
+                    context_parts.append(f"Company: {self.collected_data.get('company')}")
+                if self.collected_data.get("account_id"):
+                    context_parts.append(f"Account ID: {self.collected_data.get('account_id')}")
+                if self.collected_data.get("notes_entry"):
+                    notes = " | ".join(self.collected_data.get("notes_entry", []))
+                    if notes:
+                        context_parts.append(f"Notes: {notes[:200]}")
+                if context_parts:
+                    conversation_context.append("Collected Information: " + ", ".join(context_parts))
+            
+            # Add conversation summary if provided
+            if conversation_summary:
+                conversation_context.append(f"Conversation Summary: {conversation_summary}")
+            
+            # Get recent conversation history from agent_session if available
+            if hasattr(self, "agent_session") and self.agent_session:
+                try:
+                    # Try to get conversation history from the session
+                    # The agent_session should have access to recent messages
+                    # We'll use a simple approach: get last few messages if available
+                    if hasattr(self.agent_session, "llm") and hasattr(self.agent_session.llm, "chat"):
+                        # Access recent messages from the LLM context if available
+                        # For now, we'll use the collected data and summary
+                        pass
+                except Exception as e:
+                    logger.debug(f"Could not access conversation history: {e}")
+            
+            # Build prompt for tag selection
+            tags_list_str = ", ".join([f'"{tag}"' for tag in available_tags])
+            context_str = "\n".join(conversation_context) if conversation_context else "No specific context available."
+            
+            tag_selection_prompt = f"""Based on the following conversation context, select THE SINGLE MOST appropriate tag from this list:
+
+Available tags: {tags_list_str}
+
+Conversation Context:
+{context_str}
+
+Select the ONE tag that best categorizes this conversation. Return ONLY a JSON array with a single tag name (e.g., ["Sales"]). Do not include any explanation, just the JSON array with one tag."""
+
+            # Use LLM to select tags
+            selected_tags = []
+            try:
+                # Access LLM from agent_session if available
+                if hasattr(self, "agent_session") and self.agent_session and hasattr(self.agent_session, "llm"):
+                    from livekit.agents.llm import ChatContext, ChatRole, ChatMessage
+                    
+                    llm = self.agent_session.llm
+                    chat_ctx = ChatContext()
+                    # Combine system instruction with user prompt (ChatRole.SYSTEM doesn't exist in LiveKit)
+                    combined_prompt = f"You are a tag selection assistant. Analyze conversation context and return ONLY a JSON array of tag names.\n\n{tag_selection_prompt}"
+                    chat_ctx.messages = [
+                        ChatMessage(role=ChatRole.USER, content=combined_prompt)
+                    ]
+                    
+                    result_ctx = await llm.chat(chat_ctx)
+                    if result_ctx.messages:
+                        response_text = result_ctx.messages[-1].content.strip()
+                        
+                        # Parse JSON array from response
+                        import json
+                        import re
+                        # Try to extract JSON array from response
+                        json_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
+                        if json_match:
+                            tags_json = json_match.group(0)
+                            selected_tags = json.loads(tags_json)
+                        else:
+                            # Try parsing the whole response as JSON
+                            try:
+                                selected_tags = json.loads(response_text)
+                            except:
+                                logger.warning(f"Could not parse tags from LLM response: {response_text}")
+                else:
+                    # Fallback: use simple keyword matching if LLM not available
+                    logger.warning("⚠️ LLM not available for tag selection, using keyword matching")
+                    context_lower = context_str.lower()
+                    for tag in available_tags:
+                        tag_lower = tag.lower()
+                        if tag_lower in context_lower or any(word in context_lower for word in tag_lower.split()):
+                            selected_tags.append(tag)
+                            if len(selected_tags) >= 3:
+                                break
+                    
+                    # If no tags matched, use first available tag as default
+                    if not selected_tags:
+                        selected_tags = [available_tags[0]]
+            except Exception as e:
+                logger.error(f"❌ Error selecting tags with LLM: {e}", exc_info=True)
+                # Fallback: use first available tag
+                selected_tags = [available_tags[0]] if available_tags else []
+            
+            # Validate selected tags (must be from available list)
+            validated_tags = []
+            for tag in selected_tags:
+                if isinstance(tag, str) and tag in available_tags:
+                    validated_tags.append(tag)
+                elif isinstance(tag, str):
+                    # Try case-insensitive match
+                    tag_lower = tag.lower()
+                    for avail_tag in available_tags:
+                        if avail_tag.lower() == tag_lower:
+                            validated_tags.append(avail_tag)
+                            break
+            
+            # Ensure we have at least one tag
+            if not validated_tags:
+                validated_tags = [available_tags[0]] if available_tags else []
+            
+            # Only one tag allowed - take the first one
+            validated_tags = [validated_tags[0]] if validated_tags else []
+            
+            logger.info(f"🏷️ Selected tags: {validated_tags}")
+            
+            # Apply tags via _update_crm_data
+            await self._update_crm_data(tags=validated_tags)
+            
+            return {
+                "success": True,
+                "tags": validated_tags,
+                "message": f"Tags applied: {', '.join(validated_tags)}"
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error in apply_tag(): {e}", exc_info=True)
+            return {
+                "success": False,
+                "message": "Failed to apply tags"
+            }
+    
     
     @function_tool()
     async def faq_bot_request(self, context: RunContext, faq_question: str, bot_id: str = None, isVoice: bool = None) -> Dict[str, Any]:
@@ -1175,11 +1304,12 @@ class SimpleVoiceAgent(Agent):
         notes: str = None,
         account_id: str = None,
         company: str = None,
-        company_title: str = None
+        company_title: str = None,
+        tags: List[str] = None
     ):
         """Update CRM data using new voice agent socket save_crm_data event"""
         try:
-            logger.info(f"🔄 _update_crm_data called with: first_name={first_name}, last_name={last_name}, email={email}, phone={phone}, account_id={account_id}, company={company}, company_title={company_title}")
+            logger.info(f"🔄 _update_crm_data called with: first_name={first_name}, last_name={last_name}, email={email}, phone={phone}, account_id={account_id}, company={company}, company_title={company_title}, tags={tags}")
             if not self.alive5_crm_id:
                 logger.warning(f"⚠️ Cannot update CRM data - session not initialized (crm_id={self.alive5_crm_id}, thread_id={self.alive5_thread_id})")
                 return
@@ -1220,6 +1350,10 @@ class SimpleVoiceAgent(Agent):
             if company_title:
                 self.collected_data["company_title"] = company_title
                 logger.debug(f"💼 Updated collected_data with company_title: {company_title}")
+            if tags:
+                # Store tags in collected_data
+                self.collected_data["tags"] = tags if isinstance(tags, list) else [tags] if tags else []
+                logger.debug(f"🏷️ Updated collected_data with tags: {tags}")
             
             # Send CRM update instructions to frontend via data channel
             if not hasattr(self, 'room') or not self.room:
@@ -1230,6 +1364,11 @@ class SimpleVoiceAgent(Agent):
             def _add_updates(key_base: str, value_str: str, aliases: List[str]):
                 for k in aliases:
                     updates.append({"key": k, "value": value_str})
+            
+            def _add_tags_update(tags_list: List[str]):
+                """Add tags update - value must be an array"""
+                if tags_list:
+                    updates.append({"key": "tags", "value": tags_list})
 
             # Some environments expect different key formats; emit a small set of safe aliases.
             updates = []
@@ -1257,6 +1396,12 @@ class SimpleVoiceAgent(Agent):
                 company_title_str = company_title.strip()
                 _add_updates("companyTitle", company_title_str, ["companyTitle", "company_title", "companytitle"])
                 logger.info(f"💼 Sending companyTitle to CRM: {company_title_str}")
+            if tags:
+                # Tags must be sent as an array
+                tags_list = tags if isinstance(tags, list) else [tags] if tags else []
+                if tags_list:
+                    _add_tags_update(tags_list)
+                    logger.info(f"🏷️ Sending tags to CRM: {tags_list}")
             
             for update in updates:
                 socket_instruction = {
@@ -1270,7 +1415,12 @@ class SimpleVoiceAgent(Agent):
                     }
                 }
                 
-                logger.info(f"📤 Sending CRM update: key={update['key']}, value={update['value'][:50]}...")
+                # For tags, show full array; for other fields, truncate long values
+                if update['key'] == 'tags' and isinstance(update['value'], list):
+                    logger.info(f"📤 Sending CRM update: key={update['key']}, value={update['value']}")
+                else:
+                    value_str = str(update['value'])
+                    logger.info(f"📤 Sending CRM update: key={update['key']}, value={value_str[:50]}...")
                 await self.room.local_participant.publish_data(
                     json.dumps(socket_instruction).encode('utf-8'),
                     topic="lk.alive5.socket"

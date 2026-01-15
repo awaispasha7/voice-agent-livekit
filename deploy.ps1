@@ -83,6 +83,9 @@ if ($choice -eq "1") {
     Write-Host "  - Deploying system_prompt.py..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/system_prompt.py $scpTarget
     
+    Write-Host "  - Deploying tags_config.py..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/tags_config.py $scpTarget
+    
     Write-Host "  - Deploying AgentCore integration files..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/agentcore_integration.py $scpTarget
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/agentcore_llm_wrapper.py $scpTarget
@@ -196,6 +199,9 @@ if ($choice -eq "1") {
     
     Write-Host "  - Deploying system_prompt.py..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/system_prompt.py $scpTarget
+    
+    Write-Host "  - Deploying tags_config.py..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/tags_config.py $scpTarget
     
     Write-Host "  - Deploying AgentCore integration files..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/agentcore_integration.py $scpTarget
@@ -328,6 +334,9 @@ if ($choice -eq "1") {
     
     Write-Host "  - Deploying system_prompt.py..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/system_prompt.py $scpTarget
+    
+    Write-Host "  - Deploying tags_config.py..." -ForegroundColor White
+    & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/tags_config.py $scpTarget
     
     Write-Host "  - Deploying AgentCore integration files..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/alive5-worker/agentcore_integration.py $scpTarget

@@ -40,6 +40,7 @@ from functions import (
     handle_faq_bot_request,
     handle_bedrock_knowledge_base_request
 )
+from tags_config import get_available_tags
 
 
 @_gateway_tool
@@ -357,6 +358,132 @@ async def save_collected_data(
                 "success": False,
                 "message": "Error saving data to session."
             }
+
+
+@_gateway_tool
+async def apply_tag(
+    room_name: str,
+    conversation_summary: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Apply a tag to the conversation based on conversation context.
+    
+    This function analyzes the conversation context and selects THE SINGLE MOST appropriate tag
+    from the available tag list. The tag is then stored in the session.
+    
+    Args:
+        room_name: The LiveKit room name (session identifier)
+        conversation_summary: Optional summary of the conversation (if provided, will be used for tag selection)
+        
+    Returns:
+        Success status and selected tags
+    """
+    try:
+        logger.info(f"🏷️ Gateway apply_tag() called for room: {room_name}")
+        
+        # Get available tags
+        available_tags = get_available_tags()
+        if not available_tags:
+            logger.warning("⚠️ No tags available in configuration")
+            return {
+                "success": False,
+                "message": "No tags are configured"
+            }
+        
+        import httpx
+        from urllib.parse import quote
+        
+        backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
+        encoded_room_name = quote(room_name, safe='')
+        
+        # Get current session data
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
+            if response.status_code != 200:
+                return {
+                    "success": False,
+                    "message": "Unable to retrieve session data."
+                }
+            
+            session_data = response.json()
+            user_data = session_data.get("user_data", {})
+            collected_data = user_data.get("collected_data", {})
+            
+            # Build conversation context for tag selection
+            conversation_context = []
+            
+            # Add collected data summary
+            if collected_data:
+                context_parts = []
+                if collected_data.get("company"):
+                    context_parts.append(f"Company: {collected_data.get('company')}")
+                if collected_data.get("account_id"):
+                    context_parts.append(f"Account ID: {collected_data.get('account_id')}")
+                if collected_data.get("notes_entry"):
+                    notes = " | ".join(collected_data.get("notes_entry", [])) if isinstance(collected_data.get("notes_entry"), list) else str(collected_data.get("notes_entry", ""))
+                    if notes:
+                        context_parts.append(f"Notes: {notes[:200]}")
+                if context_parts:
+                    conversation_context.append("Collected Information: " + ", ".join(context_parts))
+            
+            # Add conversation summary if provided
+            if conversation_summary:
+                conversation_context.append(f"Conversation Summary: {conversation_summary}")
+            
+            # Simple tag selection based on keywords (Gateway doesn't have direct LLM access)
+            # In production, this could call an LLM service or use more sophisticated logic
+            context_str = "\n".join(conversation_context) if conversation_context else "No specific context available."
+            context_lower = context_str.lower()
+            
+            selected_tag = None
+            # Find the first matching tag (only one tag allowed)
+            for tag in available_tags:
+                tag_lower = tag.lower()
+                # Check if tag or its words appear in context
+                if tag_lower in context_lower or any(word in context_lower for word in tag_lower.split()):
+                    selected_tag = tag
+                    break
+            
+            # If no tags matched, use first available tag as default
+            if not selected_tag:
+                selected_tag = available_tags[0]
+            
+            selected_tags = [selected_tag]  # Return as single-item array
+            
+            logger.info(f"🏷️ Gateway selected tags: {selected_tags}")
+            
+            # Update session with tags
+            collected_data["tags"] = selected_tags
+            user_data["collected_data"] = collected_data
+            user_data["tags"] = selected_tags  # Also store at user_data level for compatibility
+            
+            # Update session via backend API
+            update_response = await client.post(
+                f"{backend_url}/api/sessions/update",
+                json={
+                    "room_name": room_name,
+                    "user_data": user_data
+                }
+            )
+            
+            if update_response.status_code == 200:
+                return {
+                    "success": True,
+                    "tags": selected_tags,
+                    "message": f"Tags applied: {', '.join(selected_tags)}"
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Error saving tags to session."
+                }
+                
+    except Exception as e:
+        logger.error(f"❌ Error in Gateway apply_tag(): {e}", exc_info=True)
+        return {
+            "success": False,
+            "message": "Failed to apply tags"
+        }
 
 
 class AgentCoreGateway:

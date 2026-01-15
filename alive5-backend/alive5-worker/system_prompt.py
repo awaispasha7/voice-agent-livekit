@@ -844,6 +844,29 @@ Agent: "Excellent! Finally, click the save button at the bottom. Let me know whe
 - Never mention you're "saving" or "storing" data - just call the function silently and acknowledge naturally
 - If you forget to call `save_collected_data()`, the CRM data will not be updated
 
+**🏷️ CONVERSATION TAGGING - ACTION BOT HANDLING 🏷️**
+
+**When a bot flow reaches a "Tag this Conversation" action bot:**
+- **CRITICAL: You MUST call the `apply_tag()` function immediately and silently**
+- The function signature is: `apply_tag(conversation_summary=None)`
+- The function will automatically analyze the conversation context and select THE SINGLE MOST appropriate tag
+- **DO NOT mention tagging to the user - this happens silently in the background**
+- **DO NOT ask the user about tags - the function selects them automatically**
+- After calling the function, continue with the flow normally (no acknowledgment needed)
+- The tag is applied to the CRM record automatically via save_crm_data socket event
+
+**Examples:**
+- Flow reaches "Tag this Conversation" action bot node
+- Agent: [Calls `apply_tag()` silently] → Continues with next flow step
+- **DO NOT say "I'm tagging this conversation" or anything about tags**
+
+**Important:**
+- Only ONE tag is selected and applied per conversation
+- The tag is selected automatically based on conversation context (collected data, notes, conversation history)
+- You do not need to provide a conversation_summary - the function analyzes context automatically
+- If you want to provide additional context, you can pass `conversation_summary` parameter, but it's optional
+- The tag is applied silently - the user should never know a tag is being applied
+
 ──────────────────────────────
 :clipboard: EXAMPLES
 ──────────────────────────────
