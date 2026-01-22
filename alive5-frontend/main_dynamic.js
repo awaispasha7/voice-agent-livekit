@@ -13,6 +13,9 @@ class DynamicVoiceAgent {
         this.conversationLog = [];
         this.selectedVoice = localStorage.getItem('alive5.defaultVoice') || "f114a467-c40a-4db8-964d-aaba89cd08fa"; // Default voice (Miles - Yogi)
         this.availableVoices = {}; // Will be populated from backend
+        this._previewAudio = null;
+        this._previewAudioUrl = null;
+        this._previewIsLoading = false;
         
         // Track processed messages to prevent duplicates
         this.processedMessages = new Set();
@@ -181,6 +184,10 @@ class DynamicVoiceAgent {
         if (voiceSelect) {
             this.populateVoiceDropdown(voiceSelect);
         }
+
+        // Build preview list UI once voices are loaded
+        this.renderVoicePreviewList();
+        this.updateSelectedVoicePreviewButtonState();
     }
     
     populateVoiceDropdown(selectElement) {
@@ -379,6 +386,37 @@ class DynamicVoiceAgent {
                 if (this.isConnected && this.currentRoomName) {
                     this.changeVoice(newVoice);
                 }
+                this.updateSelectedVoicePreviewButtonState();
+            });
+        }
+
+        // Voice preview handlers (pre-join)
+        const previewSelectedBtn = document.getElementById('voicePreviewSelectedBtn');
+        if (previewSelectedBtn) {
+            previewSelectedBtn.addEventListener('click', async () => {
+                const voiceId = document.getElementById('voiceSelect')?.value || this.selectedVoice;
+                if (voiceId) {
+                    await this.playVoicePreview(voiceId, previewSelectedBtn);
+                }
+            });
+        }
+
+        const voiceBrowserToggleBtn = document.getElementById('voiceBrowserToggleBtn');
+        const voicePreviewList = document.getElementById('voicePreviewList');
+        if (voiceBrowserToggleBtn && voicePreviewList) {
+            voiceBrowserToggleBtn.addEventListener('click', () => {
+                const isHidden = voicePreviewList.style.display === 'none';
+                voicePreviewList.style.display = isHidden ? 'block' : 'none';
+                if (isHidden) {
+                    this.renderVoicePreviewList();
+                }
+            });
+        }
+
+        const voiceSearchInput = document.getElementById('voiceSearchInput');
+        if (voiceSearchInput) {
+            voiceSearchInput.addEventListener('input', () => {
+                this.renderVoicePreviewList(voiceSearchInput.value);
             });
         }
 
@@ -395,6 +433,107 @@ class DynamicVoiceAgent {
                 this.disconnect(false);
             }
         });
+    }
+
+    updateSelectedVoicePreviewButtonState() {
+        const btn = document.getElementById('voicePreviewSelectedBtn');
+        if (!btn) return;
+        const voiceId = document.getElementById('voiceSelect')?.value || this.selectedVoice;
+        btn.disabled = !voiceId || this._previewIsLoading;
+    }
+
+    renderVoicePreviewList(filterText = '') {
+        const listEl = document.getElementById('voicePreviewList');
+        if (!listEl) return;
+
+        const q = (filterText || '').trim().toLowerCase();
+        const entries = Object.entries(this.availableVoices || {});
+
+        // Light filtering + cap to keep DOM reasonable
+        const filtered = q
+            ? entries.filter(([id, name]) => (name || '').toLowerCase().includes(q) || id.toLowerCase().includes(q))
+            : entries;
+
+        const slice = filtered.slice(0, 120);
+
+        listEl.innerHTML = '';
+        const frag = document.createDocumentFragment();
+
+        for (const [voiceId, voiceName] of slice) {
+            const row = document.createElement('div');
+            row.className = 'voice-preview-item';
+
+            const nameEl = document.createElement('div');
+            nameEl.className = 'voice-preview-name';
+            nameEl.textContent = voiceName;
+            nameEl.title = 'Click to select this voice';
+            nameEl.addEventListener('click', () => {
+                const select = document.getElementById('voiceSelect');
+                if (select) {
+                    select.value = voiceId;
+                    select.dispatchEvent(new Event('change'));
+                }
+            });
+
+            const playBtn = document.createElement('button');
+            playBtn.type = 'button';
+            playBtn.className = 'voice-preview-play';
+            playBtn.textContent = '▶';
+            playBtn.title = 'Preview this voice';
+            playBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                await this.playVoicePreview(voiceId, playBtn);
+            });
+
+            row.appendChild(nameEl);
+            row.appendChild(playBtn);
+            frag.appendChild(row);
+        }
+
+        listEl.appendChild(frag);
+    }
+
+    async playVoicePreview(voiceId, buttonEl = null) {
+        if (!voiceId) return;
+
+        // Stop any current preview
+        try {
+            if (this._previewAudio) {
+                this._previewAudio.pause();
+                this._previewAudio.currentTime = 0;
+            }
+            if (this._previewAudioUrl) {
+                URL.revokeObjectURL(this._previewAudioUrl);
+                this._previewAudioUrl = null;
+            }
+        } catch (_) {}
+
+        this._previewIsLoading = true;
+        this.updateSelectedVoicePreviewButtonState();
+        if (buttonEl) buttonEl.disabled = true;
+
+        const voiceName = this.availableVoices?.[voiceId] || '';
+        const character = (voiceName.split(' - ')[0] || voiceName || 'Character').trim();
+        this.showToast(`Hi! I'm ${character}. Pick me as your voice.`, 'info', 'Voice preview');
+
+        try {
+            const endpoint = `/api/voice_preview?voice_id=${encodeURIComponent(voiceId)}`;
+            const resp = await this.fetchWithFallback(endpoint);
+            const blob = await resp.blob();
+
+            this._previewAudioUrl = URL.createObjectURL(blob);
+            this._previewAudio = new Audio(this._previewAudioUrl);
+            this._previewAudio.volume = 1.0;
+            await this._previewAudio.play();
+        } catch (err) {
+            console.error('Voice preview failed', err);
+            this.showToast('Voice preview failed. Please try again.', 'error', 'Voice preview');
+        } finally {
+            this._previewIsLoading = false;
+            this.updateSelectedVoicePreviewButtonState();
+            if (buttonEl) buttonEl.disabled = false;
+        }
     }
     
     async joinRoom() {

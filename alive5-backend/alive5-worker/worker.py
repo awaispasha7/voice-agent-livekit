@@ -172,6 +172,7 @@ class SimpleVoiceAgent(Agent):
         self._alive5_message_count = 0  # Track message count for is_new flag
         self._alive5_message_queue = []  # Queue messages until session data is ready
         self._alive5_thread_created_at = None  # Store original thread creation timestamp
+        self._pending_crm_updates = []  # Queue CRM updates until thread_id/crm_id are ready
         
         # Get LLM provider from env (bedrock, openai, or nova)
         llm_provider = os.getenv("LLM_PROVIDER", "bedrock").lower()
@@ -647,20 +648,39 @@ class SimpleVoiceAgent(Agent):
             }
     
     @function_tool()
-    async def apply_tag(self, context: RunContext, conversation_summary: Optional[str] = None) -> Dict[str, Any]:
-        """Apply a tag to the conversation based on conversation context.
+    async def apply_tag(self, context: RunContext, tags: Optional[List[str]] = None, conversation_summary: Optional[str] = None) -> Dict[str, Any]:
+        """Apply tags to the conversation.
         
         This function is called automatically when a bot flow reaches a "Tag this Conversation" action bot.
-        It analyzes the conversation context and selects THE SINGLE MOST appropriate tag from the available tag list.
-        The tag is then applied to the CRM record via save_crm_data socket event.
+        Tags are now provided directly in the flow JSON under actionsToPerform[].tag_chat.tags[].
         
         Args:
-            conversation_summary: Optional summary of the conversation (if provided, will be used for tag selection)
+            tags: List of tags to apply (extracted from flow JSON). If provided, these tags are used directly.
+            conversation_summary: Optional summary (legacy parameter, not used if tags are provided)
         
         Returns:
-            Success status and selected tags
+            Success status and applied tags
         """
-        # Try Gateway first if enabled
+        # If tags are provided directly from flow JSON, use them immediately
+        if tags and isinstance(tags, list) and len(tags) > 0:
+            logger.info(f"🏷️ apply_tag() called with tags from flow JSON: {tags}")
+            try:
+                # Apply tags via _update_crm_data
+                await self._update_crm_data(tags=tags)
+                logger.info(f"✅ Tags applied successfully from flow JSON: {tags}")
+                return {
+                    "success": True,
+                    "tags": tags,
+                    "message": f"Tags applied: {', '.join(tags)}"
+                }
+            except Exception as e:
+                logger.error(f"❌ Error applying tags from flow JSON: {e}", exc_info=True)
+                return {
+                    "success": False,
+                    "message": f"Failed to apply tags: {str(e)}"
+                }
+        
+        # Legacy fallback: Try Gateway first if enabled (for backward compatibility)
         if self.agentcore_gateway and self.agentcore_gateway.is_enabled():
             try:
                 logger.info("🔧 Gateway enabled - calling apply_tag via Gateway")
@@ -687,155 +707,12 @@ class SimpleVoiceAgent(Agent):
             except Exception as e:
                 logger.error(f"❌ Gateway call failed for apply_tag, falling back to direct: {e}", exc_info=True)
         
-        # Fallback to direct function call
-        try:
-            logger.info("🏷️ apply_tag() called - analyzing conversation to select tags")
-            
-            # Get available tags
-            available_tags = get_available_tags()
-            if not available_tags:
-                logger.warning("⚠️ No tags available in configuration")
-                return {
-                    "success": False,
-                    "message": "No tags are configured"
-                }
-            
-            # Build conversation context for tag selection
-            conversation_context = []
-            
-            # Add collected data summary
-            if self.collected_data:
-                context_parts = []
-                if self.collected_data.get("company"):
-                    context_parts.append(f"Company: {self.collected_data.get('company')}")
-                if self.collected_data.get("account_id"):
-                    context_parts.append(f"Account ID: {self.collected_data.get('account_id')}")
-                if self.collected_data.get("notes_entry"):
-                    notes = " | ".join(self.collected_data.get("notes_entry", []))
-                    if notes:
-                        context_parts.append(f"Notes: {notes[:200]}")
-                if context_parts:
-                    conversation_context.append("Collected Information: " + ", ".join(context_parts))
-            
-            # Add conversation summary if provided
-            if conversation_summary:
-                conversation_context.append(f"Conversation Summary: {conversation_summary}")
-            
-            # Get recent conversation history from agent_session if available
-            if hasattr(self, "agent_session") and self.agent_session:
-                try:
-                    # Try to get conversation history from the session
-                    # The agent_session should have access to recent messages
-                    # We'll use a simple approach: get last few messages if available
-                    if hasattr(self.agent_session, "llm") and hasattr(self.agent_session.llm, "chat"):
-                        # Access recent messages from the LLM context if available
-                        # For now, we'll use the collected data and summary
-                        pass
-                except Exception as e:
-                    logger.debug(f"Could not access conversation history: {e}")
-            
-            # Build prompt for tag selection
-            tags_list_str = ", ".join([f'"{tag}"' for tag in available_tags])
-            context_str = "\n".join(conversation_context) if conversation_context else "No specific context available."
-            
-            tag_selection_prompt = f"""Based on the following conversation context, select THE SINGLE MOST appropriate tag from this list:
-
-Available tags: {tags_list_str}
-
-Conversation Context:
-{context_str}
-
-Select the ONE tag that best categorizes this conversation. Return ONLY a JSON array with a single tag name (e.g., ["Sales"]). Do not include any explanation, just the JSON array with one tag."""
-
-            # Use LLM to select tags
-            selected_tags = []
-            try:
-                # Access LLM from agent_session if available
-                if hasattr(self, "agent_session") and self.agent_session and hasattr(self.agent_session, "llm"):
-                    from livekit.agents.llm import ChatContext, ChatRole, ChatMessage
-                    
-                    llm = self.agent_session.llm
-                    chat_ctx = ChatContext()
-                    # Combine system instruction with user prompt (ChatRole.SYSTEM doesn't exist in LiveKit)
-                    combined_prompt = f"You are a tag selection assistant. Analyze conversation context and return ONLY a JSON array of tag names.\n\n{tag_selection_prompt}"
-                    chat_ctx.messages = [
-                        ChatMessage(role=ChatRole.USER, content=combined_prompt)
-                    ]
-                    
-                    result_ctx = await llm.chat(chat_ctx)
-                    if result_ctx.messages:
-                        response_text = result_ctx.messages[-1].content.strip()
-                        
-                        # Parse JSON array from response
-                        import json
-                        import re
-                        # Try to extract JSON array from response
-                        json_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
-                        if json_match:
-                            tags_json = json_match.group(0)
-                            selected_tags = json.loads(tags_json)
-                        else:
-                            # Try parsing the whole response as JSON
-                            try:
-                                selected_tags = json.loads(response_text)
-                            except:
-                                logger.warning(f"Could not parse tags from LLM response: {response_text}")
-                else:
-                    # Fallback: use simple keyword matching if LLM not available
-                    logger.warning("⚠️ LLM not available for tag selection, using keyword matching")
-                    context_lower = context_str.lower()
-                    for tag in available_tags:
-                        tag_lower = tag.lower()
-                        if tag_lower in context_lower or any(word in context_lower for word in tag_lower.split()):
-                            selected_tags.append(tag)
-                            if len(selected_tags) >= 3:
-                                break
-                    
-                    # If no tags matched, use first available tag as default
-                    if not selected_tags:
-                        selected_tags = [available_tags[0]]
-            except Exception as e:
-                logger.error(f"❌ Error selecting tags with LLM: {e}", exc_info=True)
-                # Fallback: use first available tag
-                selected_tags = [available_tags[0]] if available_tags else []
-            
-            # Validate selected tags (must be from available list)
-            validated_tags = []
-            for tag in selected_tags:
-                if isinstance(tag, str) and tag in available_tags:
-                    validated_tags.append(tag)
-                elif isinstance(tag, str):
-                    # Try case-insensitive match
-                    tag_lower = tag.lower()
-                    for avail_tag in available_tags:
-                        if avail_tag.lower() == tag_lower:
-                            validated_tags.append(avail_tag)
-                            break
-            
-            # Ensure we have at least one tag
-            if not validated_tags:
-                validated_tags = [available_tags[0]] if available_tags else []
-            
-            # Only one tag allowed - take the first one
-            validated_tags = [validated_tags[0]] if validated_tags else []
-            
-            logger.info(f"🏷️ Selected tags: {validated_tags}")
-            
-            # Apply tags via _update_crm_data
-            await self._update_crm_data(tags=validated_tags)
-            
-            return {
-                "success": True,
-                "tags": validated_tags,
-                "message": f"Tags applied: {', '.join(validated_tags)}"
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Error in apply_tag(): {e}", exc_info=True)
-            return {
-                "success": False,
-                "message": "Failed to apply tags"
-            }
+        # Legacy fallback: If no tags provided, return error (tags should always come from flow JSON now)
+        logger.warning("⚠️ apply_tag() called without tags parameter - tags should be extracted from flow JSON")
+        return {
+            "success": False,
+            "message": "No tags provided. Tags must be extracted from flow JSON actionsToPerform[].tag_chat.tags[]"
+        }
     
     
     @function_tool()
@@ -1310,9 +1187,7 @@ Select the ONE tag that best categorizes this conversation. Return ONLY a JSON a
         """Update CRM data using new voice agent socket save_crm_data event"""
         try:
             logger.info(f"🔄 _update_crm_data called with: first_name={first_name}, last_name={last_name}, email={email}, phone={phone}, account_id={account_id}, company={company}, company_title={company_title}, tags={tags}")
-            if not self.alive5_crm_id:
-                logger.warning(f"⚠️ Cannot update CRM data - session not initialized (crm_id={self.alive5_crm_id}, thread_id={self.alive5_thread_id})")
-                return
+            session_ready = bool(self.alive5_crm_id and self.alive5_thread_id)
             
             # Update collected_data
             if first_name:
@@ -1402,6 +1277,16 @@ Select the ONE tag that best categorizes this conversation. Return ONLY a JSON a
                 if tags_list:
                     _add_tags_update(tags_list)
                     logger.info(f"🏷️ Sending tags to CRM: {tags_list}")
+
+            # If session isn't initialized yet, queue updates so early fields (like name) aren't lost.
+            if not session_ready:
+                if updates:
+                    logger.warning(
+                        f"⚠️ CRM update queued - session not initialized yet "
+                        f"(crm_id={self.alive5_crm_id}, thread_id={self.alive5_thread_id})"
+                    )
+                    self._pending_crm_updates.extend(updates)
+                return
             
             for update in updates:
                 socket_instruction = {
@@ -1429,6 +1314,40 @@ Select the ONE tag that best categorizes this conversation. Return ONLY a JSON a
                 
         except Exception as e:
             logger.warning(f"⚠️ Could not update CRM data: {e}")
+
+    async def _flush_pending_crm_updates(self):
+        """Flush queued CRM updates once Alive5 session (thread_id/crm_id) is ready."""
+        try:
+            if not self._pending_crm_updates:
+                return
+            if not (self.alive5_crm_id and self.alive5_thread_id):
+                return
+            if not hasattr(self, "room") or not self.room:
+                return
+
+            import json
+
+            queued = self._pending_crm_updates
+            self._pending_crm_updates = []
+
+            logger.info(f"📤 Flushing {len(queued)} queued CRM updates (session ready)")
+            for update in queued:
+                socket_instruction = {
+                    "action": "emit",
+                    "event": "save_crm_data",
+                    "payload": {
+                        "crm_id": self.alive5_crm_id,
+                        "thread_id": self.alive5_thread_id,
+                        "key": update.get("key"),
+                        "value": update.get("value"),
+                    },
+                }
+                await self.room.local_participant.publish_data(
+                    json.dumps(socket_instruction).encode("utf-8"),
+                    topic="lk.alive5.socket",
+                )
+        except Exception as e:
+            logger.warning(f"⚠️ Could not flush queued CRM updates: {e}")
     
     async def _send_message_to_alive5_internal(self, message_content: str, is_agent: bool = False):
         """Send message to Alive5 via frontend socket (data channel instruction)"""
@@ -1760,6 +1679,9 @@ async def entrypoint(ctx: JobContext):
                                     agent._alive5_message_queue.clear()
                                     for queued_content, queued_is_agent in queued_messages:
                                         await agent._send_message_to_alive5_internal(queued_content, queued_is_agent)
+
+                                # Flush any CRM updates that happened before thread_id/crm_id were ready
+                                await agent._flush_pending_crm_updates()
                                 return
                             else:
                                 logger.debug(f"⏳ Session data not ready yet (attempt {attempt + 1}/{max_attempts})")
@@ -2051,12 +1973,13 @@ if __name__ == "__main__":
             logger.info("=" * 80)
             
             # Verify environment variables are loaded
-            livekit_url = os.getenv("LIVEKIT_URL")
+            # Use LIVEKIT_WORKER_URL if set (for localhost on same server), otherwise use LIVEKIT_URL
+            livekit_url = os.getenv("LIVEKIT_WORKER_URL") or os.getenv("LIVEKIT_URL")
             livekit_api_key = os.getenv("LIVEKIT_API_KEY")
             livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
             
             if not livekit_url:
-                logger.error("❌ LIVEKIT_URL not set in environment!")
+                logger.error("❌ LIVEKIT_URL or LIVEKIT_WORKER_URL not set in environment!")
                 sys.exit(1)
             if not livekit_api_key:
                 logger.error("❌ LIVEKIT_API_KEY not set in environment!")
@@ -2070,6 +1993,10 @@ if __name__ == "__main__":
             logger.info("=" * 80)
             logger.info("🔌 Connecting to LiveKit server...")
             logger.info("=" * 80)
+            
+            # CRITICAL: Set LIVEKIT_URL environment variable for LiveKit SDK
+            # The SDK reads LIVEKIT_URL directly, not LIVEKIT_WORKER_URL
+            os.environ["LIVEKIT_URL"] = livekit_url
             
             # Log system resources before starting
             try:

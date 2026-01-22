@@ -10,6 +10,8 @@ import asyncio
 import uuid
 import subprocess
 from pathlib import Path
+import base64
+import hashlib
 from typing import Dict, Any, Optional
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -19,6 +21,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from livekit import api
 
@@ -320,6 +323,100 @@ def load_available_voices():
 
 AVAILABLE_VOICES = load_available_voices()
 
+
+def _voice_preview_text(voice_display_name: str) -> str:
+    """Generate the preview text the character will speak."""
+    # Voice names are like: "Calypso - ASMR Lady" → character is "Calypso"
+    character = (voice_display_name or "").split(" - ", 1)[0].strip() or "this character"
+    return f"Hi! I'm {character}. Pick me as your voice."
+
+
+def _voice_preview_cache_path(voice_id: str, voice_display_name: str, model_id: str) -> Path:
+    """
+    Cache key includes voice_id + model_id + preview text.
+    This keeps cache stable even if we later tweak the text/model.
+    """
+    text = _voice_preview_text(voice_display_name)
+    key = f"{voice_id}|{model_id}|{text}".encode("utf-8")
+    digest = hashlib.sha256(key).hexdigest()[:24]
+    cache_dir = current_dir / "voice_previews"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"{voice_id}-{digest}.mp3"
+
+
+@app.get("/api/voice_preview")
+async def voice_preview(voice_id: str):
+    """
+    Return a short TTS audio preview for the given voice_id.
+    The audio is cached on disk to avoid repeated TTS generation.
+    """
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="voice_id is required")
+
+    voice_display_name = AVAILABLE_VOICES.get(voice_id)
+    if not voice_display_name:
+        raise HTTPException(status_code=404, detail="Unknown voice_id")
+
+    cartesia_api_key = os.getenv("CARTESIA_API_KEY")
+    if not cartesia_api_key:
+        raise HTTPException(status_code=500, detail="CARTESIA_API_KEY not configured on server")
+
+    model_id = os.getenv("CARTESIA_TTS_MODEL", "sonic-2")
+    cache_path = _voice_preview_cache_path(voice_id, voice_display_name, model_id)
+
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        return FileResponse(str(cache_path), media_type="audio/mpeg")
+
+    preview_text = _voice_preview_text(voice_display_name)
+
+    payload = {
+        "model_id": model_id,
+        "transcript": preview_text,
+        "voice": {"mode": "id", "id": voice_id},
+        # Ask for MP3 container if supported (API may ignore/override)
+        "output_format": {"container": "mp3"},
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.cartesia.ai/tts/bytes",
+            headers={
+                "X-API-Key": cartesia_api_key,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+
+    if resp.status_code != 200:
+        detail = resp.text[:500] if resp.text else f"Cartesia TTS error (HTTP {resp.status_code})"
+        raise HTTPException(status_code=502, detail=detail)
+
+    content_type = (resp.headers.get("content-type") or "").lower()
+    audio_bytes: bytes
+    if "application/json" in content_type:
+        data = resp.json()
+        b64 = (
+            data.get("audio")
+            or data.get("data")
+            or (data.get("result") or {}).get("audio")
+            or (data.get("result") or {}).get("data")
+        )
+        if not b64 or not isinstance(b64, str):
+            raise HTTPException(status_code=502, detail="TTS provider returned JSON without audio data")
+        audio_bytes = base64.b64decode(b64)
+    else:
+        audio_bytes = resp.content
+
+    if not audio_bytes:
+        raise HTTPException(status_code=502, detail="Empty audio returned from TTS provider")
+
+    # Write cache atomically
+    tmp_path = cache_path.with_suffix(".tmp")
+    tmp_path.write_bytes(audio_bytes)
+    tmp_path.replace(cache_path)
+
+    return Response(content=audio_bytes, media_type="audio/mpeg")
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -364,32 +461,55 @@ async def get_connection_details(request: ConnectionDetailsRequest):
         if not all([livekit_url, livekit_api_key, livekit_api_secret]):
             raise HTTPException(status_code=500, detail="LiveKit configuration missing")
         
+        # Convert ws:// to http:// for REST API calls (frontend uses ws:// for WebSocket)
+        # Use localhost for API calls since backend is on same server as LiveKit
+        livekit_api_url = livekit_url.replace("ws://", "http://").replace("wss://", "https://")
+        # Replace public IP with localhost for API calls (backend is on same server)
+        if "18.210.238.67" in livekit_api_url:
+            livekit_api_url = livekit_api_url.replace("18.210.238.67", "localhost")
+        logger.info(f"🔗 Connecting to LiveKit API at: {livekit_api_url}")
+        
         # CRITICAL: Create the LiveKit room BEFORE returning connection details
         # This ensures the room exists and the worker can be dispatched when the frontend connects
         # This is the same approach used for phone calls (line 593)
-        async with api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret) as lk_api:
-            try:
-                # Create room (or get existing room)
-                room = await lk_api.room.create_room(
-                    api.CreateRoomRequest(
-                        name=room_name,
-                        empty_timeout=300,  # 5 minutes
-                        max_participants=10  # Allow multiple participants for web sessions
-                    )
-                )
-                logger.info(f"✅ Created LiveKit room for web session: {room_name}")
-            except Exception as room_error:
-                # Room might already exist, which is fine
-                logger.debug(f"Room {room_name} might already exist: {room_error}")
-                # Try to get existing room info
-                try:
-                    rooms = await lk_api.room.list_rooms(api.ListRoomsRequest(names=[room_name]))
-                    if rooms.rooms:
-                        logger.info(f"✅ Room {room_name} already exists")
-                    else:
-                        logger.warning(f"⚠️ Could not create or find room {room_name}, but continuing...")
-                except Exception as list_error:
-                    logger.warning(f"⚠️ Could not verify room existence: {list_error}, but continuing...")
+        try:
+            # Add timeout to prevent hanging (10 seconds)
+            async def create_room_with_timeout():
+                async with api.LiveKitAPI(livekit_api_url, livekit_api_key, livekit_api_secret) as lk_api:
+                    logger.info(f"✅ Connected to LiveKit API, creating room: {room_name}")
+                    try:
+                        # Create room (or get existing room)
+                        room = await lk_api.room.create_room(
+                            api.CreateRoomRequest(
+                                name=room_name,
+                                empty_timeout=300,  # 5 minutes
+                                max_participants=10  # Allow multiple participants for web sessions
+                            )
+                        )
+                        logger.info(f"✅ Created LiveKit room for web session: {room_name}")
+                    except Exception as room_error:
+                        # Room might already exist, which is fine
+                        logger.warning(f"⚠️ Room {room_name} might already exist: {room_error}")
+                        # Try to get existing room info
+                        try:
+                            rooms = await lk_api.room.list_rooms(api.ListRoomsRequest(names=[room_name]))
+                            if rooms.rooms:
+                                logger.info(f"✅ Room {room_name} already exists")
+                            else:
+                                logger.warning(f"⚠️ Could not create or find room {room_name}, but continuing...")
+                        except Exception as list_error:
+                            logger.warning(f"⚠️ Could not verify room existence: {list_error}, but continuing...")
+            
+            await asyncio.wait_for(create_room_with_timeout(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Timeout connecting to LiveKit API at {livekit_api_url} (10s timeout)")
+            logger.warning("⚠️ Continuing without pre-creating room - frontend connection will create it")
+        except Exception as api_error:
+            logger.error(f"❌ Failed to connect to LiveKit API at {livekit_api_url}: {api_error}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+            # Continue anyway - room creation might work when frontend connects
+            logger.warning("⚠️ Continuing without pre-creating room - frontend connection will create it")
         
         # Store session data
         session_data = {
@@ -422,8 +542,23 @@ async def get_connection_details(request: ConnectionDetailsRequest):
             can_publish_data=True
         ))
         
+        # Convert ws:// to wss:// for frontend (frontend is on HTTPS, needs secure WebSocket)
+        # Use nginx proxy for WSS (nginx handles TLS termination and proxies to LiveKit WS on port 7880)
+        # LiveKit SDK will append /rtc/v1 to the base URL, so we return just the domain
+        frontend_url = livekit_url
+        if frontend_url.startswith("ws://"):
+            # Replace ws://IP:7880 with wss://domain (nginx-proxied WSS connection)
+            # SDK will append /rtc/v1, nginx will proxy /rtc/* to LiveKit
+            if "18.210.238.67" in frontend_url:
+                frontend_url = "wss://18.210.238.67.nip.io"
+            else:
+                # Generic conversion: extract host and use nginx proxy
+                host = frontend_url.replace("ws://", "").replace(":7880", "")
+                frontend_url = f"wss://{host}"
+            logger.info(f"🔒 Converted WebSocket URL for HTTPS frontend: {livekit_url} → {frontend_url} (nginx-proxied WSS)")
+        
         return {
-            "url": livekit_url,
+            "url": frontend_url,
             "token": token.to_jwt(),
             "room_name": room_name
         }
@@ -562,7 +697,12 @@ async def delete_room(room_name: str):
             livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
             
             if all([livekit_url, livekit_api_key, livekit_api_secret]):
-                async with api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret) as lk_api:
+                # Convert ws:// to http:// for REST API calls
+                livekit_api_url = livekit_url.replace("ws://", "http://").replace("wss://", "https://")
+                # Replace public IP with localhost for API calls (backend is on same server)
+                if "18.210.238.67" in livekit_api_url:
+                    livekit_api_url = livekit_api_url.replace("18.210.238.67", "localhost")
+                async with api.LiveKitAPI(livekit_api_url, livekit_api_key, livekit_api_secret) as lk_api:
                     try:
                         await lk_api.room.delete_room(api.DeleteRoomRequest(room=room_name))
                         logger.info(f"✅ LiveKit room closed: {room_name}")
@@ -814,9 +954,14 @@ async def telnyx_webhook(request: Request):
             if not all([livekit_url, livekit_api_key, livekit_api_secret, livekit_sip_domain]):
                 raise HTTPException(status_code=500, detail="LiveKit SIP configuration missing")
             
+            # Convert ws:// to http:// and use localhost for API calls
+            livekit_api_url = livekit_url.replace("ws://", "http://").replace("wss://", "https://")
+            if "18.210.238.67" in livekit_api_url:
+                livekit_api_url = livekit_api_url.replace("18.210.238.67", "localhost")
+            
             # Create LiveKit room
             try:
-                async with api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret) as lk_api:
+                async with api.LiveKitAPI(livekit_api_url, livekit_api_key, livekit_api_secret) as lk_api:
                     # Create room
                     room = await lk_api.room.create_room(
                         api.CreateRoomRequest(
@@ -1022,8 +1167,9 @@ async def telnyx_webhook(request: Request):
                     
                     # Cleanup room (try both the actual room name and the key)
                     try:
+                        livekit_url_for_api = (os.getenv("LIVEKIT_URL") or "").replace("ws://", "http://").replace("wss://", "https://")
                         async with api.LiveKitAPI(
-                            os.getenv("LIVEKIT_URL"),
+                            livekit_url_for_api,
                             os.getenv("LIVEKIT_API_KEY"),
                             os.getenv("LIVEKIT_API_SECRET")
                         ) as lk_api:
@@ -1161,7 +1307,11 @@ async def telnyx_transfer_call(request: TelnyxTransferRequest):
                     livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
                     
                     if all([livekit_url, livekit_api_key, livekit_api_secret]):
-                        async with api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret) as lk_api:
+                        # Convert ws:// to http:// and use localhost for API calls
+                        livekit_api_url = livekit_url.replace("ws://", "http://").replace("wss://", "https://")
+                        if "18.210.238.67" in livekit_api_url:
+                            livekit_api_url = livekit_api_url.replace("18.210.238.67", "localhost")
+                        async with api.LiveKitAPI(livekit_api_url, livekit_api_key, livekit_api_secret) as lk_api:
                             try:
                                 await lk_api.room.delete_room(api.DeleteRoomRequest(room=request.room_name))
                                 logger.info(f"✅ Closed LiveKit room after transfer: {request.room_name}")

@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  livekit-server:
+    image: livekit/livekit-server:latest
+    container_name: livekit-server
+    restart: unless-stopped
+    network_mode: host
+    # CRITICAL: Using host networking to avoid Docker iptables/NAT explosion
+    # With host networking, ports are opened directly on the host - no Docker NAT rules
+    # Make sure to open these ports in EC2 Security Group / firewall:
+    # - 7880/tcp (HTTP/WebSocket)
+    # - 7881/tcp (HTTPS/WSS)
+    # - 50000-60000/udp (RTC UDP ports)
+    # - 5060/udp (SIP UDP)
+    # - 5061/tcp (SIP TLS)
+    volumes:
+      - ./livekit-config.yaml:/etc/livekit.yaml:ro
+      - livekit-data:/var/lib/livekit
+    env_file:
+      - .env.livekit
+    environment:
+      # CRITICAL: LiveKit requires format "key: secret" with space after colon
+      - LIVEKIT_KEYS=${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7880/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  coturn:
+    image: coturn/coturn:latest
+    container_name: livekit-coturn
+    restart: unless-stopped
+    network_mode: host
+    # CRITICAL: Using host networking to avoid Docker iptables/NAT explosion
+    # With host networking, ports are opened directly on the host - no Docker NAT rules
+    # Make sure to open these ports in EC2 Security Group / firewall:
+    # - 3478/udp (STUN)
+    # - 3478/tcp (STUN)
+    # - 49152-65535/udp (TURN relay ports)
+    volumes:
+      - ./coturn-config.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+
+volumes:
+  livekit-data:
+
