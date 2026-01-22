@@ -45,7 +45,7 @@ try:
 except ImportError:
     AGENTCORE_INTEGRATION_AVAILABLE = False
     AgentCoreLLMWrapper = None
-    logger.warning("AgentCore integration not available. Will use direct LLM and functions.")
+    logging.getLogger("simple-agent").warning("AgentCore integration not available. Will use direct LLM and functions.")
 
 # Load environment variables
 load_dotenv(Path(__file__).parent / "../../.env")
@@ -1783,10 +1783,24 @@ async def entrypoint(ctx: JobContext):
         stt_model = None
         stt_language = "en-US"  # Default to English
         if not getattr(agent, '_using_nova', False):
-            stt_model = os.getenv("DEEPGRAM_STT_MODEL", "nova-2")
+            def _clean_env_token(v: str) -> str:
+                """
+                Systemd EnvironmentFile / .env files often include inline comments like:
+                  PHONE_DEEPGRAM_STT_MODEL=nova  # faster for phone
+                Those comments can get treated as part of the value and break provider APIs.
+                """
+                if not v:
+                    return v
+                # Strip inline comments and surrounding whitespace
+                v = v.split("#", 1)[0].strip()
+                # Keep only the first whitespace-separated token (defensive)
+                v = v.split()[0].strip() if v.split() else v.strip()
+                return v
+
+            stt_model = _clean_env_token(os.getenv("DEEPGRAM_STT_MODEL", "nova-2"))
             if is_phone_call:
                 # For phone calls, check if we should use a faster STT model
-                phone_stt_model = os.getenv("PHONE_DEEPGRAM_STT_MODEL", stt_model)
+                phone_stt_model = _clean_env_token(os.getenv("PHONE_DEEPGRAM_STT_MODEL", stt_model))
                 if phone_stt_model != stt_model:
                     stt_model = phone_stt_model
                     logger.info(f"📞 Phone call detected - using optimized STT model: {stt_model}")
