@@ -209,13 +209,18 @@ class DynamicVoiceAgent {
     // Helper function to try multiple URLs if one fails
     async fetchWithFallback(endpoint, options = {}) {
         const urls = [];
+        const isApiRoute = endpoint.startsWith('/api/');
         if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
             urls.push(endpoint);
         } else {
             if (this.config.API_BASE_URL) {
                 urls.push(this.config.API_BASE_URL + endpoint);
             }
-            urls.push(endpoint);
+            // Don't fall back to relative /api/* on the Vercel origin (it will 404 and confuse users).
+            // Only allow relative calls for non-API assets or local dev.
+            if (!isApiRoute) {
+                urls.push(endpoint);
+            }
         }
         
         for (const baseUrl of urls) {

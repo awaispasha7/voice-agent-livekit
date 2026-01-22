@@ -341,7 +341,7 @@ def _voice_preview_cache_path(voice_id: str, voice_display_name: str, model_id: 
     digest = hashlib.sha256(key).hexdigest()[:24]
     cache_dir = current_dir / "voice_previews"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / f"{voice_id}-{digest}.mp3"
+    return cache_dir / f"{voice_id}-{digest}.wav"
 
 
 @app.get("/api/voice_preview")
@@ -365,16 +365,23 @@ async def voice_preview(voice_id: str):
     cache_path = _voice_preview_cache_path(voice_id, voice_display_name, model_id)
 
     if cache_path.exists() and cache_path.stat().st_size > 0:
-        return FileResponse(str(cache_path), media_type="audio/mpeg")
+        return FileResponse(str(cache_path), media_type="audio/wav")
 
     preview_text = _voice_preview_text(voice_display_name)
 
+    cartesia_version = os.getenv("CARTESIA_VERSION", "2025-04-16")
+
+    # Cartesia "Bytes" endpoint docs show `audio/wav` responses.
+    # Keep output_format explicit; otherwise the API may interpret missing fields as zeros.
     payload = {
         "model_id": model_id,
         "transcript": preview_text,
         "voice": {"mode": "id", "id": voice_id},
-        # Ask for MP3 container if supported (API may ignore/override)
-        "output_format": {"container": "mp3"},
+        "output_format": {
+            "container": "wav",
+            "encoding": "pcm_s16le",
+            "sample_rate": 16000,
+        },
     }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -383,6 +390,7 @@ async def voice_preview(voice_id: str):
             headers={
                 "X-API-Key": cartesia_api_key,
                 "Content-Type": "application/json",
+                "Cartesia-Version": cartesia_version,
             },
             json=payload,
         )
@@ -415,7 +423,7 @@ async def voice_preview(voice_id: str):
     tmp_path.write_bytes(audio_bytes)
     tmp_path.replace(cache_path)
 
-    return Response(content=audio_bytes, media_type="audio/mpeg")
+    return Response(content=audio_bytes, media_type="audio/wav")
 
 @app.get("/health")
 async def health_check():
