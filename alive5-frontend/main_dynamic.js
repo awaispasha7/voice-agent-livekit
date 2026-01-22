@@ -16,6 +16,7 @@ class DynamicVoiceAgent {
         this._previewAudio = null;
         this._previewAudioUrl = null;
         this._previewIsLoading = false;
+        this._voiceDropdownOpen = false;
         
         // Track processed messages to prevent duplicates
         this.processedMessages = new Set();
@@ -184,9 +185,10 @@ class DynamicVoiceAgent {
         if (voiceSelect) {
             this.populateVoiceDropdown(voiceSelect);
         }
-
-        // Build preview list UI once voices are loaded
-        this.renderVoicePreviewList();
+        
+        // Build/update custom dropdown UI once voices are loaded
+        this.renderVoiceDropdownItems();
+        this.syncVoiceDropdownSelection();
         this.updateSelectedVoicePreviewButtonState();
     }
     
@@ -392,6 +394,7 @@ class DynamicVoiceAgent {
                     this.changeVoice(newVoice);
                 }
                 this.updateSelectedVoicePreviewButtonState();
+                this.syncVoiceDropdownSelection();
             });
         }
 
@@ -406,24 +409,23 @@ class DynamicVoiceAgent {
             });
         }
 
-        const voiceBrowserToggleBtn = document.getElementById('voiceBrowserToggleBtn');
-        const voicePreviewList = document.getElementById('voicePreviewList');
-        if (voiceBrowserToggleBtn && voicePreviewList) {
-            voiceBrowserToggleBtn.addEventListener('click', () => {
-                const isHidden = voicePreviewList.style.display === 'none';
-                voicePreviewList.style.display = isHidden ? 'block' : 'none';
-                if (isHidden) {
-                    this.renderVoicePreviewList();
-                }
+        // Custom dropdown toggle/open/close
+        const dropdownToggle = document.getElementById('voiceDropdownToggle');
+        if (dropdownToggle) {
+            dropdownToggle.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.toggleVoiceDropdown();
             });
         }
 
-        const voiceSearchInput = document.getElementById('voiceSearchInput');
-        if (voiceSearchInput) {
-            voiceSearchInput.addEventListener('input', () => {
-                this.renderVoicePreviewList(voiceSearchInput.value);
-            });
-        }
+        // Close dropdown on outside click
+        document.addEventListener('click', (e) => {
+            if (!this._voiceDropdownOpen) return;
+            const dd = document.getElementById('voiceDropdown');
+            if (dd && !dd.contains(e.target)) {
+                this.closeVoiceDropdown();
+            }
+        });
 
         
         document.addEventListener('keydown', (e) => {
@@ -447,42 +449,89 @@ class DynamicVoiceAgent {
         btn.disabled = !voiceId || this._previewIsLoading;
     }
 
-    renderVoicePreviewList(filterText = '') {
-        const listEl = document.getElementById('voicePreviewList');
-        if (!listEl) return;
+    toggleVoiceDropdown() {
+        if (this._voiceDropdownOpen) {
+            this.closeVoiceDropdown();
+        } else {
+            this.openVoiceDropdown();
+        }
+    }
 
-        const q = (filterText || '').trim().toLowerCase();
-        const entries = Object.entries(this.availableVoices || {});
+    openVoiceDropdown() {
+        const menu = document.getElementById('voiceDropdownMenu');
+        const toggle = document.getElementById('voiceDropdownToggle');
+        if (!menu || !toggle) return;
+        this._voiceDropdownOpen = true;
+        toggle.setAttribute('aria-expanded', 'true');
+        menu.style.display = 'block';
+        this.renderVoiceDropdownItems();
+        this.scrollVoiceDropdownToSelection();
+    }
 
-        // Light filtering + cap to keep DOM reasonable
-        const filtered = q
-            ? entries.filter(([id, name]) => (name || '').toLowerCase().includes(q) || id.toLowerCase().includes(q))
-            : entries;
+    closeVoiceDropdown() {
+        const menu = document.getElementById('voiceDropdownMenu');
+        const toggle = document.getElementById('voiceDropdownToggle');
+        if (!menu || !toggle) return;
+        this._voiceDropdownOpen = false;
+        toggle.setAttribute('aria-expanded', 'false');
+        menu.style.display = 'none';
+    }
 
-        const slice = filtered.slice(0, 120);
+    syncVoiceDropdownSelection() {
+        const select = document.getElementById('voiceSelect');
+        const toggle = document.getElementById('voiceDropdownToggle');
+        if (!select || !toggle) return;
+        const opt = select.options?.[select.selectedIndex];
+        toggle.textContent = opt?.textContent || 'Select a voice';
 
-        listEl.innerHTML = '';
+        // Update selected highlight if menu exists
+        const menu = document.getElementById('voiceDropdownMenu');
+        if (menu) {
+            const selectedId = select.value;
+            const items = menu.querySelectorAll('.voice-dropdown-item');
+            items.forEach((el) => {
+                const id = el.getAttribute('data-voice-id');
+                if (id === selectedId) el.classList.add('selected');
+                else el.classList.remove('selected');
+            });
+        }
+    }
+
+    renderVoiceDropdownItems() {
+        const select = document.getElementById('voiceSelect');
+        const menu = document.getElementById('voiceDropdownMenu');
+        if (!select || !menu) return;
+
+        // Build from native select so we keep a single source of truth
+        const selectedId = select.value;
+        menu.innerHTML = '';
+
         const frag = document.createDocumentFragment();
+        for (const opt of Array.from(select.options || [])) {
+            const voiceId = opt.value;
+            const voiceName = opt.textContent || voiceId;
+            if (!voiceId) continue;
 
-        for (const [voiceId, voiceName] of slice) {
             const row = document.createElement('div');
-            row.className = 'voice-preview-item';
+            row.className = 'voice-dropdown-item' + (voiceId === selectedId ? ' selected' : '');
+            row.setAttribute('role', 'option');
+            row.setAttribute('data-voice-id', voiceId);
 
             const nameEl = document.createElement('div');
-            nameEl.className = 'voice-preview-name';
+            nameEl.className = 'voice-dropdown-name';
             nameEl.textContent = voiceName;
             nameEl.title = 'Click to select this voice';
-            nameEl.addEventListener('click', () => {
-                const select = document.getElementById('voiceSelect');
-                if (select) {
-                    select.value = voiceId;
-                    select.dispatchEvent(new Event('change'));
-                }
+            nameEl.addEventListener('click', (e) => {
+                e.preventDefault();
+                // Selecting voice by clicking the name (as requested)
+                select.value = voiceId;
+                select.dispatchEvent(new Event('change'));
+                this.closeVoiceDropdown();
             });
 
             const playBtn = document.createElement('button');
             playBtn.type = 'button';
-            playBtn.className = 'voice-preview-play';
+            playBtn.className = 'voice-dropdown-play';
             playBtn.textContent = '▶';
             playBtn.title = 'Preview this voice';
             playBtn.addEventListener('click', async (e) => {
@@ -496,7 +545,19 @@ class DynamicVoiceAgent {
             frag.appendChild(row);
         }
 
-        listEl.appendChild(frag);
+        menu.appendChild(frag);
+        this.syncVoiceDropdownSelection();
+    }
+
+    scrollVoiceDropdownToSelection() {
+        const select = document.getElementById('voiceSelect');
+        const menu = document.getElementById('voiceDropdownMenu');
+        if (!select || !menu) return;
+        const selectedId = select.value;
+        const selectedEl = menu.querySelector(`.voice-dropdown-item[data-voice-id="${selectedId}"]`);
+        if (selectedEl) {
+            selectedEl.scrollIntoView({ block: 'nearest' });
+        }
     }
 
     async playVoicePreview(voiceId, buttonEl = null) {

@@ -76,21 +76,22 @@
                             </div>
                             <div class="form-group-content">
                                 <div class="voice-select-row">
-                                    <select id="voiceSelect" name="voiceSelect" class="voice-select" data-default-voice="7f423809-0011-4658-ba48-a411f5e516ba">
+                                    <!-- Keep the native select (hidden) for compatibility with existing code -->
+                                    <select id="voiceSelect" name="voiceSelect" class="voice-select voice-select-hidden" data-default-voice="7f423809-0011-4658-ba48-a411f5e516ba">
                                         <option value="">Loading voices...</option>
                                     </select>
+
+                                    <!-- Custom dropdown that supports per-item preview buttons -->
+                                    <div id="voiceDropdown" class="voice-dropdown">
+                                        <button type="button" id="voiceDropdownToggle" class="voice-dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
+                                            Loading voices...
+                                        </button>
+                                        <div id="voiceDropdownMenu" class="voice-dropdown-menu" role="listbox" style="display:none;"></div>
+                                    </div>
+
                                     <button type="button" id="voicePreviewSelectedBtn" class="voice-preview-btn" title="Preview selected voice" disabled>
                                         ▶
                                     </button>
-                                </div>
-                                <div class="voice-preview-browser">
-                                    <div class="voice-preview-browser-header">
-                                        <input id="voiceSearchInput" type="text" placeholder="Search voices..." />
-                                        <button type="button" id="voiceBrowserToggleBtn" class="voice-browser-btn">
-                                            Browse & Preview
-                                        </button>
-                                    </div>
-                                    <div id="voicePreviewList" class="voice-preview-list" style="display:none;"></div>
                                 </div>
                                 <small>Choose the voice for your AI assistant</small>
                             </div>
