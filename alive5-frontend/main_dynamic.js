@@ -16,6 +16,7 @@ class DynamicVoiceAgent {
         this._previewAudio = null;
         this._previewAudioUrl = null;
         this._previewIsLoading = false;
+        this._previewCleanupTimer = null;
         this._voiceDropdownOpen = false;
         
         // Track processed messages to prevent duplicates
@@ -568,11 +569,21 @@ class DynamicVoiceAgent {
             if (this._previewAudio) {
                 this._previewAudio.pause();
                 this._previewAudio.currentTime = 0;
+                // Clear src before revoking to avoid blob fetch errors
+                this._previewAudio.src = '';
             }
             if (this._previewAudioUrl) {
-                URL.revokeObjectURL(this._previewAudioUrl);
+                // Delay revoke slightly so the browser can settle (prevents net::ERR_FILE_NOT_FOUND noise)
+                const urlToRevoke = this._previewAudioUrl;
                 this._previewAudioUrl = null;
+                if (this._previewCleanupTimer) {
+                    clearTimeout(this._previewCleanupTimer);
+                }
+                this._previewCleanupTimer = setTimeout(() => {
+                    try { URL.revokeObjectURL(urlToRevoke); } catch (_) {}
+                }, 250);
             }
+            this._previewAudio = null;
         } catch (_) {}
 
         this._previewIsLoading = true;
@@ -591,6 +602,22 @@ class DynamicVoiceAgent {
             this._previewAudioUrl = URL.createObjectURL(blob);
             this._previewAudio = new Audio(this._previewAudioUrl);
             this._previewAudio.volume = 1.0;
+            this._previewAudio.onended = () => {
+                // Revoke only after playback finishes
+                try {
+                    if (this._previewAudioUrl) URL.revokeObjectURL(this._previewAudioUrl);
+                } catch (_) {}
+                this._previewAudioUrl = null;
+                this._previewAudio = null;
+            };
+            this._previewAudio.onerror = () => {
+                // Same cleanup on error
+                try {
+                    if (this._previewAudioUrl) URL.revokeObjectURL(this._previewAudioUrl);
+                } catch (_) {}
+                this._previewAudioUrl = null;
+                this._previewAudio = null;
+            };
             await this._previewAudio.play();
         } catch (err) {
             console.error('Voice preview failed', err);
@@ -2389,7 +2416,8 @@ class DynamicVoiceAgent {
                         this.alive5SocketConfig = this.alive5SocketConfig || {};
                         this.alive5SocketConfig.voice_agent_id = voiceAgentId;
                     } else {
-                        console.error('❌ Could not find voice_agent_id from any source!');
+                        // Not fatal; we can still operate and we have a fallback that synthesizes a temporary id.
+                        console.warn('⚠️ voice_agent_id not provided by server (will use fallback id when needed)');
                     }
                 } else {
                     console.warn('⚠️ init_voice_agent_ack status:', data.status, data.message || '');
