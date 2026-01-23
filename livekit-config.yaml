@@ -8,9 +8,8 @@ rtc:
   # external_ip: "18.210.238.67"
   
 redis:
-  # Optional: Use Redis for multi-server deployments
-  # For single server, you can omit this
-  # address: "localhost:6379"
+  # REQUIRED when using LiveKit SIP service (SIP <-> server coordination happens via Redis).
+  address: "localhost:6379"
 
 keys:
   # These will be overridden by environment variables from docker-compose
@@ -19,33 +18,20 @@ keys:
 
 log_level: warn  # Reduced logging to save memory (was: info)
 
-# SIP Configuration
-sip:
-  enabled: true
-  domain: "sip.18.210.238.67.nip.io"  # SIP domain for Telnyx
-  outbound_address: "18.210.238.67"    # Your server's public IP
-  outbound_port: 5060
-  # SIP trunk configuration for Telnyx
-  trunks:
-    - inbound_address: "0.0.0.0:5060"
-      outbound_address: "18.210.238.67:5060"
-      # Dispatch rule: route calls to rooms matching telnyx_call_* pattern
-      dispatch_rule: "telnyx_call_*"
+#
+# IMPORTANT (Self-hosted telephony):
+# LiveKit SIP is a separate service (`livekit/sip`) that listens on 5060/udp + RTP port range.
+# Trunks + Dispatch Rules are created via LiveKit API/CLI (`lk sip ...`), NOT via this file.
+# Keeping the legacy `sip:` block here can be misleading, so it is intentionally omitted.
 
-# TURN server configuration (coturn)
+# TURN server configuration
+# We run TURN via the separate `coturn` container, so LiveKit's built-in TURN should be disabled.
 turn:
-  enabled: true
-  domain: "turn.18.210.238.67.nip.io"  # Update with your actual TURN domain
-  tls_port: 5349
-  udp_port: 3478
-  # TURN credentials (generate secure credentials)
-  # username: "livekit"
-  # password: "your-secure-password"
+  enabled: false
 
 # Room configuration - OPTIMIZED FOR 8GB RAM
 room:
   empty_timeout: 30  # 30 seconds (aggressive cleanup to free memory faster)
-  max_duration: 1800  # 30 minutes (reduced from 1 hour)
   max_participants: 3  # Reduced to 3 for tighter memory control per room
 
 # Development settings (adjust for production)

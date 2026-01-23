@@ -947,11 +947,19 @@ async def telnyx_webhook(request: Request):
                 logger.error(f"❌ Missing call_control_id in webhook payload. Full payload: {payload}")
                 raise HTTPException(status_code=400, detail="Missing call_control_id in webhook payload")
             
-            # Create unique room name for this call
-            # Replace colons with dashes to avoid URL-encoding issues in SIP URI
-            # This prevents duplicate sessions when LiveKit dispatch rule extracts room name
-            safe_call_control_id = call_control_id.replace(':', '-')
-            room_name = f"telnyx_call_{safe_call_control_id}"
+            # IMPORTANT (Self-hosted LiveKit SIP) - Robust per-call rooms:
+            # - Reusing the same LiveKit room across calls causes CRM/session leakage.
+            # - Very long SIP usernames can trigger SIP flood protection.
+            #
+            # Solution:
+            # - Keep ONE stable dispatch rule using CALLEE routing with a room_prefix.
+            # - Transfer to a SHORT callee derived from call_control_id.
+            # - LiveKit SIP will create/join room: {room_prefix}{callee}.
+            import hashlib
+            safe_call_control_id = call_control_id.replace(":", "-")
+            room_prefix = os.getenv("TELNYX_ROOM_PREFIX", "telnyx_call_")
+            short_callee = hashlib.sha1(safe_call_control_id.encode("utf-8")).hexdigest()[:12]
+            telnyx_room_name = f"{room_prefix}{short_callee}"
             
             # Get LiveKit credentials
             livekit_url = os.getenv("LIVEKIT_URL")
@@ -967,23 +975,134 @@ async def telnyx_webhook(request: Request):
             if "18.210.238.67" in livekit_api_url:
                 livekit_api_url = livekit_api_url.replace("18.210.238.67", "localhost")
             
-            # Create LiveKit room
+            # Create LiveKit room (idempotent: OK if it already exists)
             try:
                 async with api.LiveKitAPI(livekit_api_url, livekit_api_key, livekit_api_secret) as lk_api:
-                    # Create room
-                    room = await lk_api.room.create_room(
-                        api.CreateRoomRequest(
-                            name=room_name,
-                            empty_timeout=300,  # 5 minutes
-                            max_participants=2
+                    try:
+                        await lk_api.room.create_room(
+                            api.CreateRoomRequest(
+                                name=telnyx_room_name,
+                                empty_timeout=300,  # 5 minutes
+                                max_participants=2,
+                            )
                         )
-                    )
-                    logger.info(f"✅ Created LiveKit room: {room_name}")
+                        logger.info(f"✅ Created LiveKit room: {telnyx_room_name}")
+                    except Exception as room_err:
+                        # Room likely already exists; don't fail the call for that.
+                        logger.warning(f"ℹ️ Could not create room (may already exist): {room_err}")
+
+                    # SELF-HOSTED SIP (livekit/sip):
+                    # We must ensure there's an inbound SIP trunk + a dispatch rule that routes the next
+                    # SIP INVITE into *this* room. Otherwise Telnyx will connect to the SIP endpoint,
+                    # but no SIP participant will ever join the room.
+                    sip_trunk_id: str | None = None
+                    sip_dispatch_rule_id: str | None = None
+                    try:
+                        effective_called_number = (
+                            called_number
+                            or os.getenv("TELNYX_CALLER_NUMBER", "")
+                            or ""
+                        ).strip()
+
+                        # 1) Ensure inbound trunk exists (create if missing)
+                        trunks = await lk_api.sip.list_inbound_trunk(api.ListSIPInboundTrunkRequest())
+                        for t in (trunks.items or []):
+                            if effective_called_number and effective_called_number in list(t.numbers):
+                                sip_trunk_id = t.sip_trunk_id
+                                break
+
+                        if not sip_trunk_id:
+                            # NOTE: For security, you should restrict allowed_addresses to Telnyx IP ranges,
+                            # but 0.0.0.0/0 is fine for initial bring-up/testing.
+                            trunk = api.SIPInboundTrunkInfo(
+                                name="telnyx-inbound",
+                                numbers=[effective_called_number] if effective_called_number else [],
+                                allowed_addresses=["0.0.0.0/0"],
+                            )
+                            created_trunk = await lk_api.sip.create_inbound_trunk(
+                                api.CreateSIPInboundTrunkRequest(trunk=trunk)
+                            )
+                            sip_trunk_id = created_trunk.sip_trunk_id
+                            logger.info(f"✅ Created SIP inbound trunk: {sip_trunk_id}")
+
+                        # 2) Ensure a SINGLE dispatch rule exists for this trunk.
+                        # Use CALLEE routing so we can create per-call rooms by changing the SIP URI user part.
+                        existing_rule = None
+                        rules = await lk_api.sip.list_dispatch_rule(api.ListSIPDispatchRuleRequest())
+                        # First, try to find by stored rule ID (if we have one from env or previous calls)
+                        stored_rule_id = os.getenv("LIVEKIT_SIP_DISPATCH_RULE_NAME")
+                        for r in (rules.items or []):
+                            # Check by stored rule ID first (most reliable - fixes orphaned rules)
+                            if stored_rule_id and r.sip_dispatch_rule_id == stored_rule_id:
+                                existing_rule = r
+                                logger.info(f"🔍 Found dispatch rule by stored ID: {stored_rule_id}")
+                                break
+                        # If not found by ID, check by trunk_id
+                        if not existing_rule:
+                            for r in (rules.items or []):
+                                if sip_trunk_id and sip_trunk_id in list(r.trunk_ids):
+                                    # Some users have a manually-created "catch-all" rule with inbound_numbers=[]
+                                    # (matches any DID on that trunk). That will conflict with creating a more specific
+                                    # rule, so if we see it, we update it instead of creating a new one.
+                                    inbound_numbers = list(r.inbound_numbers)
+                                    if not inbound_numbers:
+                                        existing_rule = r
+                                        logger.info(f"🔍 Found dispatch rule by trunk_id (catch-all): {r.sip_dispatch_rule_id}")
+                                        break
+                                    if effective_called_number and effective_called_number in inbound_numbers:
+                                        existing_rule = r
+                                        logger.info(f"🔍 Found dispatch rule by trunk_id (specific DID): {r.sip_dispatch_rule_id}")
+                                        break
+                        # If still not found, check by name (fallback for manually created rules)
+                        if not existing_rule:
+                            for r in (rules.items or []):
+                                if r.name and ("telnyx" in r.name.lower() or "dispatch" in r.name.lower()):
+                                    existing_rule = r
+                                    logger.info(f"🔍 Found dispatch rule by name: {r.name} ({r.sip_dispatch_rule_id})")
+                                    break
+
+                        desired_rule = api.SIPDispatchRule(
+                            dispatch_rule_callee=api.SIPDispatchRuleCallee(
+                                room_prefix=room_prefix,
+                                randomize=False,  # Keep False - room name is already unique via SHA1 hash
+                            )
+                        )
+
+                        if existing_rule:
+                            sip_dispatch_rule_id = existing_rule.sip_dispatch_rule_id
+                            # Update rule if it doesn't match what we want.
+                            try:
+                                # NOTE: livekit python SDK expects (rule_id, SIPDispatchRuleInfo) here (not a request object).
+                                # CRITICAL: Always set trunk_ids even if the rule had None before (fixes orphaned rules)
+                                desired_info = api.SIPDispatchRuleInfo(
+                                    sip_dispatch_rule_id=sip_dispatch_rule_id,
+                                    name=existing_rule.name or "telnyx-dispatch",
+                                    trunk_ids=[sip_trunk_id] if sip_trunk_id else [],
+                                    inbound_numbers=list(existing_rule.inbound_numbers) if existing_rule.inbound_numbers else [],
+                                    hide_phone_number=True,
+                                    rule=desired_rule,
+                                )
+                                await lk_api.sip.update_dispatch_rule(sip_dispatch_rule_id, desired_info)
+                                logger.info(f"✅ Updated SIP dispatch rule: {sip_dispatch_rule_id} (room_prefix={room_prefix}, trunk={sip_trunk_id})")
+                            except Exception as upd_err:
+                                logger.error(f"❌ Could not update SIP dispatch rule {sip_dispatch_rule_id}: {upd_err}", exc_info=True)
+                        else:
+                            created_rule = await lk_api.sip.create_dispatch_rule(
+                                api.CreateSIPDispatchRuleRequest(
+                                    rule=desired_rule,
+                                    trunk_ids=[sip_trunk_id] if sip_trunk_id else [],
+                                    inbound_numbers=[effective_called_number] if effective_called_number else [],
+                                    name="telnyx-dispatch",
+                                    hide_phone_number=True,
+                                )
+                            )
+                            sip_dispatch_rule_id = created_rule.sip_dispatch_rule_id
+                            logger.info(f"✅ Created SIP dispatch rule: {sip_dispatch_rule_id}")
+
+                    except Exception as sip_err:
+                        logger.error(f"❌ Failed to ensure SIP trunk/dispatch rule: {sip_err}", exc_info=True)
                     
-                    # Note: For inbound calls, LiveKit SIP trunk will automatically connect
-                    # the call to this room if trunk is configured with matching room name pattern.
-                    # No need to create SIP participant manually for inbound calls.
-                    logger.info(f"✅ Room created - LiveKit SIP trunk will auto-connect call to room")
+                    logger.info("✅ Room created - SIP dispatch rule prepared for Telnyx transfer")
                 
                 # Get default voice from env or use first available voice
                 default_voice_id = os.getenv("TELNYX_DEFAULT_VOICE")
@@ -1012,11 +1131,13 @@ async def telnyx_webhook(request: Request):
                 
                 # Store call session
                 session_data = {
-                    "room_name": room_name,
+                    "room_name": telnyx_room_name,
                     "user_name": f"Caller_{caller_number}",
                     "call_control_id": call_control_id,
                     "caller_number": caller_number,
                     "called_number": called_number,
+                    "sip_trunk_id": sip_trunk_id,
+                    "sip_dispatch_rule_id": sip_dispatch_rule_id,
                     "user_data": {
                         "botchain_name": phone_botchain,
                         "org_name": phone_org_name,
@@ -1031,13 +1152,46 @@ async def telnyx_webhook(request: Request):
                 }
                 
                 # Store with correct room name
-                await store_session_data(room_name, session_data)
+                await store_session_data(telnyx_room_name, session_data)
                 
                 # Also store with double-prefixed name (workaround for dispatch rule issue)
                 # This allows the session to be found even if LiveKit creates room with wrong name
-                double_prefixed_name = f"telnyx_call__{room_name}"
+                double_prefixed_name = f"telnyx_call__{telnyx_room_name}"
                 await store_session_data(double_prefixed_name, session_data)
-                logger.info(f"📝 Stored session under both names: {room_name} and {double_prefixed_name}")
+                logger.info(f"📝 Stored session under both names: {telnyx_room_name} and {double_prefixed_name}")
+
+                # IMPORTANT: Phone calls do NOT have a frontend to call /api/init_livechat.
+                # The worker polls /api/sessions/{room} for thread_id/crm_id/channel_id; without these
+                # it will keep retrying and the call flow won't fully start.
+                #
+                # So we initialize the Alive5 session here in the backend (non-blocking), and write the
+                # resulting IDs into BOTH session keys (normal + double-prefixed) so the worker can find them.
+                async def _init_phone_alive5_session():
+                    try:
+                        init = await init_livechat(
+                            room_name=telnyx_room_name,
+                            org_name=phone_org_name,
+                            botchain_name=phone_botchain,
+                        )
+                        # Mirror the same IDs to the double-prefixed key (avoid generating a second thread_id)
+                        try:
+                            await update_session_data(double_prefixed_name, {
+                                "thread_id": init.get("thread_id"),
+                                "crm_id": init.get("crm_id"),
+                                "api_key": init.get("api_key"),
+                                "channel_id": init.get("channel_id"),
+                                "widget_id": os.getenv("A5_WIDGET_ID"),
+                            })
+                        except Exception as e2:
+                            logger.warning(f"⚠️ Could not mirror phone session data to {double_prefixed_name}: {e2}")
+                        logger.info(f"✅ Phone Alive5 session initialized for {telnyx_room_name} (worker can now proceed)")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to init Alive5 session for phone call room {telnyx_room_name}: {e}", exc_info=True)
+
+                try:
+                    asyncio.create_task(_init_phone_alive5_session())
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not schedule phone Alive5 session init task: {e}")
                 
                 # Answer the call and transfer to LiveKit
                 # APPROACH: Telnyx transfers the call to LiveKit SIP URI (no outbound calls needed)
@@ -1053,15 +1207,15 @@ async def telnyx_webhook(request: Request):
                     logger.error(f"❌ Missing LIVEKIT_SIP_DOMAIN")
                     return {"status": "error", "message": "Missing LIVEKIT_SIP_DOMAIN"}
                 
-                # Room name no longer contains colons (replaced with dashes), so no URL-encoding needed
-                # This prevents duplicate sessions when LiveKit dispatch rule extracts room name
-                livekit_sip_uri = f"sip:{room_name}@{livekit_sip_domain}:5060"
+                # Transfer to a SHORT callee (not the DID), so the callee dispatch rule can route to:
+                #   room = {room_prefix}{short_callee}
+                livekit_sip_uri = f"sip:{short_callee}@{livekit_sip_domain}:5060"
                 
                 logger.info(f"📞 Answering call and transferring to LiveKit")
-                logger.info(f"   Room name: {room_name}")
+                logger.info(f"   Room name (dispatch target): {telnyx_room_name}")
                 logger.info(f"   SIP URI: {livekit_sip_uri}")
                 logger.info(f"   ✅ Using transfer (not dial) - avoids Telnyx outbound call limits")
-                logger.info(f"   ⚠️  LiveKit inbound trunk must be configured to route calls to room")
+                logger.info(f"   ✅ SIP dispatch rule will route the callee to room via room_prefix")
                 
                 try:
                     import httpx
@@ -1098,11 +1252,14 @@ async def telnyx_webhook(request: Request):
                         if transfer_response.status_code in [200, 201]:
                             logger.info(f"✅ Call transferred to LiveKit successfully")
                             logger.info(f"   ⏳ LiveKit should receive the call via inbound trunk")
-                            logger.info(f"   ⏳ LiveKit should route to room: {room_name}")
+                            logger.info(f"   ⏳ LiveKit should route to room: {telnyx_room_name}")
+                            logger.info(f"   ⏳ SIP URI sent to Telnyx: {livekit_sip_uri}")
+                            logger.info(f"   ⏳ Expected callee in SIP INVITE: {short_callee}")
                             logger.info(f"   ✅ No Telnyx outbound calls used!")
                         else:
                             logger.error(f"❌ Failed to transfer call: {transfer_response.status_code} - {transfer_response.text}")
                             logger.error(f"   Response: {transfer_response.text}")
+                            logger.error(f"   SIP URI attempted: {livekit_sip_uri}")
                             
                 except Exception as e:
                     logger.error(f"❌ Error transferring call: {e}")
@@ -1172,15 +1329,26 @@ async def telnyx_webhook(request: Request):
                 if session.get("call_control_id") == call_control_id:
                     # Get the actual room name from session data
                     actual_room_name = session.get("room_name", room_name_key)
+                    sip_dispatch_rule_id = session.get("sip_dispatch_rule_id")
                     
                     # Cleanup room (try both the actual room name and the key)
                     try:
                         livekit_url_for_api = (os.getenv("LIVEKIT_URL") or "").replace("ws://", "http://").replace("wss://", "https://")
+                        # Ensure backend talks to local LiveKit API on the same server
+                        if "18.210.238.67" in livekit_url_for_api:
+                            livekit_url_for_api = livekit_url_for_api.replace("18.210.238.67", "localhost")
                         async with api.LiveKitAPI(
                             livekit_url_for_api,
                             os.getenv("LIVEKIT_API_KEY"),
                             os.getenv("LIVEKIT_API_SECRET")
                         ) as lk_api:
+                            # NOTE:
+                            # We keep the SIP dispatch rule around (it's a stable rule for the trunk + DID),
+                            # because LiveKit does not allow creating a new per-call rule for the same trunk/inbound number.
+                            # Deleting it here would break the next call (or worse, remove a manually configured rule).
+                            if sip_dispatch_rule_id:
+                                logger.info(f"ℹ️ Keeping SIP dispatch rule (not deleting): {sip_dispatch_rule_id}")
+
                             # Try to delete the actual room name first
                             try:
                                 await lk_api.room.delete_room(api.DeleteRoomRequest(room=actual_room_name))

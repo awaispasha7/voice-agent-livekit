@@ -27,7 +27,7 @@ from livekit.agents import (
     function_tool, RunContext, RoomInputOptions, RoomOutputOptions, AutoSubscribe
 )
 from livekit import rtc
-from livekit.plugins import openai, deepgram, cartesia, silero, noise_cancellation, aws
+from livekit.plugins import openai, deepgram, cartesia, silero, aws
 from livekit.plugins.turn_detector.english import EnglishModel
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
@@ -173,6 +173,10 @@ class SimpleVoiceAgent(Agent):
         self._alive5_message_queue = []  # Queue messages until session data is ready
         self._alive5_thread_created_at = None  # Store original thread creation timestamp
         self._pending_crm_updates = []  # Queue CRM updates until thread_id/crm_id are ready
+        
+        # Conversation transcript for post-call reconciliation (fail-safe capture).
+        # We keep this in-memory per session and run a background extraction at call end.
+        self._conversation_log: List[Dict[str, str]] = []
         
         # Get LLM provider from env (bedrock, openai, or nova)
         llm_provider = os.getenv("LLM_PROVIDER", "bedrock").lower()
@@ -590,34 +594,31 @@ class SimpleVoiceAgent(Agent):
                     self.collected_data["first_name"] = first_name
                 if last_name:
                     self.collected_data["last_name"] = last_name
-                # Update CRM immediately in real-time
-                await self._update_crm_data(first_name=first_name, last_name=last_name)
+                # Fire-and-forget CRM update so the agent can continue speaking immediately
+                asyncio.create_task(self._update_crm_data(first_name=first_name, last_name=last_name))
             elif normalized_field == "first_name":
                 self.collected_data["first_name"] = normalized_value
-                # Update CRM immediately in real-time
-                await self._update_crm_data(first_name=normalized_value)
+                asyncio.create_task(self._update_crm_data(first_name=normalized_value))
             elif normalized_field == "last_name":
                 self.collected_data["last_name"] = normalized_value
-                await self._update_crm_data(last_name=normalized_value)
+                asyncio.create_task(self._update_crm_data(last_name=normalized_value))
             elif normalized_field == "email":
                 self.collected_data["email"] = normalized_value
-                # Update CRM immediately in real-time
-                await self._update_crm_data(email=normalized_value)
+                asyncio.create_task(self._update_crm_data(email=normalized_value))
             elif normalized_field == "phone":
                 self.collected_data["phone"] = normalized_value  # Use normalized value
-                # Update CRM immediately in real-time
-                await self._update_crm_data(phone=normalized_value)  # Use normalized value
+                asyncio.create_task(self._update_crm_data(phone=normalized_value))
             elif normalized_field == "account_id":
                 self.collected_data["account_id"] = normalized_value
-                await self._update_crm_data(account_id=normalized_value)
+                asyncio.create_task(self._update_crm_data(account_id=normalized_value))
             elif normalized_field == "company":
                 self.collected_data["company"] = normalized_value
                 logger.info(f"💼 Saving company: {normalized_value}")
-                await self._update_crm_data(company=normalized_value)
+                asyncio.create_task(self._update_crm_data(company=normalized_value))
             elif normalized_field == "company_title":
                 self.collected_data["company_title"] = normalized_value
                 logger.info(f"💼 Saving company title: {normalized_value}")
-                await self._update_crm_data(company_title=normalized_value)
+                asyncio.create_task(self._update_crm_data(company_title=normalized_value))
             elif normalized_field == "notes_entry":
                 if "notes_entry" not in self.collected_data:
                     self.collected_data["notes_entry"] = []
@@ -625,7 +626,7 @@ class SimpleVoiceAgent(Agent):
                 # Send all notes as a single string
                 notes_str = " | ".join(self.collected_data.get("notes_entry", []))
                 logger.info(f"📝 Saving notes: {notes_str[:50]}...")
-                await self._update_crm_data(notes=notes_str)
+                asyncio.create_task(self._update_crm_data(notes=notes_str))
             else:
                 logger.warning(f"⚠️ Unknown field_name for saving data: {field_name}")
                 return {
@@ -638,7 +639,8 @@ class SimpleVoiceAgent(Agent):
             
             return {
                 "success": True,
-                "message": f"Data for {normalized_field} saved successfully and CRM updated in real-time."
+                # Keep tool output minimal to reduce chance of LLM parroting it.
+                "message": "ok"
             }
         except Exception as e:
             logger.error(f"❌ Error saving collected data: {e}", exc_info=True)
@@ -665,13 +667,13 @@ class SimpleVoiceAgent(Agent):
         if tags and isinstance(tags, list) and len(tags) > 0:
             logger.info(f"🏷️ apply_tag() called with tags from flow JSON: {tags}")
             try:
-                # Apply tags via _update_crm_data
-                await self._update_crm_data(tags=tags)
+                # Fire-and-forget: apply tags in background
+                asyncio.create_task(self._update_crm_data(tags=tags))
                 logger.info(f"✅ Tags applied successfully from flow JSON: {tags}")
                 return {
                     "success": True,
                     "tags": tags,
-                    "message": f"Tags applied: {', '.join(tags)}"
+                    "message": "ok"
                 }
             except Exception as e:
                 logger.error(f"❌ Error applying tags from flow JSON: {e}", exc_info=True)
@@ -765,10 +767,8 @@ class SimpleVoiceAgent(Agent):
         if isVoice is None:
             isVoice = getattr(self, 'faq_isVoice', True)
         
-        # Call FAQ with waiting callback (the function will provide the "Let me check that" message)
-        async def waiting_callback(message):
-            if hasattr(self, "agent_session") and self.agent_session:
-                await self.agent_session.say(message)
+        # IMPORTANT: Tool calls must be silent. Do not speak "please wait" or any progress updates.
+        waiting_callback = None
         
         # Get org_name from agent instance (set during initialization) or session data
         org_name = None
@@ -879,6 +879,12 @@ class SimpleVoiceAgent(Agent):
     
     async def on_session_end(self):
         """Called when session is ending - cleanup livechat (skip for phone calls)"""
+        # Fire-and-forget post-call reconciliation (runs silently; does not block hangup).
+        try:
+            asyncio.create_task(self._post_call_reconcile_crm())
+        except Exception:
+            pass
+
         # Skip livechat cleanup for phone calls
         if self.room_name.startswith("telnyx_call_"):
             logger.info(f"📞 Phone call ending - skipping livechat cleanup")
@@ -1409,6 +1415,25 @@ class SimpleVoiceAgent(Agent):
                 logger.info(f"🔍 Auto-detected email in user message: {email}")
                 # Call save_collected_data via the function (which will update CRM)
                 await self.save_collected_data(None, "email", email)
+
+            # Detect name phrases early (handles fillers/punctuation like: "My name is, uh, John")
+            # Do this before the "short response" heuristic so phone STT transcripts still match.
+            if not self.collected_data.get("full_name"):
+                # Common filler words that often appear in spoken answers
+                filler = r"(?:,?\s*(?:uh|um|er|ah|like)\s*,?)?"
+                name_phrase_patterns = [
+                    rf"(?:my\s+name\s+is|i\s+am|i'?m|it'?s|this\s+is|call\s+me)\s*{filler}\s*([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){{0,2}})",
+                ]
+                for pattern in name_phrase_patterns:
+                    m = re.search(pattern, user_text_clean, re.IGNORECASE)
+                    if m:
+                        candidate = (m.group(1) or "").strip()
+                        # Filter obvious non-names
+                        common_words = {"yes", "no", "ok", "okay", "sure", "great", "thanks", "thank", "you", "hi", "hello"}
+                        if candidate and candidate.lower() not in common_words:
+                            logger.info(f"🔍 Auto-detected name in user message (phrase): {candidate}")
+                            await self.save_collected_data(None, "full_name", candidate)
+                        break
             
             # Detect phone pattern (US format: (xxx) xxx-xxxx, xxx-xxx-xxxx, xxx.xxx.xxxx, or 10+ digits)
             phone_pattern = r'(\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})'
@@ -1498,6 +1523,122 @@ class SimpleVoiceAgent(Agent):
         except Exception as e:
             # Don't let auto-detection errors break the conversation
             logger.debug(f"⚠️ Auto-detection error (non-critical): {e}")
+
+    async def _post_call_reconcile_crm(self):
+        """
+        Fail-safe: at call end, run an LLM extraction over the full transcript and patch CRM for
+        missing/clearly-wrong fields.
+        """
+        try:
+            if (os.getenv("POSTCALL_RECONCILIATION", "true") or "true").lower() != "true":
+                return
+            if not self._conversation_log:
+                return
+            # Need session identifiers to update CRM
+            if not (self.alive5_crm_id and self.alive5_thread_id):
+                return
+            if not hasattr(self, "llm") or not self.llm:
+                return
+
+            import json
+            import re
+            from livekit.agents.llm import ChatContext, ChatMessage
+
+            # Build a compact transcript (avoid huge prompts)
+            lines: List[str] = []
+            for item in self._conversation_log[-80:]:
+                role = item.get("role", "")
+                txt = (item.get("text") or "").strip()
+                if not txt:
+                    continue
+                prefix = "User" if role == "user" else "Agent"
+                lines.append(f"{prefix}: {txt}")
+            transcript = "\n".join(lines)
+
+            current = {
+                "full_name": self.collected_data.get("full_name"),
+                "first_name": self.collected_data.get("first_name"),
+                "last_name": self.collected_data.get("last_name"),
+                "email": self.collected_data.get("email"),
+                "phone": self.collected_data.get("phone"),
+                "account_id": self.collected_data.get("account_id"),
+                "company": self.collected_data.get("company"),
+                "company_title": self.collected_data.get("company_title"),
+            }
+
+            system = (
+                "You extract structured CRM fields from a conversation transcript.\n"
+                "Return ONLY valid JSON (no markdown, no extra text).\n"
+                "If a field is unknown, set value to null and confidence to 0.\n"
+                "Use confidence 0..1.\n"
+            )
+
+            user = {
+                "task": "extract_or_correct_contact_fields",
+                "current_fields": current,
+                "transcript": transcript,
+                "schema": {
+                    "full_name": {"value": "string|null", "confidence": "number"},
+                    "email": {"value": "string|null", "confidence": "number"},
+                    "phone": {"value": "string|null", "confidence": "number"},
+                    "account_id": {"value": "string|null", "confidence": "number"},
+                    "company": {"value": "string|null", "confidence": "number"},
+                    "company_title": {"value": "string|null", "confidence": "number"},
+                },
+            }
+
+            ctx = ChatContext(items=[
+                ChatMessage(role="system", content=[system]),
+                ChatMessage(role="user", content=[json.dumps(user)]),
+            ])
+            out_ctx = await self.llm.chat(ctx)
+            assistant = next((it for it in reversed(out_ctx.items) if getattr(it, "role", None) == "assistant"), None)
+            if not assistant or not getattr(assistant, "content", None):
+                return
+            raw = "\n".join([c for c in assistant.content if isinstance(c, str)]).strip()
+            raw = re.sub(r"^```(?:json)?\\s*", "", raw)
+            raw = re.sub(r"\\s*```$", "", raw)
+            data = json.loads(raw)
+
+            threshold = float(os.getenv("POSTCALL_RECONCILIATION_CONFIDENCE", "0.75") or "0.75")
+
+            def _looks_wrong_name(v: str | None) -> bool:
+                if not v:
+                    return True
+                vv = v.strip().lower()
+                if "looking forward" in vv:
+                    return True
+                if any(ch.isdigit() for ch in vv):
+                    return True
+                if "@" in vv:
+                    return True
+                if len(vv.split()) > 4:
+                    return True
+                return False
+
+            updates = {}
+            for field in ["full_name", "email", "phone", "account_id", "company", "company_title"]:
+                obj = data.get(field) or {}
+                val = obj.get("value")
+                conf = float(obj.get("confidence") or 0.0)
+                if conf < threshold or not val or not isinstance(val, str) or not val.strip():
+                    continue
+
+                if field == "full_name":
+                    if _looks_wrong_name(self.collected_data.get("full_name")):
+                        updates["first_name"] = val.strip().split(" ", 1)[0]
+                        if " " in val.strip():
+                            updates["last_name"] = val.strip().split(" ", 1)[1]
+                else:
+                    if not self.collected_data.get(field):
+                        updates[field] = val.strip()
+
+            if updates:
+                logger.info(f"🧾 Post-call reconciliation applying updates: {list(updates.keys())}")
+                asyncio.create_task(self._update_crm_data(**updates))
+
+        except Exception as e:
+            logger.warning(f"⚠️ Post-call reconciliation failed (non-fatal): {e}")
     
     async def on_user_turn_completed(self, turn_ctx, new_message):
         """Handle user input and publish to frontend"""
@@ -1508,6 +1649,12 @@ class SimpleVoiceAgent(Agent):
         # Then do our side effects (non-blocking, fire-and-forget)
         user_text = new_message.text_content or ""
         if user_text.strip():
+            # Append to transcript (for post-call reconciliation)
+            try:
+                self._conversation_log.append({"role": "user", "text": user_text.strip()})
+            except Exception:
+                pass
+
             # Publish user transcript to frontend (non-blocking)
             asyncio.create_task(self._publish_to_frontend("user_transcript", user_text, speaker="User"))
             # logger.info(f"USER: {user_text}")
@@ -1641,6 +1788,84 @@ async def entrypoint(ctx: JobContext):
         
         # Connect to the room first - using same approach as working implementation
         await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
+
+        # Attach LiveKit room event logs (SIP debugging).
+        # This is critical because with self-hosted SIP, "transfer succeeded" on Telnyx
+        # does NOT guarantee the SIP participant actually joined the LiveKit room.
+        try:
+            @ctx.room.on("participant_connected")
+            def _on_participant_connected(participant: rtc.Participant):
+                try:
+                    logger.info(
+                        f"👤 participant_connected identity={getattr(participant, 'identity', 'unknown')}"
+                        f" kind={getattr(participant, 'kind', 'unknown')}"
+                    )
+                except Exception:
+                    logger.info("👤 participant_connected (details unavailable)")
+
+            @ctx.room.on("participant_disconnected")
+            def _on_participant_disconnected(participant: rtc.Participant):
+                try:
+                    logger.info(
+                        f"👤 participant_disconnected identity={getattr(participant, 'identity', 'unknown')}"
+                        f" kind={getattr(participant, 'kind', 'unknown')}"
+                    )
+                except Exception:
+                    logger.info("👤 participant_disconnected (details unavailable)")
+
+            @ctx.room.on("track_published")
+            def _on_track_published(publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+                try:
+                    logger.info(
+                        f"🎵 track_published by={getattr(participant, 'identity', 'unknown')}"
+                        f" kind={getattr(participant, 'kind', 'unknown')}"
+                        f" source={getattr(publication, 'source', 'unknown')}"
+                        f" name={getattr(publication, 'name', 'unknown')}"
+                    )
+                except Exception:
+                    logger.info("🎵 track_published (details unavailable)")
+
+            @ctx.room.on("track_subscribed")
+            def _on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+                try:
+                    logger.info(
+                        f"🎧 track_subscribed by={getattr(participant, 'identity', 'unknown')}"
+                        f" kind={getattr(participant, 'kind', 'unknown')}"
+                        f" source={getattr(publication, 'source', 'unknown')}"
+                        f" name={getattr(publication, 'name', 'unknown')}"
+                        f" track_kind={getattr(track, 'kind', 'unknown')}"
+                    )
+                except Exception:
+                    logger.info("🎧 track_subscribed (details unavailable)")
+
+            @ctx.room.on("sip_dtmf_received")
+            def _on_sip_dtmf_received(dtmf: rtc.SipDTMF):
+                try:
+                    logger.info(
+                        f"☎️ sip_dtmf_received digit={getattr(dtmf, 'digit', 'unknown')}"
+                        f" participant_identity={getattr(getattr(dtmf, 'participant_identity', None), 'identity', getattr(dtmf, 'participant_identity', 'unknown'))}"
+                    )
+                except Exception:
+                    logger.info("☎️ sip_dtmf_received (details unavailable)")
+        except Exception as _e:
+            logger.debug(f"Could not attach room event handlers: {_e}")
+
+        # High-signal diagnostics: confirm what participants exist in the room at job start.
+        # This is especially important for SIP rooms where the caller participant may show up as SIP/INGRESS.
+        try:
+            rp = getattr(ctx.room, "remote_participants", {}) or {}
+            logger.info(
+                f"👥 Room participants after connect - local_identity={getattr(getattr(ctx.room, 'local_participant', None), 'identity', 'unknown')}"
+                f" | remote_count={len(rp)}"
+            )
+            for _sid, p in rp.items():
+                logger.info(
+                    f"   - remote identity={getattr(p, 'identity', 'unknown')}"
+                    f" kind={getattr(p, 'kind', 'unknown')}"
+                    f" tracks={len(getattr(p, 'tracks', {}) or {})}"
+                )
+        except Exception as _e:
+            logger.debug(f"Could not dump room participants: {_e}")
         
         # Get Alive5 session data from backend (frontend already called init_livechat)
         # CRITICAL: Frontend calls init_livechat and connects socket, so worker should use that session data
@@ -1652,8 +1877,11 @@ async def entrypoint(ctx: JobContext):
                 from urllib.parse import quote
                 encoded_room_name = quote(room_name_clean, safe='')
                 
-                # Poll for session data (frontend may call init_livechat slightly after worker starts)
-                max_attempts = 10
+                # Poll for session data.
+                # Web: frontend calls init_livechat shortly after worker starts.
+                # Phone: backend initializes the Alive5 session asynchronously in the Telnyx webhook.
+                # Give phone calls a bit more time to avoid false "not ready" failures.
+                max_attempts = 30 if is_phone_call else 10
                 for attempt in range(max_attempts):
                     async with httpx.AsyncClient(timeout=5.0) as client:
                         session_response = await client.get(f"{backend_url}/api/sessions/{encoded_room_name}")
@@ -1778,10 +2006,16 @@ async def entrypoint(ctx: JobContext):
         else:
             logger.info("🎙️ Skipping TTS initialization (Nova Sonic handles TTS internally)")
         
-        # Optimize STT model for phone calls - use faster model if configured
+        # Optimize STT for phone calls (PSTN audio is typically narrowband 8kHz)
         # Skip STT initialization for Nova Sonic (it's speech-to-speech)
         stt_model = None
         stt_language = "en-US"  # Default to English
+        stt_sample_rate = 16000
+        stt_endpointing_ms = 25
+        stt_no_delay = True
+        stt_punctuate = True
+        stt_smart_format = False
+        stt_filler_words = True
         if not getattr(agent, '_using_nova', False):
             def _clean_env_token(v: str) -> str:
                 """
@@ -1804,6 +2038,24 @@ async def entrypoint(ctx: JobContext):
                 if phone_stt_model != stt_model:
                     stt_model = phone_stt_model
                     logger.info(f"📞 Phone call detected - using optimized STT model: {stt_model}")
+
+                # Phone calls are usually 8kHz; matching sample rate improves accuracy.
+                # Allow override via env for providers/codecs that deliver 16kHz.
+                try:
+                    stt_sample_rate = int(_clean_env_token(os.getenv("PHONE_DEEPGRAM_SAMPLE_RATE", "8000")))
+                except Exception:
+                    stt_sample_rate = 8000
+
+                # Slightly less aggressive endpointing reduces chopped/garbled words on phone audio.
+                try:
+                    stt_endpointing_ms = int(_clean_env_token(os.getenv("PHONE_DEEPGRAM_ENDPOINTING_MS", "120")))
+                except Exception:
+                    stt_endpointing_ms = 120
+
+                stt_no_delay = (_clean_env_token(os.getenv("PHONE_DEEPGRAM_NO_DELAY", "true")) or "true").lower() == "true"
+                stt_punctuate = (_clean_env_token(os.getenv("PHONE_DEEPGRAM_PUNCTUATE", "true")) or "true").lower() == "true"
+                stt_smart_format = (_clean_env_token(os.getenv("PHONE_DEEPGRAM_SMART_FORMAT", "true")) or "true").lower() == "true"
+                stt_filler_words = (_clean_env_token(os.getenv("PHONE_DEEPGRAM_FILLER_WORDS", "false")) or "false").lower() == "true"
         else:
             logger.info("🎙️ Skipping STT initialization (Nova Sonic handles STT internally)")
         
@@ -1852,7 +2104,21 @@ async def entrypoint(ctx: JobContext):
         else:
             # Traditional setup with separate STT, LLM, and TTS
             session = AgentSession(
-                stt=deepgram.STT(model=stt_model, language=stt_language, api_key=os.getenv("DEEPGRAM_API_KEY")) if stt_model else None,
+                stt=(
+                    deepgram.STT(
+                        model=stt_model,
+                        language=stt_language,
+                        api_key=os.getenv("DEEPGRAM_API_KEY"),
+                        sample_rate=stt_sample_rate,
+                        endpointing_ms=stt_endpointing_ms,
+                        no_delay=stt_no_delay,
+                        punctuate=stt_punctuate,
+                        smart_format=stt_smart_format,
+                        filler_words=stt_filler_words,
+                    )
+                    if stt_model
+                    else None
+                ),
                 llm=agent.llm,  # LLM instance (OpenAI, Bedrock, etc.)
                 tts=tts,
                 vad=vad,
@@ -1864,24 +2130,55 @@ async def entrypoint(ctx: JobContext):
         agent.agent_session = session
         
         # Start the session - with environment variable control for testing
-        # For phone calls, noise cancellation can add latency - optimize based on session type
-        use_noise_cancellation = os.getenv("USE_NOISE_CANCELLATION", "true").lower() == "true"
-        
-        # Phone calls may benefit from disabling noise cancellation to reduce latency
-        # Web sessions typically have better audio quality and can handle noise cancellation better
+        #
+        # IMPORTANT (Self-hosted LiveKit):
+        # LiveKit "audio filters" (noise cancellation/BVC/krisp) are a LiveKit Cloud feature.
+        # Enabling them against a self-hosted server results in:
+        #   - "failed to fetch server settings: http status: 404"
+        #   - "audio filter cannot be enabled: LiveKit Cloud is required"
+        #
+        # So we keep them OFF unless explicitly enabled (and you're using LiveKit Cloud).
+        # IMPORTANT (Self-hosted LiveKit):
+        # Do NOT enable LiveKit Cloud audio filters from the agent (noise cancellation/BVC/krisp).
+        # They trigger:
+        #   - "failed to fetch server settings: http status: 404"
+        #   - "audio filter cannot be enabled: LiveKit Cloud is required"
+        #
+        # If you ever move to LiveKit Cloud, we can re-enable this behind a flag.
+        logger.info("🚫 Noise cancellation disabled (self-hosted LiveKit)")
+
+        # Explicitly enable audio I/O.
+        # We set this explicitly because SIP calls can otherwise look like "agent not joining"
+        # (job runs, but no audio published/subscribed).
+        #
+        # Also disable pre-connect audio to avoid any early feature negotiation that can trip cloud-only paths.
+        audio_sample_rate = 8000 if is_phone_call else 24000
+
         if is_phone_call:
-            # For phone calls, check if we should disable noise cancellation for better latency
-            phone_noise_cancellation = os.getenv("PHONE_USE_NOISE_CANCELLATION", "false").lower() == "true"
-            if not phone_noise_cancellation:
-                use_noise_cancellation = False
-                logger.info("📞 Phone call detected - noise cancellation disabled for lower latency")
-        
-        room_input_options = RoomInputOptions(text_enabled=True)
-        if use_noise_cancellation:
-            room_input_options.noise_cancellation = noise_cancellation.BVC()
-            logger.info("🔇 Noise cancellation enabled")
+            # SIP trunks may show up as SIP or INGRESS participants.
+            sip_kinds = [
+                rtc.ParticipantKind.Value("PARTICIPANT_KIND_SIP"),
+                rtc.ParticipantKind.Value("PARTICIPANT_KIND_INGRESS"),
+                rtc.ParticipantKind.Value("PARTICIPANT_KIND_STANDARD"),
+            ]
+            room_input_options = RoomInputOptions(
+                text_enabled=True,
+                audio_enabled=True,
+                video_enabled=False,
+                audio_sample_rate=audio_sample_rate,
+                audio_num_channels=1,
+                participant_kinds=sip_kinds,
+                pre_connect_audio=False,
+            )
         else:
-            logger.info("🚫 Noise cancellation disabled")
+            room_input_options = RoomInputOptions(
+                text_enabled=True,
+                audio_enabled=True,
+                video_enabled=False,
+                audio_sample_rate=audio_sample_rate,
+                audio_num_channels=1,
+                pre_connect_audio=False,
+            )
         
         await session.start(
             room=ctx.room,
@@ -1889,6 +2186,9 @@ async def entrypoint(ctx: JobContext):
             room_input_options=room_input_options,
             room_output_options=RoomOutputOptions(
                 transcription_enabled=True,
+                audio_enabled=True,
+                audio_sample_rate=audio_sample_rate,
+                audio_num_channels=1,
                 sync_transcription=True  # Enable sync transcription for frontend display
             )
         )
@@ -1927,6 +2227,11 @@ async def entrypoint(ctx: JobContext):
                     if is_agent_msg:
                         # Silently send agent message (logging happens in _send_message_to_alive5_internal)
                         asyncio.create_task(agent._send_message_to_alive5(text_content, is_agent=True))
+                        # Append to transcript (for post-call reconciliation)
+                        try:
+                            agent._conversation_log.append({"role": "assistant", "text": text_content.strip()})
+                        except Exception:
+                            pass
                 else:
                     logger.warning(f"⚠️ conversation_item_added called but text_content is empty (role: {getattr(chat_message, 'role', 'unknown')})")
             except Exception as e:
@@ -1936,6 +2241,22 @@ async def entrypoint(ctx: JobContext):
         # Note: For Nova Sonic, greeting is skipped (waits for user input first)
         # Check if room is still connected before starting greeting
         try:
+            # For phone calls, wait briefly for the SIP participant to actually join before greeting.
+            # Otherwise the agent may "speak into an empty room" and the caller hears nothing.
+            if is_phone_call:
+                try:
+                    import time as _time
+                    deadline = _time.monotonic() + float(os.getenv("PHONE_WAIT_FOR_PARTICIPANT_SECONDS", "12"))
+                    while _time.monotonic() < deadline:
+                        rp = getattr(ctx.room, "remote_participants", {}) or {}
+                        if len(rp) > 0:
+                            break
+                        await asyncio.sleep(0.25)
+                    rp = getattr(ctx.room, "remote_participants", {}) or {}
+                    logger.info(f"📞 Phone participant wait complete - remote_count={len(rp)}")
+                except Exception as _e:
+                    logger.debug(f"Phone participant wait failed: {_e}")
+
             if ctx.room and hasattr(ctx.room, "name"):
                 await agent.on_room_enter(ctx.room)
             else:

@@ -15,6 +15,69 @@ load_dotenv(Path(__file__).parent / "../../.env")
 
 logger = logging.getLogger(__name__)
 
+# -----------------------------------------------------------------------------
+# Flow text sanitation (reduce verbosity / hide internal actions)
+# -----------------------------------------------------------------------------
+
+def _sanitize_spoken_text(text: str) -> str:
+    """
+    Remove user-facing narration of internal actions (saving/tagging) that makes the
+    conversation feel verbose and slow.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return text
+
+    t = text.strip()
+    lowered = t.lower()
+    if ("save" not in lowered) and ("tag" not in lowered):
+        return t
+
+    # Very simple sentence segmentation (good enough for templated flow strings).
+    parts = [p.strip() for p in t.replace("\n", " ").split(".") if p.strip()]
+    keep: list[str] = []
+    for p in parts:
+        pl = p.lower()
+        if any(
+            phrase in pl
+            for phrase in [
+                "i'll save",
+                "i will save",
+                "i have saved",
+                "i've saved",
+                "i am saving",
+                "i'm saving",
+                "saving that",
+                "save that",
+                "i'll tag",
+                "i will tag",
+                "i'm tagging",
+                "i am tagging",
+                "tag this conversation",
+                "tagging this conversation",
+            ]
+        ):
+            continue
+        keep.append(p)
+
+    if not keep:
+        return "Thank you"
+
+    return ". ".join(keep) + ("." if t.endswith(".") else "")
+
+
+def _sanitize_flow_template(obj: Any) -> Any:
+    """Recursively sanitize flow template data."""
+    if isinstance(obj, dict):
+        for k, v in list(obj.items()):
+            if k in {"text", "message"} and isinstance(v, str):
+                obj[k] = _sanitize_spoken_text(v)
+            else:
+                obj[k] = _sanitize_flow_template(v)
+        return obj
+    if isinstance(obj, list):
+        return [_sanitize_flow_template(v) for v in obj]
+    return obj
+
 # Environment variables
 A5_BASE_URL = os.getenv("A5_BASE_URL")
 A5_API_KEY = os.getenv("A5_API_KEY")
@@ -52,6 +115,11 @@ async def handle_load_bot_flows(botchain_name: str, org_name: str = "alive5stage
             
             if response.status_code == 200:
                 data = response.json()
+                # Best-effort: strip overly verbose "I'll save..." / "I'm tagging..." lines from templated flow text.
+                try:
+                    _sanitize_flow_template(data)
+                except Exception:
+                    pass
                 return {
                     "success": True,
                     "data": data,
@@ -302,9 +370,8 @@ async def handle_faq_bot_request(
             }
         
         logger.info(f"🔧 FAQ bot request: {faq_question}")
-        
-        if waiting_callback:
-            await waiting_callback("Please wait while I fetch the information...")
+
+        # IMPORTANT: Tool calls must be silent. Ignore waiting_callback and do not emit periodic updates.
         
         # Create a task for the HTTP request
         import asyncio
@@ -325,32 +392,11 @@ async def handle_faq_bot_request(
                 )
                 return response
         
-        # Create periodic update messages
-        async def periodic_updates():
-            if not waiting_callback:
-                return
-            
-            update_messages = [
-                "Still searching for the best answer...",
-                "Almost there, please bear with me...",
-                "Just a moment more, I'm finding the details...",
-                "Still working on it, thank you for your patience..."
-            ]
-            
-            for i, message in enumerate(update_messages):
-                await asyncio.sleep(5)  # Wait 5 seconds between updates
-                if waiting_callback:
-                    await waiting_callback(message)
-        
-        # Run both the request and periodic updates concurrently
+        # Run request
         request_task = asyncio.create_task(make_request())
-        updates_task = asyncio.create_task(periodic_updates())
         
         # Wait for the request to complete
         response = await request_task
-        
-        # Cancel the updates task since we got the response
-        updates_task.cancel()
         
         if response.status_code == 200:
             data = response.json()
