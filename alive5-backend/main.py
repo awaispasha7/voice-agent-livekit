@@ -584,12 +584,17 @@ async def get_session(room_name: str):
     # URL-decode the room name in case it's encoded
     room_name_decoded = unquote(room_name)
     
-    # Check for double prefix and clean it up
+    # Check for common Telnyx room-name variants and clean them up
     room_name_clean = room_name_decoded
     if room_name_clean.startswith("telnyx_call__telnyx_call_"):
         # Remove double prefix
         room_name_clean = room_name_clean.replace("telnyx_call__telnyx_call_", "telnyx_call_", 1)
         logger.info(f"⚠️ Fixed double-prefixed room name in session lookup: {room_name_decoded} -> {room_name_clean}")
+    elif room_name_clean.startswith("telnyx_call__"):
+        # LiveKit SIP callee dispatch inserts "_" between prefix and callee.
+        # If prefix ended with "_" historically, rooms could become telnyx_call__<hash>.
+        room_name_clean = room_name_clean.replace("telnyx_call__", "telnyx_call_", 1)
+        logger.info(f"⚠️ Fixed double-underscore room name in session lookup: {room_name_decoded} -> {room_name_clean}")
     
     # Log for debugging
     logger.debug(f"📋 Session lookup - Room name: {room_name_decoded}, Cleaned: {room_name_clean}")
@@ -957,9 +962,21 @@ async def telnyx_webhook(request: Request):
             # - LiveKit SIP will create/join room: {room_prefix}{callee}.
             import hashlib
             safe_call_control_id = call_control_id.replace(":", "-")
-            room_prefix = os.getenv("TELNYX_ROOM_PREFIX", "telnyx_call_")
+            # IMPORTANT:
+            # LiveKit SIP "callee dispatch rule" joins room names as:
+            #   room_name = "{room_prefix}_{callee}"
+            # i.e. it inserts an underscore between prefix and callee.
+            #
+            # If we configure a prefix that already ends with "_", we end up with double-underscore rooms
+            # like `telnyx_call__<hash>`, which breaks backend session lookups and can cause duplicate
+            # agent sessions (one for `telnyx_call_<hash>` and one for `telnyx_call__<hash>`).
+            #
+            # So: normalize by stripping trailing underscores and generating the room name ourselves
+            # in the exact format LiveKit SIP will use.
+            raw_room_prefix = os.getenv("TELNYX_ROOM_PREFIX", "telnyx_call_")
+            room_prefix = raw_room_prefix.rstrip("_") or "telnyx_call"
             short_callee = hashlib.sha1(safe_call_control_id.encode("utf-8")).hexdigest()[:12]
-            telnyx_room_name = f"{room_prefix}{short_callee}"
+            telnyx_room_name = f"{room_prefix}_{short_callee}"
             
             # Get LiveKit credentials
             livekit_url = os.getenv("LIVEKIT_URL")
@@ -1005,25 +1022,57 @@ async def telnyx_webhook(request: Request):
                         ).strip()
 
                         # 1) Ensure inbound trunk exists (create if missing)
+                        #
+                        # IMPORTANT:
+                        # - Our call flow transfers Telnyx to `sip:{short_callee}@{domain}:5060` where `short_callee`
+                        #   is a per-call hash (e.g. 7ed22744ec1d). That means the SIP "To" user is NOT the DID.
+                        # - If the inbound trunk is configured with `numbers: ['+1415...']` only, LiveKit will DROP
+                        #   calls to hashed callees because they don't match the DID.
+                        # - The correct configuration is to use a "catch-all" inbound trunk with `numbers: []`
+                        #   (accept any called number) while restricting source IPs at the firewall/SG to Telnyx.
+                        #
+                        # So: prefer an existing catch-all trunk (numbers == []) if present, otherwise fall back to
+                        # a DID-specific trunk, otherwise create a new trunk.
                         trunks = await lk_api.sip.list_inbound_trunk(api.ListSIPInboundTrunkRequest())
+                        catch_all_trunk_id: str | None = None
+                        did_trunk_id: str | None = None
                         for t in (trunks.items or []):
-                            if effective_called_number and effective_called_number in list(t.numbers):
+                            t_numbers = list(t.numbers) if t.numbers is not None else []
+                            # Prefer explicit configured trunk if provided
+                            configured_trunk_id = (os.getenv("LIVEKIT_SIP_TRUNK_ID") or "").strip()
+                            if configured_trunk_id and t.sip_trunk_id == configured_trunk_id:
                                 sip_trunk_id = t.sip_trunk_id
                                 break
 
+                            # Catch-all trunk: numbers empty means accept any called number.
+                            if len(t_numbers) == 0:
+                                # Prefer a trunk that looks like our Telnyx trunk name if possible.
+                                if (t.name or "").lower().startswith("telnyx"):
+                                    catch_all_trunk_id = t.sip_trunk_id
+                                elif catch_all_trunk_id is None:
+                                    catch_all_trunk_id = t.sip_trunk_id
+
+                            # DID-specific trunk: matches the called number/DID
+                            if effective_called_number and effective_called_number in t_numbers:
+                                did_trunk_id = t.sip_trunk_id
+
                         if not sip_trunk_id:
-                            # NOTE: For security, you should restrict allowed_addresses to Telnyx IP ranges,
-                            # but 0.0.0.0/0 is fine for initial bring-up/testing.
+                            sip_trunk_id = catch_all_trunk_id or did_trunk_id
+
+                        if not sip_trunk_id:
+                            # NOTE: For security, you should restrict allowed_addresses to Telnyx IP ranges
+                            # (now handled by the AWS SG). Keep 0.0.0.0/0 here for compatibility, but SG should restrict.
                             trunk = api.SIPInboundTrunkInfo(
                                 name="telnyx-inbound",
-                                numbers=[effective_called_number] if effective_called_number else [],
+                                # Create catch-all by default so hashed callees work.
+                                numbers=[],
                                 allowed_addresses=["0.0.0.0/0"],
                             )
                             created_trunk = await lk_api.sip.create_inbound_trunk(
                                 api.CreateSIPInboundTrunkRequest(trunk=trunk)
                             )
                             sip_trunk_id = created_trunk.sip_trunk_id
-                            logger.info(f"✅ Created SIP inbound trunk: {sip_trunk_id}")
+                            logger.info(f"✅ Created SIP inbound trunk (catch-all): {sip_trunk_id}")
 
                         # 2) Ensure a SINGLE dispatch rule exists for this trunk.
                         # Use CALLEE routing so we can create per-call rooms by changing the SIP URI user part.
@@ -1154,11 +1203,18 @@ async def telnyx_webhook(request: Request):
                 # Store with correct room name
                 await store_session_data(telnyx_room_name, session_data)
                 
-                # Also store with double-prefixed name (workaround for dispatch rule issue)
-                # This allows the session to be found even if LiveKit creates room with wrong name
+                # Back-compat aliases:
+                # - Older deployments created rooms like `telnyx_call__<hash>` (double underscore).
+                # - Some earlier workarounds stored `telnyx_call__telnyx_call_<hash>`.
+                # Keep both so the worker can always find the session.
+                double_underscore_room = f"{room_prefix}__{short_callee}"
                 double_prefixed_name = f"telnyx_call__{telnyx_room_name}"
+
+                await store_session_data(double_underscore_room, session_data)
                 await store_session_data(double_prefixed_name, session_data)
-                logger.info(f"📝 Stored session under both names: {telnyx_room_name} and {double_prefixed_name}")
+                logger.info(
+                    f"📝 Stored session under names: {telnyx_room_name}, {double_underscore_room}, {double_prefixed_name}"
+                )
 
                 # IMPORTANT: Phone calls do NOT have a frontend to call /api/init_livechat.
                 # The worker polls /api/sessions/{room} for thread_id/crm_id/channel_id; without these
@@ -1173,8 +1229,15 @@ async def telnyx_webhook(request: Request):
                             org_name=phone_org_name,
                             botchain_name=phone_botchain,
                         )
-                        # Mirror the same IDs to the double-prefixed key (avoid generating a second thread_id)
+                        # Mirror the same IDs to the alias keys (avoid generating a second thread_id)
                         try:
+                            await update_session_data(double_underscore_room, {
+                                "thread_id": init.get("thread_id"),
+                                "crm_id": init.get("crm_id"),
+                                "api_key": init.get("api_key"),
+                                "channel_id": init.get("channel_id"),
+                                "widget_id": os.getenv("A5_WIDGET_ID"),
+                            })
                             await update_session_data(double_prefixed_name, {
                                 "thread_id": init.get("thread_id"),
                                 "crm_id": init.get("crm_id"),
@@ -1183,7 +1246,7 @@ async def telnyx_webhook(request: Request):
                                 "widget_id": os.getenv("A5_WIDGET_ID"),
                             })
                         except Exception as e2:
-                            logger.warning(f"⚠️ Could not mirror phone session data to {double_prefixed_name}: {e2}")
+                            logger.warning(f"⚠️ Could not mirror phone session data to alias keys: {e2}")
                         logger.info(f"✅ Phone Alive5 session initialized for {telnyx_room_name} (worker can now proceed)")
                     except Exception as e:
                         logger.error(f"❌ Failed to init Alive5 session for phone call room {telnyx_room_name}: {e}", exc_info=True)

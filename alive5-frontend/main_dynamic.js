@@ -2413,8 +2413,13 @@ class DynamicVoiceAgent {
                     }
                     
                     if (voiceAgentId) {
+                        // Tag for UI readability while keeping the "voice_agent_" prefix
+                        // Example: voice_agent_6qpp1odp -> voice_agent_web_6qpp1odp
+                        const raw = String(voiceAgentId);
+                        const suffix = raw.startsWith('voice_agent_') ? raw.substring('voice_agent_'.length) : raw;
+                        const tagged = raw.startsWith('voice_agent_web_') ? raw : `voice_agent_web_${suffix}`;
                         this.alive5SocketConfig = this.alive5SocketConfig || {};
-                        this.alive5SocketConfig.voice_agent_id = voiceAgentId;
+                        this.alive5SocketConfig.voice_agent_id = tagged;
                     } else {
                         // Not fatal; we can still operate and we have a fallback that synthesizes a temporary id.
                         console.warn('⚠️ voice_agent_id not provided by server (will use fallback id when needed)');
@@ -2531,7 +2536,7 @@ class DynamicVoiceAgent {
                             // Format: voice_agent_<first8chars_of_socket_id>
                             if (this.alive5Socket?.id) {
                                 const socketIdShort = this.alive5Socket.id.substring(0, 8).toLowerCase();
-                                const tempVoiceAgentId = `voice_agent_${socketIdShort}`;
+                                const tempVoiceAgentId = `voice_agent_web_${socketIdShort}`;
                                 payload.voiceAgentId = tempVoiceAgentId;
                                 // Store it so we use the same ID for all messages in this session
                                 if (this.alive5SocketConfig) {

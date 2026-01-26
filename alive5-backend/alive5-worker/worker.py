@@ -173,6 +173,13 @@ class SimpleVoiceAgent(Agent):
         self._alive5_message_queue = []  # Queue messages until session data is ready
         self._alive5_thread_created_at = None  # Store original thread creation timestamp
         self._pending_crm_updates = []  # Queue CRM updates until thread_id/crm_id are ready
+
+        # Alive5 Socket.IO (Option B: server-side bridge for PSTN calls where no frontend exists)
+        self._alive5_socket = None
+        self._alive5_socket_connected = False
+        self._alive5_socket_connect_lock = asyncio.Lock()
+        self._alive5_socket_init_event = asyncio.Event()
+        self.alive5_voice_agent_id = None
         
         # Conversation transcript for post-call reconciliation (fail-safe capture).
         # We keep this in-memory per session and run a background extraction at call end.
@@ -345,12 +352,17 @@ class SimpleVoiceAgent(Agent):
             
             backend_url = os.getenv("BACKEND_URL", "http://18.210.238.67")
             
-            # Ensure room name doesn't have double prefix (clean it up)
+            # Ensure room name doesn't have known Telnyx prefix variants (clean it up)
             room_name_clean = self.room_name
             if room_name_clean.startswith("telnyx_call__telnyx_call_"):
                 # Remove double prefix
                 room_name_clean = room_name_clean.replace("telnyx_call__telnyx_call_", "telnyx_call_", 1)
                 logger.warning(f"⚠️ Fixed double-prefixed room name: {self.room_name} -> {room_name_clean}")
+            elif room_name_clean.startswith("telnyx_call__"):
+                # Historical variant caused by configuring room_prefix with a trailing "_" while LiveKit SIP
+                # also inserts "_" between prefix and callee (resulting in telnyx_call__<hash>).
+                room_name_clean = room_name_clean.replace("telnyx_call__", "telnyx_call_", 1)
+                logger.warning(f"⚠️ Fixed double-underscore room name: {self.room_name} -> {room_name_clean}")
             
             # URL-encode the room name to handle special characters (colons, etc.)
             encoded_room_name = quote(room_name_clean, safe='')
@@ -885,9 +897,26 @@ class SimpleVoiceAgent(Agent):
         except Exception:
             pass
 
-        # Skip livechat cleanup for phone calls
-        if self.room_name.startswith("telnyx_call_"):
-            logger.info(f"📞 Phone call ending - skipping livechat cleanup")
+        # Phone calls: no frontend exists to forward lk.alive5.socket instructions.
+        # Send end_voice_chat directly via Alive5 socket (Option B) and skip backend web cleanup.
+        if self._is_phone_call_room():
+            logger.info("📞 Phone call ending - notifying Alive5 via socket (PSTN bridge)")
+            try:
+                org_name = getattr(self, "alive5_org_name", getattr(self, "org_name", "alive5stage0"))
+                voice_agent_id = self._tagged_voice_agent_id("phone") or ""
+                await self._emit_alive5_socket_event(
+                    "end_voice_chat",
+                    {
+                        "end_by": "voice_agent",
+                        "message_content": "Voice call completed by agent",
+                        "org_name": org_name,
+                        "thread_id": self.alive5_thread_id,
+                        "voice_agent_id": voice_agent_id,
+                    },
+                )
+            except Exception:
+                pass
+            await self._disconnect_alive5_socket()
             return
         
         logger.info(f"👋 Session ending for room: {self.room_name}")
@@ -1104,6 +1133,201 @@ class SimpleVoiceAgent(Agent):
         except Exception as e:
             # Completely isolate errors - never let them affect agent processing
             logger.warning(f"⚠️ Could not send message to Alive5 (isolated error): {e}")
+
+    def _is_phone_call_room(self) -> bool:
+        try:
+            return bool(self.room_name and self.room_name.startswith("telnyx_call_"))
+        except Exception:
+            return False
+
+    def _tagged_voice_agent_id(self, platform: str) -> str:
+        """
+        Return a stable, human-friendly voice agent id for Alive5 attribution/display.
+        - platform: "phone" | "web"
+        Result format:
+          - voice_agent_phone_{id}
+          - voice_agent_web_{id}
+        """
+        try:
+            raw = (getattr(self, "alive5_voice_agent_id", None) or "").strip()
+            if not raw:
+                # Deterministic fallback based on room name
+                raw = (self.room_name or "").strip()
+            if not raw:
+                return ""
+
+            # Avoid double-tagging
+            if raw.startswith("voice_agent_phone_") or raw.startswith("voice_agent_web_"):
+                return raw
+
+            # Keep the "voice_agent_" prefix so Alive5 recognizes it as an agent
+            suffix = raw
+            if raw.startswith("voice_agent_"):
+                suffix = raw[len("voice_agent_") :]
+
+            platform = (platform or "").strip().lower() or "web"
+            if platform not in ("phone", "web"):
+                platform = "web"
+            return f"voice_agent_{platform}_{suffix}"
+        except Exception:
+            return ""
+
+    def _alive5_socket_base_url(self) -> str:
+        """
+        Determine Alive5 Socket.IO base URL.
+        - If A5_SOCKET_URL is set, use it (recommended).
+        - Otherwise, derive from A5_BASE_URL (api-v2-stage -> api-stage, api-v2 -> api).
+        """
+        explicit = (os.getenv("A5_SOCKET_URL") or "").strip()
+        if explicit:
+            return explicit
+
+        base = (os.getenv("A5_BASE_URL") or "https://api-stage.alive5.com").strip()
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(base if "://" in base else ("https://" + base))
+            host = (parsed.netloc or "").strip()
+            if not host:
+                return "wss://api-stage.alive5.com"
+
+            host = host.replace("api-v2-stage.", "api-stage.")
+            host = host.replace("api-v2.", "api.")
+            return f"wss://{host}"
+        except Exception:
+            return "wss://api-stage.alive5.com"
+
+    async def _ensure_alive5_socket_connected(self) -> bool:
+        """
+        For PSTN calls (no frontend), connect directly to Alive5 Socket.IO and initialize voice agent.
+        This is additive and isolated; failures never affect the call flow.
+        """
+        if not self._is_phone_call_room():
+            return False
+
+        if not (self.alive5_thread_id and self.alive5_crm_id and self.alive5_channel_id):
+            return False
+
+        if self._alive5_socket_connected and self._alive5_socket is not None:
+            return True
+
+        async with self._alive5_socket_connect_lock:
+            if self._alive5_socket_connected and self._alive5_socket is not None:
+                return True
+
+            try:
+                import socketio
+                from urllib.parse import urlencode
+
+                api_key = (os.getenv("A5_API_KEY") or "").strip()
+                if not api_key:
+                    logger.warning("⚠️ A5_API_KEY missing - cannot connect Alive5 socket (PSTN bridge)")
+                    return False
+
+                base_url = self._alive5_socket_base_url()
+                qs = urlencode(
+                    {
+                        "type": "voice_agent",
+                        "x-a5-apikey": api_key,
+                        "thread_id": self.alive5_thread_id,
+                        "crm_id": self.alive5_crm_id,
+                        "channel_id": self.alive5_channel_id,
+                    }
+                )
+                url = f"{base_url}?{qs}"
+
+                self._alive5_socket_init_event.clear()
+
+                sio = socketio.AsyncClient(
+                    reconnection=False,
+                    logger=False,
+                    engineio_logger=False,
+                )
+
+                @sio.event
+                async def connect():
+                    self._alive5_socket_connected = True
+                    logger.info("✅ Alive5 socket connected (PSTN bridge)")
+                    # Match frontend behavior: wait a beat after connect before init
+                    try:
+                        await asyncio.sleep(0.1)
+                        await sio.emit(
+                            "init_voice_agent",
+                            {
+                                "thread_id": self.alive5_thread_id,
+                                "crm_id": self.alive5_crm_id,
+                                "channel_id": self.alive5_channel_id,
+                            },
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to emit init_voice_agent: {e}")
+
+                @sio.event
+                async def disconnect():
+                    self._alive5_socket_connected = False
+                    logger.info("ℹ️ Alive5 socket disconnected (PSTN bridge)")
+
+                @sio.on("init_voice_agent_ack")
+                async def _on_init_ack(data):
+                    try:
+                        voice_agent_id = None
+                        if isinstance(data, dict):
+                            voice_agent_id = data.get("voice_agent_id") or data.get("voiceAgentId") or data.get("assigned_to")
+                        if voice_agent_id:
+                            self.alive5_voice_agent_id = voice_agent_id
+                            tagged = self._tagged_voice_agent_id("phone")
+                            if tagged:
+                                logger.info(f"🆔 Tagged voice agent id (phone): {tagged}")
+                        logger.info("✅ Alive5 init_voice_agent_ack received (PSTN bridge)")
+                    except Exception:
+                        pass
+                    finally:
+                        self._alive5_socket_init_event.set()
+
+                await sio.connect(
+                    url,
+                    transports=["websocket"],
+                    socketio_path="socket.io",
+                    wait=True,
+                    wait_timeout=5,
+                )
+
+                try:
+                    await asyncio.wait_for(self._alive5_socket_init_event.wait(), timeout=3.0)
+                except Exception:
+                    logger.warning("⚠️ Alive5 init_voice_agent_ack not received (PSTN bridge) — events may be ignored by Alive5")
+
+                self._alive5_socket = sio
+                return True
+            except Exception as e:
+                self._alive5_socket = None
+                self._alive5_socket_connected = False
+                logger.warning(f"⚠️ Could not connect Alive5 socket (PSTN bridge): {e}")
+                return False
+
+    async def _emit_alive5_socket_event(self, event_name: str, payload: dict) -> bool:
+        """Emit an event directly to Alive5 Socket.IO for PSTN calls (additive + isolated)."""
+        try:
+            ok = await self._ensure_alive5_socket_connected()
+            if not ok or not self._alive5_socket:
+                return False
+            await self._alive5_socket.emit(event_name, payload)
+            return True
+        except Exception as e:
+            logger.debug(f"Alive5 socket emit failed ({event_name}): {e}")
+            return False
+
+    async def _disconnect_alive5_socket(self):
+        """Disconnect Alive5 socket client if connected (PSTN bridge)."""
+        try:
+            if self._alive5_socket:
+                try:
+                    await self._alive5_socket.disconnect()
+                except Exception:
+                    pass
+        finally:
+            self._alive5_socket = None
+            self._alive5_socket_connected = False
     
     def _build_query_string(self) -> dict:
         """Build query_string with collected CRM data"""
@@ -1317,6 +1541,12 @@ class SimpleVoiceAgent(Agent):
                     topic="lk.alive5.socket"
                 )
                 logger.debug(f"✅ CRM update sent via data channel: {update['key']}")
+
+                # PSTN bridge: also emit directly to Alive5 socket (no frontend in phone rooms)
+                try:
+                    await self._emit_alive5_socket_event("save_crm_data", socket_instruction["payload"])
+                except Exception:
+                    pass
                 
         except Exception as e:
             logger.warning(f"⚠️ Could not update CRM data: {e}")
@@ -1352,6 +1582,11 @@ class SimpleVoiceAgent(Agent):
                     json.dumps(socket_instruction).encode("utf-8"),
                     topic="lk.alive5.socket",
                 )
+                # PSTN bridge: also emit directly (no frontend in phone rooms)
+                try:
+                    await self._emit_alive5_socket_event("save_crm_data", socket_instruction["payload"])
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"⚠️ Could not flush queued CRM updates: {e}")
     
@@ -1394,6 +1629,18 @@ class SimpleVoiceAgent(Agent):
                 logger.info(f"📤 Message instruction sent via data channel: {message_content[:50]}...")
             except Exception as e:
                 logger.error(f"❌ Failed to send message instruction via data channel: {e}")
+
+            # PSTN bridge: also emit directly to Alive5 socket (no frontend in phone rooms)
+            try:
+                payload = dict(socket_instruction.get("payload") or {})
+                if is_agent:
+                    platform = "phone" if self._is_phone_call_room() else "web"
+                    tagged = self._tagged_voice_agent_id(platform)
+                    if tagged:
+                        payload["voiceAgentId"] = tagged
+                await self._emit_alive5_socket_event("post_message", payload)
+            except Exception:
+                pass
             
         except Exception as e:
             logger.error(f"❌ Could not send message to Alive5: {e}")
@@ -1737,11 +1984,14 @@ async def entrypoint(ctx: JobContext):
             
             room_name_clean = room_name_decoded
         
-        # Remove double prefix if present
+        # Remove known Telnyx prefix variants if present
         if room_name_clean.startswith("telnyx_call__telnyx_call_"):
             # Remove double prefix
             room_name_clean = room_name_clean.replace("telnyx_call__telnyx_call_", "telnyx_call_", 1)
             logger.warning(f"⚠️ Fixed double-prefixed room name: {ctx.room.name} -> {room_name_clean}")
+        elif room_name_clean.startswith("telnyx_call__"):
+            room_name_clean = room_name_clean.replace("telnyx_call__", "telnyx_call_", 1)
+            logger.warning(f"⚠️ Fixed double-underscore room name: {ctx.room.name} -> {room_name_clean}")
         
         is_phone_call = room_name_clean.startswith("telnyx_call_")
         user_data = {}
@@ -1866,6 +2116,39 @@ async def entrypoint(ctx: JobContext):
                 )
         except Exception as _e:
             logger.debug(f"Could not dump room participants: {_e}")
+
+        # PSTN reliability: if the SIP participant disconnects (caller hung up), proactively end the Alive5 thread.
+        # This avoids cases where on_session_end isn't triggered promptly.
+        # NOTE: Use an agent_ref to avoid races where the callback fires before agent is instantiated.
+        agent_ref = {"agent": None}
+        try:
+            @ctx.room.on("participant_disconnected")
+            def _on_participant_disconnected_end_chat(participant: rtc.Participant):
+                try:
+                    if not is_phone_call:
+                        return
+                    kind = getattr(participant, "kind", None)
+                    if kind not in (rtc.ParticipantKind.SIP, rtc.ParticipantKind.INGRESS):
+                        return
+
+                    async def _end_after_disconnect():
+                        try:
+                            await asyncio.sleep(0.5)
+                            rp2 = getattr(ctx.room, "remote_participants", {}) or {}
+                            if len(rp2) != 0:
+                                return
+                            a = agent_ref.get("agent")
+                            if a is None:
+                                return
+                            await a.on_session_end()
+                        except Exception:
+                            pass
+
+                    asyncio.create_task(_end_after_disconnect())
+                except Exception:
+                    pass
+        except Exception as _e:
+            logger.debug(f"Could not attach PSTN end-chat handler: {_e}")
         
         # Get Alive5 session data from backend (frontend already called init_livechat)
         # CRITICAL: Frontend calls init_livechat and connects socket, so worker should use that session data
@@ -1900,6 +2183,13 @@ async def entrypoint(ctx: JobContext):
                                 agent.alive5_widget_id = widget_id
                                 
                                 logger.info(f"✅ Alive5 session data loaded - Thread: {thread_id}, CRM: {crm_id}")
+
+                                # PSTN bridge: connect early (no frontend), so init/ACK happens before we emit messages/CRM.
+                                if is_phone_call:
+                                    try:
+                                        asyncio.create_task(agent._ensure_alive5_socket_connected())
+                                    except Exception:
+                                        pass
                                 
                                 # Process any queued messages
                                 if agent._alive5_message_queue:
@@ -1933,6 +2223,10 @@ async def entrypoint(ctx: JobContext):
         
         # Create and start the agent (use cleaned room name)
         agent = SimpleVoiceAgent(room_name_clean, botchain_name, org_name, special_instructions)
+        try:
+            agent_ref["agent"] = agent
+        except Exception:
+            pass
         agent.faq_isVoice = faq_isVoice
         # Store FAQ bot ID and org_name on agent instance for easy access
         # IMPORTANT: Ensure faq_bot_id is not None before storing
