@@ -1663,24 +1663,8 @@ class SimpleVoiceAgent(Agent):
                 # Call save_collected_data via the function (which will update CRM)
                 await self.save_collected_data(None, "email", email)
 
-            # Detect name phrases early (handles fillers/punctuation like: "My name is, uh, John")
-            # Do this before the "short response" heuristic so phone STT transcripts still match.
-            if not self.collected_data.get("full_name"):
-                # Common filler words that often appear in spoken answers
-                filler = r"(?:,?\s*(?:uh|um|er|ah|like)\s*,?)?"
-                name_phrase_patterns = [
-                    rf"(?:my\s+name\s+is|i\s+am|i'?m|it'?s|this\s+is|call\s+me)\s*{filler}\s*([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){{0,2}})",
-                ]
-                for pattern in name_phrase_patterns:
-                    m = re.search(pattern, user_text_clean, re.IGNORECASE)
-                    if m:
-                        candidate = (m.group(1) or "").strip()
-                        # Filter obvious non-names
-                        common_words = {"yes", "no", "ok", "okay", "sure", "great", "thanks", "thank", "you", "hi", "hello"}
-                        if candidate and candidate.lower() not in common_words:
-                            logger.info(f"🔍 Auto-detected name in user message (phrase): {candidate}")
-                            await self.save_collected_data(None, "full_name", candidate)
-                        break
+            # Name auto-detection disabled: it was too aggressive for voice (e.g., "I'm looking forward..."
+            # being mistaken as a name). Names should be collected explicitly by the flow/tooling.
             
             # Detect phone pattern (US format: (xxx) xxx-xxxx, xxx-xxx-xxxx, xxx.xxx.xxxx, or 10+ digits)
             phone_pattern = r'(\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})'
@@ -1745,28 +1729,7 @@ class SimpleVoiceAgent(Agent):
                             await self.save_collected_data(None, "company_title", title)
                             break
             
-            # Detect name pattern (2-4 words, capitalized, not too long, doesn't look like email/phone)
-            # Only if it's a short response (likely a name answer)
-            if len(user_text_clean.split()) <= 4 and len(user_text_clean) < 50:
-                # Check if it looks like a name (has capital letters, not all caps, not email/phone)
-                if (not email_match and not phone_match and 
-                    re.search(r'[A-Z][a-z]+', user_text_clean) and  # Has capitalized words
-                    not self.collected_data.get("full_name")):
-                    # Additional check: if user said something like "My name is X" or "It's X" or just "X"
-                    name_patterns = [
-                        r'(?:my name is|i\'?m|it\'?s|this is|call me|i am)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
-                        r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})$'  # Just a name (1-3 words, capitalized)
-                    ]
-                    for pattern in name_patterns:
-                        name_match = re.search(pattern, user_text_clean, re.IGNORECASE)
-                        if name_match:
-                            name = name_match.group(1) if name_match.groups() else user_text_clean
-                            # Only save if it looks like a real name (not "Yes", "No", "Great", etc.)
-                            common_words = {'yes', 'no', 'ok', 'okay', 'sure', 'great', 'thanks', 'thank', 'you', 'hi', 'hello'}
-                            if name.lower() not in common_words and len(name.split()) <= 3:
-                                logger.info(f"🔍 Auto-detected name in user message: {name}")
-                                await self.save_collected_data(None, "full_name", name)
-                                break
+            # Name auto-detection disabled (see note above).
         except Exception as e:
             # Don't let auto-detection errors break the conversation
             logger.debug(f"⚠️ Auto-detection error (non-critical): {e}")
