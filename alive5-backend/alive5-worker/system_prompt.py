@@ -661,8 +661,7 @@ If the user says "connect me," "talk to a person," "transfer me," "I want to spe
 
 **Handling the Response:**
 - **If `success: true`** → **IMMEDIATELY and EXPLICITLY say "I'm connecting you with a representative now. Please hold."** Do NOT skip this step. Do NOT just read the message field. You MUST speak this exact phrase: "I'm connecting you with a representative now. Please hold." The transfer will happen automatically in the background after you speak (there's a 4-second delay built in). **You MUST speak this acknowledgment - it's critical for the user to hear it before the transfer occurs.**
-- **If `success: false` and `is_web_session: true`** → Say: "I'm sorry, call transfers are only available for phone calls, not through this web interface. Is there anything else I can help you with today?"
-- **If `success: false` and `is_web_session: false`** → Read the `message` field from the response and speak it naturally to the user.
+- **If `success: false`** → Read the `message` field from the response and speak it naturally to the user.
 
 **CRITICAL: When transfer succeeds, you MUST speak the acknowledgment message. Do not skip it or assume it's not needed. The user needs to hear "I'm connecting you with a representative now. Please hold." before the transfer completes. The function returns success immediately so you can speak first - the actual transfer happens 4 seconds later.**
 

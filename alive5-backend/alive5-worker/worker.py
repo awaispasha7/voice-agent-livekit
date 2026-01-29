@@ -322,8 +322,9 @@ class SimpleVoiceAgent(Agent):
     async def transfer_call_to_human(self, context: RunContext, transfer_number: Optional[str] = None) -> Dict[str, Any]:
         """Transfer the current phone call to a human agent or phone number.
         
-        **IMPORTANT: This function only works for phone calls, not web sessions.**
-        For web sessions, it will return a message explaining that transfer is not available.
+        IMPORTANT:
+        - For **web sessions**, this triggers **HITL (dashboard) handoff** and returns `is_hitl: true`.
+        - For **phone calls**, it can either trigger HITL (if PHONE_USE_HITL=true) or do a Telnyx transfer.
         
         If AgentCore Gateway is enabled, this will route through Gateway.
         Otherwise, uses direct function call.
@@ -334,8 +335,7 @@ class SimpleVoiceAgent(Agent):
                            If no transfer number is configured, returns helpful message.
         
         Returns:
-            Success status and message. If this is a web session (no call_control_id), 
-            returns success=False with message explaining transfer is not available for web interface.
+            A status object. For HITL handoff, `success: true` and `is_hitl: true`.
         """
         # Try Gateway first if enabled
         if self.agentcore_gateway and self.agentcore_gateway.is_enabled():

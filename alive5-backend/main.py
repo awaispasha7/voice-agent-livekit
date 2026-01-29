@@ -1905,7 +1905,7 @@ async def request_human_takeover(request: HumanTakeoverRequest):
 
 
 @app.post("/api/human-agent/generate-token")
-async def generate_human_agent_token(request: GenerateTokenRequest):
+async def generate_human_agent_token(request: GenerateTokenRequest, http_request: Request):
     """Generate LiveKit token for human agent to join the room"""
     try:
         logger.info(f"🎫 Generating token for human agent {request.agent_id} to join {request.room_name}")
@@ -1923,12 +1923,12 @@ async def generate_human_agent_token(request: GenerateTokenRequest):
         if handoff_state.get("human_agent_id") != request.agent_id:
             raise HTTPException(status_code=403, detail="Agent ID mismatch")
         
-        # Get LiveKit credentials
-        livekit_api_url = os.getenv("LIVEKIT_URL")
+        # Get LiveKit connection URL (ws:// or wss://)
+        livekit_url = os.getenv("LIVEKIT_URL")
         livekit_api_key = os.getenv("LIVEKIT_API_KEY")
         livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
         
-        if not all([livekit_api_url, livekit_api_key, livekit_api_secret]):
+        if not all([livekit_url, livekit_api_key, livekit_api_secret]):
             raise HTTPException(status_code=500, detail="LiveKit credentials not configured")
         
         # Generate token with audio permissions
@@ -1947,10 +1947,31 @@ async def generate_human_agent_token(request: GenerateTokenRequest):
         
         logger.info(f"✅ Token generated for human agent to join {request.room_name}")
         
+        # IMPORTANT:
+        # The dashboard is served over HTTPS (Vercel), so the LiveKit signaling URL must be WSS.
+        # We only convert when the incoming request is HTTPS (behind a proxy this is x-forwarded-proto).
+        try:
+            xf_proto = (http_request.headers.get("x-forwarded-proto") or "").lower()
+            origin = (http_request.headers.get("origin") or "").lower()
+            is_https = xf_proto == "https" or origin.startswith("https://")
+        except Exception:
+            is_https = False
+
+        livekit_frontend_url = livekit_url
+        if is_https and livekit_frontend_url.startswith("ws://"):
+            # Mirror the conversion logic used in /api/connection_details:
+            # Prefer nginx-terminated TLS on the nip.io domain and proxy /rtc/* to LiveKit:7880
+            if "18.210.238.67" in livekit_frontend_url:
+                livekit_frontend_url = "wss://18.210.238.67.nip.io"
+            else:
+                host = livekit_frontend_url.replace("ws://", "").replace(":7880", "")
+                livekit_frontend_url = f"wss://{host}"
+            logger.info(f"🔒 Converted LiveKit URL for HTTPS dashboard: {livekit_url} → {livekit_frontend_url}")
+
         return {
             "token": jwt_token,
             "room_name": request.room_name,
-            "livekit_url": livekit_api_url,
+            "livekit_url": livekit_frontend_url,
             "agent_identity": f"human_agent_{request.agent_id}",
             "session_data": {
                 "thread_id": session.get("thread_id"),
