@@ -2171,7 +2171,10 @@ class SimpleVoiceAgent(Agent):
         Triggered when user mentions key words (e.g. "name") and current CRM fields look missing/default.
         """
         try:
-            if not (os.getenv("MIDCALL_CRM_VERIFY", "true") or "true").lower() == "true":
+            # Default OFF: this mid-call extractor can introduce dead-air because it competes with
+            # the main response generation (especially right after the name question).
+            # If you want it, explicitly set MIDCALL_CRM_VERIFY=true.
+            if not (os.getenv("MIDCALL_CRM_VERIFY", "false") or "false").lower() == "true":
                 return
             if not hasattr(self, "llm") or not self.llm:
                 return
@@ -2203,6 +2206,44 @@ class SimpleVoiceAgent(Agent):
             asked_for_phone = ("phone" in a and "number" in a) or "phone number" in a
             asked_for_account = "account" in a and ("id" in a or "number" in a)
             asked_for_title = "title" in a or "position" in a or "role" in a
+
+            # Fast-path for the common "name" question to avoid an extra Bedrock roundtrip.
+            # This was a major source of ~5s dead-air because we were doing:
+            #   1) Bedrock extract to parse name
+            #   2) Bedrock response generation for the next question
+            # If we just asked for the name, treat the user's reply as the name (with light cleanup).
+            try:
+                cur_name = (self.collected_data.get("full_name") or "").strip().lower()
+                needs_name = (wants_name or asked_for_name) and (
+                    not cur_name or cur_name in {"voice caller", "caller"} or "looking forward" in cur_name
+                )
+                if asked_for_name and needs_name:
+                    import re
+
+                    v = (user_text or "").strip()
+                    # Strip common leading phrases
+                    v = re.sub(
+                        r"^(yes|yeah|yep|sure|okay|ok|my name is|i am|i'm|this is|it's|it is)\b[:\s,.-]*",
+                        "",
+                        v,
+                        flags=re.IGNORECASE,
+                    ).strip()
+                    # Keep only letters/spaces/apostrophes/hyphens
+                    v = re.sub(r"[^A-Za-z\s'\-]", " ", v)
+                    v = re.sub(r"\s+", " ", v).strip()
+
+                    # Heuristic acceptance: 1-4 words, no digits/@, not empty
+                    parts = [p for p in v.split(" ") if p]
+                    if 1 <= len(parts) <= 4 and all(p.isalpha() or ("'" in p) or ("-" in p) for p in parts):
+                        fast_name = " ".join(parts)
+                        logger.info(f"⚡ Fast name capture (no LLM): full_name='{fast_name}' (from user_text)")
+                        try:
+                            asyncio.create_task(self.save_collected_data(None, "full_name", fast_name))
+                        except Exception:
+                            pass
+                        return
+            except Exception:
+                pass
 
             # Determine which fields we should verify right now (only if missing / default)
             fields: List[str] = []
