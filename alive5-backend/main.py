@@ -54,6 +54,114 @@ if not env_loaded:
 logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 logger = logging.getLogger("simple-backend")
 
+
+def _a5_socket_base_url() -> str:
+    """
+    Determine Alive5 Socket.IO base URL.
+    - If A5_SOCKET_URL is set, use it (recommended).
+    - Otherwise, derive from A5_BASE_URL (api-v2-stage -> api-stage, api-v2 -> api).
+    """
+    explicit = (os.getenv("A5_SOCKET_URL") or "").strip()
+    if explicit:
+        return explicit
+    base = (os.getenv("A5_BASE_URL") or "https://api-v2-stage.alive5.com").strip()
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(base if "://" in base else ("https://" + base))
+        host = (parsed.netloc or "").strip()
+        if not host:
+            host = (parsed.path or "").split("/", 1)[0].strip()
+        if not host:
+            return "wss://api-stage.alive5.com"
+        host = host.replace("api-v2-stage.", "api-stage.")
+        host = host.replace("api-v2.", "api.")
+        return f"wss://{host}"
+    except Exception:
+        return "wss://api-stage.alive5.com"
+
+
+async def _emit_end_voice_chat_for_session(session: Dict[str, Any], end_by: str = "person") -> bool:
+    """
+    Best-effort server-side end_chat for PSTN calls.
+    This runs BEFORE we delete the LiveKit room/session so the Alive5 UI reliably transitions to ended state.
+    """
+    try:
+        # Avoid double-sending (Telnyx often sends 2 hangups: inbound + dial-out leg)
+        if session.get("a5_end_voice_chat_sent"):
+            return True
+
+        api_key = (session.get("api_key") or os.getenv("A5_API_KEY") or "").strip()
+        thread_id = (session.get("thread_id") or "").strip()
+        crm_id = (session.get("crm_id") or "").strip()
+        channel_id = (session.get("channel_id") or "").strip()
+        org_name = (
+            (session.get("org_name") or "").strip()
+            or (session.get("user_data", {}) or {}).get("org_name")
+            or os.getenv("TELNYX_DEFAULT_ORG", "alive5stage0")
+        )
+
+        if not (api_key and thread_id and crm_id and channel_id):
+            return False
+
+        import socketio
+        from urllib.parse import urlencode
+
+        qs = urlencode(
+            {
+                "type": "voice_agent",
+                "x-a5-apikey": api_key,
+                "thread_id": thread_id,
+                "crm_id": crm_id,
+                "channel_id": channel_id,
+            }
+        )
+        url = f"{_a5_socket_base_url()}?{qs}"
+
+        ack = asyncio.Event()
+        sio = socketio.AsyncClient(reconnection=False, logger=False, engineio_logger=False)
+
+        @sio.event
+        async def connect():
+            try:
+                await sio.emit("init_voice_agent", {"thread_id": thread_id, "crm_id": crm_id, "channel_id": channel_id})
+            except Exception:
+                pass
+
+        @sio.on("init_voice_agent_ack")
+        async def _on_ack(_payload):
+            ack.set()
+
+        await sio.connect(url, transports=["websocket"], socketio_path="socket.io", wait=True, wait_timeout=4)
+        try:
+            await asyncio.wait_for(ack.wait(), timeout=2.0)
+        except Exception:
+            pass
+
+        await sio.emit(
+            "end_voice_chat",
+            {
+                "end_by": end_by,
+                "message_content": "Voice call completed by user" if end_by == "person" else "Voice call completed by agent",
+                "org_name": org_name,
+                "thread_id": thread_id,
+                "voice_agent_id": "",
+            },
+        )
+        try:
+            await asyncio.sleep(0.2)
+        except Exception:
+            pass
+        await sio.disconnect()
+
+        session["a5_end_voice_chat_sent"] = True
+        session["a5_end_voice_chat_sent_at"] = datetime.now().isoformat()
+        logger.info(f"✅ Backend end_voice_chat emitted for thread={thread_id} end_by={end_by}")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ Backend end_voice_chat emit failed (best-effort): {e}")
+        return False
+
 # Resource monitoring functions
 def get_system_resources():
     """Get CPU and RAM usage"""
@@ -191,9 +299,14 @@ app = FastAPI(
 )
 
 # CORS middleware
+# TODO: For production, replace "*" with specific origins:
+# allow_origins=[
+#     "https://your-vercel-dashboard.vercel.app",  # Add your Vercel URL here
+#     "http://localhost:4200",  # Local development
+# ]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Replace with specific origins in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -241,6 +354,32 @@ class TelnyxTransferRequest(BaseModel):
     room_name: str
     call_control_id: str
     transfer_to: str
+
+
+class TelnyxHangupRequest(BaseModel):
+    """Request to hang up a Telnyx call"""
+    call_control_id: str
+    room_name: Optional[str] = None
+
+
+class HumanTakeoverRequest(BaseModel):
+    """Request for human agent to take over a call"""
+    room_name: str
+    agent_id: str
+    agent_name: str
+
+
+class GenerateTokenRequest(BaseModel):
+    """Request to generate LiveKit token for human agent"""
+    room_name: str
+    agent_id: str
+
+
+class EndHandoffRequest(BaseModel):
+    """Request to end human agent handoff"""
+    room_name: str
+    agent_id: str
+    resume_ai: bool = False
 
 
 # Session storage - use AgentCore Memory if enabled, otherwise fallback to in-memory
@@ -1390,6 +1529,19 @@ async def telnyx_webhook(request: Request):
             session_to_delete = []
             for room_name_key, session in sessions.items():
                 if session.get("call_control_id") == call_control_id:
+                    # Best-effort: notify Alive5 that the chat ended BEFORE tearing down room/session.
+                    # This matches the web behavior ("Voice call completed by user") and prevents "LIVE" sessions lingering.
+                    try:
+                        ok = await _emit_end_voice_chat_for_session(session, end_by="person")
+                        if ok:
+                            # Persist marker so the second hangup leg doesn't re-send.
+                            try:
+                                await update_session_data(room_name_key, {"a5_end_voice_chat_sent": True, "a5_end_voice_chat_sent_at": session.get("a5_end_voice_chat_sent_at")})
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
                     # Get the actual room name from session data
                     actual_room_name = session.get("room_name", room_name_key)
                     sip_dispatch_rule_id = session.get("sip_dispatch_rule_id")
@@ -1575,6 +1727,47 @@ async def telnyx_transfer_call(request: TelnyxTransferRequest):
         logger.error(f"❌ Error transferring call: {e}")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+
+@app.post("/api/telnyx/hangup")
+async def telnyx_hangup_call(request: TelnyxHangupRequest):
+    """Hang up an active Telnyx call (used to end PSTN calls when the agent session ends)."""
+    try:
+        logger.info(f"📞 Hanging up call {request.call_control_id}")
+
+        telnyx_api_key = os.getenv("TELNYX_API_KEY")
+        if not telnyx_api_key:
+            raise HTTPException(status_code=500, detail="TELNYX_API_KEY not configured")
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"https://api.telnyx.com/v2/calls/{request.call_control_id}/actions/hangup",
+                headers={
+                    "Authorization": f"Bearer {telnyx_api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+
+        if resp.status_code in [200, 201]:
+            logger.info("✅ Telnyx call hangup requested successfully")
+            if request.room_name:
+                try:
+                    await update_session_data(
+                        request.room_name,
+                        {"hung_up_by_agent": True, "hung_up_at": datetime.now().isoformat()},
+                    )
+                except Exception:
+                    pass
+            return {"status": "ok"}
+
+        logger.warning(f"⚠️ Telnyx hangup failed: {resp.status_code} - {resp.text}")
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error hanging up call: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/telnyx/sip/trunk/setup")
 async def telnyx_sip_setup_info():
     """Get information about setting up Telnyx SIP trunk with LiveKit"""
@@ -1592,6 +1785,162 @@ async def telnyx_sip_setup_info():
         }
     }
 
+
+# ===== HITL (Human-in-the-Loop) Voice Handoff Endpoints =====
+
+@app.post("/api/human-agent/request-takeover")
+async def request_human_takeover(request: HumanTakeoverRequest):
+    """Manual intervention endpoint - Human agent requests to take over an active call"""
+    try:
+        logger.info(f"🙋 Human agent {request.agent_name} ({request.agent_id}) requesting takeover of {request.room_name}")
+        
+        # Get session data
+        session = await get_session_data(request.room_name)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Check if handoff already active
+        handoff_state = session.get("handoff_state", {})
+        if handoff_state.get("active"):
+            return {
+                "status": "already_active",
+                "message": "Handoff already in progress",
+                "current_agent": handoff_state.get("human_agent_name")
+            }
+        
+        # Update session with handoff state
+        await update_session_data(request.room_name, {
+            "handoff_state": {
+                "active": True,
+                "human_agent_id": request.agent_id,
+                "human_agent_name": request.agent_name,
+                "handoff_timestamp": datetime.now().isoformat(),
+                "handoff_trigger": "manual",
+                "agent_queue": "manual"
+            }
+        })
+        
+        logger.info(f"✅ Takeover request registered for {request.room_name}")
+        
+        return {
+            "status": "success",
+            "message": "Takeover registered. Generate token to join.",
+            "room_name": request.room_name
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing takeover request: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/human-agent/generate-token")
+async def generate_human_agent_token(request: GenerateTokenRequest):
+    """Generate LiveKit token for human agent to join the room"""
+    try:
+        logger.info(f"🎫 Generating token for human agent {request.agent_id} to join {request.room_name}")
+        
+        # Get session data
+        session = await get_session_data(request.room_name)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Verify handoff is active
+        handoff_state = session.get("handoff_state", {})
+        if not handoff_state.get("active"):
+            raise HTTPException(status_code=400, detail="No active handoff for this session")
+        
+        if handoff_state.get("human_agent_id") != request.agent_id:
+            raise HTTPException(status_code=403, detail="Agent ID mismatch")
+        
+        # Get LiveKit credentials
+        livekit_api_url = os.getenv("LIVEKIT_URL")
+        livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+        livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+        
+        if not all([livekit_api_url, livekit_api_key, livekit_api_secret]):
+            raise HTTPException(status_code=500, detail="LiveKit credentials not configured")
+        
+        # Generate token with audio permissions
+        token = api.AccessToken(livekit_api_key, livekit_api_secret)
+        token.with_identity(f"human_agent_{request.agent_id}")
+        token.with_name(handoff_state.get("human_agent_name", "Human Agent"))
+        token.with_grants(api.VideoGrants(
+            room_join=True,
+            room=request.room_name,
+            can_publish=True,
+            can_subscribe=True,
+            can_publish_data=True
+        ))
+        
+        jwt_token = token.to_jwt()
+        
+        logger.info(f"✅ Token generated for human agent to join {request.room_name}")
+        
+        return {
+            "token": jwt_token,
+            "room_name": request.room_name,
+            "livekit_url": livekit_api_url,
+            "agent_identity": f"human_agent_{request.agent_id}",
+            "session_data": {
+                "thread_id": session.get("thread_id"),
+                "crm_id": session.get("crm_id"),
+                "channel_id": session.get("channel_id"),
+                "caller_phone": session.get("caller_phone"),
+                "queue": handoff_state.get("agent_queue", "general")
+            }
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error generating token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/human-agent/end-handoff")
+async def end_human_handoff(request: EndHandoffRequest):
+    """End human agent handoff - optionally resume AI or end call"""
+    try:
+        logger.info(f"👋 Ending handoff for {request.room_name} by agent {request.agent_id}")
+        
+        # Get session data
+        session = await get_session_data(request.room_name)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Verify handoff is active
+        handoff_state = session.get("handoff_state", {})
+        if not handoff_state.get("active"):
+            return {"status": "no_active_handoff"}
+        
+        if handoff_state.get("human_agent_id") != request.agent_id:
+            raise HTTPException(status_code=403, detail="Agent ID mismatch")
+        
+        # Update handoff state
+        await update_session_data(request.room_name, {
+            "handoff_state": {
+                **handoff_state,
+                "active": False,
+                "ended_at": datetime.now().isoformat(),
+                "resume_ai": request.resume_ai
+            }
+        })
+        
+        logger.info(f"✅ Handoff ended for {request.room_name}, resume_ai={request.resume_ai}")
+        
+        return {
+            "status": "success",
+            "message": "Handoff ended",
+            "resume_ai": request.resume_ai
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error ending handoff: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

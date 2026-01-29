@@ -1,0 +1,164 @@
+<div class="active-call-wrapper">
+  <div class="active-call-container" *ngIf="activeCall">
+    <div class="call-header">
+      <div class="header-content">
+        <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <circle cx="12" cy="12" r="3" fill="currentColor"/>
+          <path d="M12 2v10M12 12l8 8"/>
+        </svg>
+        <div class="header-text">
+          <h2>Active Call</h2>
+          <span class="connection-status" [class.connected]="isConnected">
+            <span class="status-pulse"></span>
+            {{ isConnected ? 'Live' : 'Connecting...' }}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div class="call-card">
+      <div class="caller-section">
+        <div class="caller-avatar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+        </div>
+        <div class="caller-details">
+          <h3 class="caller-name">{{ activeCall.caller_phone || 'Unknown Caller' }}</h3>
+          <p class="caller-queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+            {{ activeCall.queue }}
+          </p>
+        </div>
+      </div>
+
+      <div class="call-timer">
+        <div class="timer-ring">
+          <svg viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="45" fill="none" stroke="#e2e8f0" stroke-width="6"/>
+            <circle cx="50" cy="50" r="45" fill="none" stroke="#48bb78" stroke-width="6" 
+                    stroke-dasharray="283" stroke-dashoffset="0" stroke-linecap="round"
+                    style="animation: timer-spin 60s linear infinite"/>
+          </svg>
+          <div class="timer-content">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+            <span class="timer-value">{{ formatDuration(callDuration) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="call-metadata">
+        <div class="metadata-row">
+          <svg class="metadata-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 6 12 12 16 14"/>
+          </svg>
+          <div class="metadata-content">
+            <span class="label">Thread ID</span>
+            <span class="value">{{ activeCall.thread_id.substring(0, 12) }}...</span>
+          </div>
+        </div>
+        
+        <div class="metadata-row">
+          <svg class="metadata-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+            <circle cx="12" cy="10" r="3"/>
+          </svg>
+          <div class="metadata-content">
+            <span class="label">CRM ID</span>
+            <span class="value">{{ activeCall.crm_id }}</span>
+          </div>
+        </div>
+        
+        <div class="metadata-row">
+          <svg class="metadata-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <path d="M3 9h18M9 3v18"/>
+          </svg>
+          <div class="metadata-content">
+            <span class="label">Room</span>
+            <span class="value">{{ activeCall.room_name }}</span>
+          </div>
+        </div>
+        
+        <div class="metadata-row">
+          <svg class="metadata-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+          <div class="metadata-content">
+            <span class="label">Agent</span>
+            <span class="value">{{ activeCall.agent_name }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="call-controls">
+        <button 
+          class="control-btn mute-btn" 
+          [class.active]="isMuted"
+          (click)="toggleMute()">
+          <div class="btn-icon">
+            <svg *ngIf="!isMuted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+            <svg *ngIf="isMuted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="1" y1="1" x2="23" y2="23"/>
+              <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/>
+              <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </div>
+          <span>{{ isMuted ? 'Unmute' : 'Mute' }}</span>
+        </button>
+
+        <button 
+          class="control-btn end-btn" 
+          (click)="endCall()">
+          <div class="btn-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/>
+              <line x1="23" y1="1" x2="1" y2="23"/>
+            </svg>
+          </div>
+          <span>End Call</span>
+        </button>
+
+        <button 
+          class="control-btn transfer-btn" 
+          (click)="endCallResumeAI()">
+          <div class="btn-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 16v-4M12 8h.01"/>
+            </svg>
+          </div>
+          <span>Transfer to AI</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="no-active-call" *ngIf="!activeCall">
+    <div class="empty-icon-wrapper">
+      <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+      </svg>
+    </div>
+    <h3>Ready to Assist</h3>
+    <p>No active call in progress</p>
+    <p class="empty-subtext">Accept a call from the queue to begin</p>
+  </div>
+</div>

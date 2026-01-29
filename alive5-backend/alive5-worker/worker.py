@@ -184,6 +184,16 @@ class SimpleVoiceAgent(Agent):
         # Conversation transcript for post-call reconciliation (fail-safe capture).
         # We keep this in-memory per session and run a background extraction at call end.
         self._conversation_log: List[Dict[str, str]] = []
+        # Cooldown to prevent repeated mid-call CRM verification spam
+        self._last_crm_verify_at: Dict[str, float] = {}
+        # Track who ended the session (used for end_voice_chat payload alignment with web)
+        self._end_by: str = "voice_agent"
+        
+        # HITL (Human-in-the-Loop) handoff state
+        self._handoff_active = False
+        self._handoff_queue = None
+        self._human_agent_identity = None
+        self._session_end_started = False  # Guard against duplicate end events
         
         # Get LLM provider from env (bedrock, openai, or nova)
         llm_provider = os.getenv("LLM_PROVIDER", "bedrock").lower()
@@ -297,6 +307,10 @@ class SimpleVoiceAgent(Agent):
         system_prompt = get_system_prompt(botchain_name, org_name, special_instructions)
         super().__init__(instructions=system_prompt, llm=llm_instance)
         
+    def _backend_internal_url(self) -> str:
+        """Prefer an internal backend URL for server-to-server calls to avoid TLS/proxy issues."""
+        return (os.getenv("BACKEND_URL_INTERNAL") or "http://127.0.0.1:8000").strip()
+
     
     
     @function_tool()
@@ -890,10 +904,21 @@ class SimpleVoiceAgent(Agent):
         await self._start_conversation()
     
     async def on_session_end(self):
-        """Called when session is ending - cleanup livechat (skip for phone calls)"""
-        # Fire-and-forget post-call reconciliation (runs silently; does not block hangup).
+        """Called when session is ending - ensure CRM is finalized, then close thread."""
+        # Guard: on disconnect we can get multiple triggers (Telnyx hangup + room delete + SIP disconnect).
+        # Ensure we only run end-of-session logic once.
         try:
-            asyncio.create_task(self._post_call_reconcile_crm())
+            if getattr(self, "_session_end_started", False):
+                return
+            self._session_end_started = True
+        except Exception:
+            pass
+
+        # IMPORTANT: Do NOT fire-and-forget here. On disconnect, background tasks can get cancelled.
+        # We do a short, best-effort reconciliation before ending the Alive5 thread.
+        try:
+            timeout_s = float(os.getenv("POSTCALL_RECONCILIATION_TIMEOUT_SECONDS", "4") or "4")
+            await asyncio.wait_for(self._post_call_reconcile_crm(), timeout=timeout_s)
         except Exception:
             pass
 
@@ -903,17 +928,75 @@ class SimpleVoiceAgent(Agent):
             logger.info("📞 Phone call ending - notifying Alive5 via socket (PSTN bridge)")
             try:
                 org_name = getattr(self, "alive5_org_name", getattr(self, "org_name", "alive5stage0"))
-                voice_agent_id = self._tagged_voice_agent_id("phone") or ""
+                # IMPORTANT:
+                # Alive5 UI historically expects a raw UUID voice_agent_id (what init_voice_agent_ack returns).
+                # Using a tagged id (voice_agent_phone_*) can cause end_voice_chat to be ignored.
+                raw_voice_agent_id = (getattr(self, "alive5_voice_agent_id", None) or "").strip()
+                voice_agent_id = raw_voice_agent_id or (self._tagged_voice_agent_id("phone") or "")
+                # Best-effort: end the Telnyx call so the dialer doesn't keep the call alive.
+                try:
+                    import httpx
+                    from urllib.parse import quote
+
+                    backend_url = self._backend_internal_url()
+                    encoded_room = quote(self.room_name, safe="")
+                    async with httpx.AsyncClient(timeout=4.0) as client:
+                        sess = await client.get(f"{backend_url}/api/sessions/{encoded_room}")
+                        if sess.status_code == 200:
+                            call_control_id = (sess.json() or {}).get("call_control_id")
+                            if call_control_id:
+                                r = await client.post(
+                                    f"{backend_url}/api/telnyx/hangup",
+                                    json={"call_control_id": call_control_id, "room_name": self.room_name},
+                                )
+                                if r.status_code not in (200, 201):
+                                    logger.warning(f"⚠️ Telnyx hangup request failed: {r.status_code}")
+                except Exception:
+                    pass
+
+                # Fallback: delete LiveKit room so the agent session ends just like web.
+                try:
+                    livekit_url = os.getenv("LIVEKIT_URL")
+                    livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+                    livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+                    if all([livekit_url, livekit_api_key, livekit_api_secret]):
+                        from livekit import api
+
+                        livekit_api_url = livekit_url.replace("ws://", "http://").replace("wss://", "https://")
+                        if "18.210.238.67" in livekit_api_url:
+                            livekit_api_url = livekit_api_url.replace("18.210.238.67", "localhost")
+                        async with api.LiveKitAPI(livekit_api_url, livekit_api_key, livekit_api_secret) as lk_api:
+                            try:
+                                await lk_api.room.delete_room(api.DeleteRoomRequest(room=self.room_name))
+                                logger.info(f"✅ Closed LiveKit room on end (PSTN): {self.room_name}")
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+                # Give a small grace period for in-flight post_message/save_crm_data emits to reach Alive5 UI
+                try:
+                    await asyncio.sleep(0.8)
+                except Exception:
+                    pass
                 await self._emit_alive5_socket_event(
                     "end_voice_chat",
                     {
-                        "end_by": "voice_agent",
-                        "message_content": "Voice call completed by agent",
+                        # Match web semantics: when the caller hangs up, end_by should be "person"
+                        "end_by": getattr(self, "_end_by", "voice_agent"),
+                        "message_content": "Voice call completed by user" if getattr(self, "_end_by", "voice_agent") == "person" else "Voice call completed by agent",
                         "org_name": org_name,
                         "thread_id": self.alive5_thread_id,
                         "voice_agent_id": voice_agent_id,
                     },
                 )
+                logger.info(
+                    f"✅ end_voice_chat emitted (PSTN bridge) end_by={getattr(self, '_end_by', 'voice_agent')} thread_id={getattr(self, 'alive5_thread_id', None) or 'N/A'} voice_agent_id={voice_agent_id or 'N/A'}"
+                )
+                try:
+                    await asyncio.sleep(0.3)
+                except Exception:
+                    pass
             except Exception:
                 pass
             await self._disconnect_alive5_socket()
@@ -1145,10 +1228,12 @@ class SimpleVoiceAgent(Agent):
         Return a stable, human-friendly voice agent id for Alive5 attribution/display.
         - platform: "phone" | "web"
         Result format:
-          - voice_agent_phone_{id}
-          - voice_agent_web_{id}
+          - {prefix}_phone_{id}
+          - {prefix}_web_{id}
+        where prefix defaults to "voice_agent" and can be overridden with A5_VOICE_AGENT_ID_PREFIX.
         """
         try:
+            prefix = (os.getenv("A5_VOICE_AGENT_ID_PREFIX") or "voice_agent").strip() or "voice_agent"
             raw = (getattr(self, "alive5_voice_agent_id", None) or "").strip()
             if not raw:
                 # Deterministic fallback based on room name
@@ -1157,21 +1242,93 @@ class SimpleVoiceAgent(Agent):
                 return ""
 
             # Avoid double-tagging
-            if raw.startswith("voice_agent_phone_") or raw.startswith("voice_agent_web_"):
+            if raw.startswith(f"{prefix}_phone_") or raw.startswith(f"{prefix}_web_"):
                 return raw
 
-            # Keep the "voice_agent_" prefix so Alive5 recognizes it as an agent
+            # Keep the prefix (default "voice_agent_") so Alive5 recognizes it as an agent
             suffix = raw
-            if raw.startswith("voice_agent_"):
-                suffix = raw[len("voice_agent_") :]
+            if raw.startswith(f"{prefix}_"):
+                suffix = raw[len(prefix) + 1 :]
 
             platform = (platform or "").strip().lower() or "web"
             if platform not in ("phone", "web"):
                 platform = "web"
-            return f"voice_agent_{platform}_{suffix}"
+            return f"{prefix}_{platform}_{suffix}"
         except Exception:
             return ""
 
+    # ===== HITL (Human-in-the-Loop) Methods =====
+    
+    def _detect_agent_node(self, response_text: str) -> tuple[bool, Optional[str]]:
+        """
+        Detect if the current flow node is type 'agent' requiring human handoff.
+        This is a simplified detection - in production, you'd parse the actual flow structure.
+        Returns: (is_agent_node, queue_name)
+        """
+        # TODO: Implement actual flow parsing when bot_template structure is available
+        # For now, return False (no agent node detected)
+        return False, None
+    
+    async def _initiate_human_handoff(self, queue: str, trigger: str = "agent_node"):
+        """Start HITL handoff sequence"""
+        try:
+            logger.info(f"🙋 Initiating human handoff - queue: {queue}, trigger: {trigger}")
+            
+            # Set handoff state
+            self._handoff_active = True
+            self._handoff_queue = queue
+            
+            # Emit incoming_human_call event to Alive5
+            if self._alive5_socket and self._alive5_socket_connected:
+                try:
+                    payload = {
+                        "thread_id": self.alive5_thread_id or "",
+                        "crm_id": self.alive5_crm_id or "",
+                        "room_name": self.room_name,
+                        "caller_phone": "",  # TODO: Extract from session
+                        "queue": queue,
+                        "timestamp": int(asyncio.get_event_loop().time() * 1000),
+                        "context": "Agent requested human assistance"
+                    }
+                    
+                    await self._emit_alive5_socket_event("incoming_human_call", payload)
+                    logger.info(f"✅ Emitted incoming_human_call event for queue: {queue}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to emit incoming_human_call: {e}")
+            
+            # TODO: Play hold music or message to caller
+            logger.info("📞 Waiting for human agent to join...")
+            
+        except Exception as e:
+            logger.error(f"❌ Error initiating handoff: {e}")
+    
+    async def _enter_shadow_mode(self):
+        """Mute AI, continue transcription only"""
+        try:
+            logger.info("🔇 Entering shadow mode - AI muted, transcription continues")
+            
+            # TODO: Implement audio track muting
+            # This would involve unpublishing the AI's audio track
+            # while keeping STT active
+            
+            self._handoff_active = True
+            
+        except Exception as e:
+            logger.error(f"❌ Error entering shadow mode: {e}")
+    
+    async def _exit_shadow_mode(self):
+        """Resume AI after human leaves"""
+        try:
+            logger.info("🔊 Exiting shadow mode - AI resuming")
+            
+            # TODO: Implement audio track unmuting
+            
+            self._handoff_active = False
+            self._human_agent_identity = None
+            
+        except Exception as e:
+            logger.error(f"❌ Error exiting shadow mode: {e}")
+    
     def _alive5_socket_base_url(self) -> str:
         """
         Determine Alive5 Socket.IO base URL.
@@ -1270,14 +1427,32 @@ class SimpleVoiceAgent(Agent):
                 @sio.on("init_voice_agent_ack")
                 async def _on_init_ack(data):
                     try:
+                        logger.info(f"📨 init_voice_agent_ack received (PSTN): {data}")
                         voice_agent_id = None
                         if isinstance(data, dict):
                             voice_agent_id = data.get("voice_agent_id") or data.get("voiceAgentId") or data.get("assigned_to")
                         if voice_agent_id:
+                            # Store the RAW value from server (will be shortened in post_message for display)
                             self.alive5_voice_agent_id = voice_agent_id
-                            tagged = self._tagged_voice_agent_id("phone")
-                            if tagged:
-                                logger.info(f"🆔 Tagged voice agent id (phone): {tagged}")
+                            logger.info(f"🆔 Stored voice agent id (PSTN): {voice_agent_id} (from server)")
+                        else:
+                            # IMPORTANT: Alive5 sometimes does not return voice_agent_id (seen in frontend logs).
+                            # Frontend falls back to a stable id derived from the socket id (first 8 chars).
+                            # For PSTN, we default to "phone" platform to distinguish from web sessions.
+                            try:
+                                prefix = (os.getenv("A5_VOICE_AGENT_ID_PREFIX") or "voice_agent").strip() or "voice_agent"
+                                sid = getattr(sio, "sid", None) or ""
+                                sid_short = (str(sid)[:8] or "").lower()
+                                if sid_short:
+                                    # Default to "phone" for PSTN calls, can be overridden
+                                    platform_override = (os.getenv("A5_VOICE_AGENT_ID_PLATFORM_FOR_PSTN") or "phone").strip().lower()
+                                    if platform_override not in ("web", "phone"):
+                                        platform_override = "phone"
+                                    fallback_id = f"{prefix}_{platform_override}_{sid_short}"
+                                    self.alive5_voice_agent_id = fallback_id
+                                    logger.info(f"🆔 Generated fallback voice agent id (PSTN): {fallback_id} (socket_id={sid[:16] if sid else 'N/A'})")
+                            except Exception:
+                                pass
                         logger.info("✅ Alive5 init_voice_agent_ack received (PSTN bridge)")
                     except Exception:
                         pass
@@ -1633,12 +1808,37 @@ class SimpleVoiceAgent(Agent):
             # PSTN bridge: also emit directly to Alive5 socket (no frontend in phone rooms)
             try:
                 payload = dict(socket_instruction.get("payload") or {})
+                # Match frontend semantics:
+                # - remove is_agent flag (server doesn't expect it)
+                # - include voiceAgentId ONLY for agent messages (server maps to created_by/user_id)
+                payload.pop("is_agent", None)
+                # Frontend also clears any existing voiceAgentId fields to ensure a clean state.
+                payload.pop("voiceAgentId", None)
+                payload.pop("voice_agent_id", None)
                 if is_agent:
-                    platform = "phone" if self._is_phone_call_room() else "web"
-                    tagged = self._tagged_voice_agent_id(platform)
-                    if tagged:
-                        payload["voiceAgentId"] = tagged
-                await self._emit_alive5_socket_event("post_message", payload)
+                    # CRITICAL FIX: Match web format for phone IDs.
+                    # Web uses: voice_agent_web_8aqz5xbl (8 chars)
+                    # Phone should use: voice_agent_phone_9e4a83df (first 8 chars of UUID, no dashes)
+                    raw_id = getattr(self, 'alive5_voice_agent_id', None)
+                    if raw_id:
+                        # Extract short ID: first 8 alphanumeric chars (remove dashes/underscores)
+                        clean_id = raw_id.replace("-", "").replace("_", "")[:8].lower()
+                        is_phone = self._is_phone_call_room()
+                        platform = "phone" if is_phone else "web"
+                        voice_agent_id = f"voice_agent_{platform}_{clean_id}"
+                        
+                        payload["voiceAgentId"] = voice_agent_id
+                        logger.info(f"🆔 Using voiceAgentId for post_message: {voice_agent_id} (short format, raw={raw_id[:16]}...)")
+                    else:
+                        logger.warning(f"⚠️ No voiceAgentId available for agent message (alive5_voice_agent_id not set)")
+                ok = await self._emit_alive5_socket_event("post_message", payload)
+                try:
+                    if is_agent:
+                        logger.info(f"📤 PSTN post_message emitted (agent) ok={ok} voiceAgentId={payload.get('voiceAgentId','N/A')}")
+                    else:
+                        logger.info(f"📤 PSTN post_message emitted (user) ok={ok}")
+                except Exception:
+                    pass
             except Exception:
                 pass
             
@@ -1692,7 +1892,9 @@ class SimpleVoiceAgent(Agent):
                     if company_match:
                         company = company_match.group(1).strip()
                         # Filter out common false positives
-                        if company.lower() not in ['google', 'microsoft', 'apple', 'amazon', 'the', 'a', 'an'] or len(company) > 5:
+                        # Don't block real company names like "Google" / "Apple" etc.
+                        # Only block obvious non-values.
+                        if company.lower() not in ['the', 'a', 'an'] and len(company) >= 2:
                             logger.info(f"🔍 Auto-detected company in user message: {company}")
                             await self.save_collected_data(None, "company", company)
                             break
@@ -1797,18 +1999,13 @@ class SimpleVoiceAgent(Agent):
                 },
             }
 
-            ctx = ChatContext(items=[
-                ChatMessage(role="system", content=[system]),
-                ChatMessage(role="user", content=[json.dumps(user)]),
-            ])
-            out_ctx = await self.llm.chat(ctx)
-            assistant = next((it for it in reversed(out_ctx.items) if getattr(it, "role", None) == "assistant"), None)
-            if not assistant or not getattr(assistant, "content", None):
-                return
-            raw = "\n".join([c for c in assistant.content if isinstance(c, str)]).strip()
-            raw = re.sub(r"^```(?:json)?\\s*", "", raw)
-            raw = re.sub(r"\\s*```$", "", raw)
-            data = json.loads(raw)
+            # Use the same extraction helper as mid-call verification (non-stream for Bedrock).
+            await self._llm_extract_and_patch(
+                fields=["full_name", "email", "phone", "account_id", "company", "company_title"],
+                max_lines=80,
+                min_confidence=float(os.getenv("POSTCALL_RECONCILIATION_CONFIDENCE", "0.75") or "0.75"),
+            )
+            return
 
             threshold = float(os.getenv("POSTCALL_RECONCILIATION_CONFIDENCE", "0.75") or "0.75")
 
@@ -1816,6 +2013,9 @@ class SimpleVoiceAgent(Agent):
                 if not v:
                     return True
                 vv = v.strip().lower()
+                # Alive5 sometimes defaults to "Voice Caller" for voice sessions until a name is set.
+                if vv in {"voice caller", "caller"} or "voice caller" in vv:
+                    return True
                 if "looking forward" in vv:
                     return True
                 if any(ch.isdigit() for ch in vv):
@@ -1845,7 +2045,11 @@ class SimpleVoiceAgent(Agent):
 
             if updates:
                 logger.info(f"🧾 Post-call reconciliation applying updates: {list(updates.keys())}")
-                asyncio.create_task(self._update_crm_data(**updates))
+                # Await so updates are actually sent before the session shuts down.
+                try:
+                    await asyncio.wait_for(self._update_crm_data(**updates), timeout=3.0)
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.warning(f"⚠️ Post-call reconciliation failed (non-fatal): {e}")
@@ -1869,11 +2073,250 @@ class SimpleVoiceAgent(Agent):
             asyncio.create_task(self._publish_to_frontend("user_transcript", user_text, speaker="User"))
             # logger.info(f"USER: {user_text}")
         
-            # Auto-detect and save name/email/phone if not already saved (fallback if LLM didn't call save_collected_data)
+            # Auto-detect and save email/phone/company/etc (name auto-detection is intentionally disabled inside this helper).
             asyncio.create_task(self._auto_detect_and_save_data(user_text))
+
+            # LLM-based verification trigger (web + phone):
+            # If user mentions "name" and CRM name looks missing/default/wrong, run a quick extraction + patch.
+            try:
+                asyncio.create_task(self._maybe_verify_crm_fields(user_text))
+            except Exception:
+                pass
         
             # Send user message to Alive5 (non-blocking to avoid interfering with agent processing)
             asyncio.create_task(self._send_message_to_alive5(user_text, is_agent=False))
+
+    async def _maybe_verify_crm_fields(self, user_text: str):
+        """
+        LLM-based mid-call verification to avoid missing CRM fields.
+        Triggered when user mentions key words (e.g. "name") and current CRM fields look missing/default.
+        """
+        try:
+            if not (os.getenv("MIDCALL_CRM_VERIFY", "true") or "true").lower() == "true":
+                return
+            if not hasattr(self, "llm") or not self.llm:
+                return
+            if not (self.alive5_crm_id and self.alive5_thread_id):
+                return
+
+            t = (user_text or "").lower()
+            wants_name = "name" in t
+            wants_email = "email" in t or "e-mail" in t or "mail" in t
+            wants_phone = "phone" in t or "number" in t
+            wants_company = "company" in t or "organization" in t or "organisation" in t
+            wants_account = "account" in t or "account id" in t
+            wants_title = "title" in t or "position" in t or "role" in t
+
+            # Find the last assistant prompt (for asked-for-field triggers)
+            last_assistant = ""
+            try:
+                for item in reversed(self._conversation_log[-12:]):
+                    if item.get("role") == "assistant":
+                        last_assistant = (item.get("text") or "").strip()
+                        break
+            except Exception:
+                last_assistant = ""
+            a = last_assistant.lower() if last_assistant else ""
+
+            asked_for_name = any(p in a for p in ["may i have your name", "what is your name", "your name?", "can i have your name", "could i have your name", "may i get your name"])
+            asked_for_email = "email" in a or "e-mail" in a
+            asked_for_company = "company" in a or "organization" in a or "organisation" in a
+            asked_for_phone = ("phone" in a and "number" in a) or "phone number" in a
+            asked_for_account = "account" in a and ("id" in a or "number" in a)
+            asked_for_title = "title" in a or "position" in a or "role" in a
+
+            # Determine which fields we should verify right now (only if missing / default)
+            fields: List[str] = []
+            cur_name = (self.collected_data.get("full_name") or "").strip().lower()
+            if (wants_name or asked_for_name) and (not cur_name or cur_name in {"voice caller", "caller"} or "looking forward" in cur_name):
+                fields.append("full_name")
+            if (wants_email or asked_for_email) and not (self.collected_data.get("email") or "").strip():
+                fields.append("email")
+            if (wants_phone or asked_for_phone) and not (self.collected_data.get("phone") or "").strip():
+                fields.append("phone")
+            if (wants_company or asked_for_company) and not (self.collected_data.get("company") or "").strip():
+                fields.append("company")
+            if (wants_account or asked_for_account) and not (self.collected_data.get("account_id") or "").strip():
+                fields.append("account_id")
+            if (wants_title or asked_for_title) and not (self.collected_data.get("company_title") or "").strip():
+                fields.append("company_title")
+
+            if not fields:
+                return
+
+            # Cooldown per field to avoid spam
+            try:
+                import time
+                now = time.monotonic()
+                cooldown = float(os.getenv("MIDCALL_CRM_VERIFY_COOLDOWN_SECONDS", "2") or "2")
+                fields = [f for f in fields if (now - float(self._last_crm_verify_at.get(f, 0.0))) >= cooldown]
+                for f in fields:
+                    self._last_crm_verify_at[f] = now
+            except Exception:
+                pass
+
+            if not fields:
+                return
+
+            logger.info(
+                f"🔎 Mid-call CRM verify triggered fields={fields} (asked_for={bool(last_assistant)})"
+            )
+            await self._llm_extract_and_patch(fields=fields, max_lines=12, min_confidence=0.70)
+        except Exception as e:
+            logger.debug(f"⚠️ Mid-call CRM verify failed (ignored): {e}")
+            return
+
+    async def _llm_extract_and_patch(self, fields: List[str], max_lines: int = 40, min_confidence: float = 0.75):
+        """Run a small extraction over recent transcript and patch CRM for the given fields."""
+        try:
+            if not self._conversation_log:
+                return
+            if not hasattr(self, "llm") or not self.llm:
+                return
+
+            import json
+            import re
+            from livekit.agents.llm import ChatContext, ChatMessage
+
+            async def _bedrock_invoke_json(system_text: str, user_obj: dict) -> dict | None:
+                """Call Bedrock (non-stream) to get JSON back. Avoids ConverseStream permissions."""
+                try:
+                    import boto3
+
+                    model_id = os.getenv("BEDROCK_MODEL", "anthropic.claude-3-5-sonnet-20240620-v1:0")
+                    region = os.getenv("BEDROCK_REGION", "us-east-1")
+
+                    def _call():
+                        client = boto3.client("bedrock-runtime", region_name=region)
+                        body = {
+                            "anthropic_version": "bedrock-2023-05-31",
+                            "max_tokens": 512,
+                            "temperature": 0,
+                            "system": system_text,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [{"type": "text", "text": json.dumps(user_obj)}],
+                                }
+                            ],
+                        }
+                        resp = client.invoke_model(
+                            modelId=model_id,
+                            body=json.dumps(body).encode("utf-8"),
+                            contentType="application/json",
+                            accept="application/json",
+                        )
+                        raw_bytes = resp["body"].read()
+                        out = json.loads(raw_bytes)
+                        # Claude on Bedrock returns content: [{type:"text", text:"..."}]
+                        text = ""
+                        for part in out.get("content", []) or []:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                text += part.get("text", "")
+                        text = (text or "").strip()
+                        # Strip fences if any
+                        text = re.sub(r"^```(?:json)?\\s*", "", text)
+                        text = re.sub(r"\\s*```$", "", text)
+                        return json.loads(text) if text else None
+
+                    return await asyncio.to_thread(_call)
+                except Exception as e:
+                    logger.debug(f"⚠️ Bedrock JSON extract failed (ignored): {e}")
+                    return None
+
+            lines: List[str] = []
+            for item in self._conversation_log[-max_lines:]:
+                role = item.get("role", "")
+                txt = (item.get("text") or "").strip()
+                if not txt:
+                    continue
+                prefix = "User" if role == "user" else "Agent"
+                lines.append(f"{prefix}: {txt}")
+            transcript = "\n".join(lines)
+
+            system = (
+                "You extract specific CRM fields from a conversation transcript.\n"
+                "Return ONLY valid JSON.\n"
+                "If a field is unknown, set value to null and confidence to 0.\n"
+                "Use confidence 0..1.\n"
+            )
+            schema = {f: {"value": "string|null", "confidence": "number"} for f in fields}
+            user = {
+                "task": "extract_fields",
+                "fields": fields,
+                "schema": schema,
+                "transcript": transcript,
+                "notes": (
+                    "If extracting full_name, ONLY return a person's real name. "
+                    "Do not return phrases like 'looking forward'."
+                ),
+            }
+
+            data = None
+            llm_provider = os.getenv("LLM_PROVIDER", "bedrock").lower()
+            if llm_provider == "bedrock":
+                data = await _bedrock_invoke_json(system, user)
+            else:
+                # Best-effort for non-bedrock: call plugin LLM via keyword-only arg.
+                # NOTE: Many plugin LLMs return a stream; if unsupported, we just skip.
+                try:
+                    ctx = ChatContext(items=[
+                        ChatMessage(role="system", content=[system]),
+                        ChatMessage(role="user", content=[json.dumps(user)]),
+                    ])
+                    stream = self.llm.chat(chat_ctx=ctx)
+                    text = ""
+                    async for ev in stream:
+                        delta = getattr(ev, "delta", None) or getattr(ev, "text", None)
+                        if isinstance(delta, str):
+                            text += delta
+                    raw = (text or "").strip()
+                    raw = re.sub(r"^```(?:json)?\\s*", "", raw)
+                    raw = re.sub(r"\\s*```$", "", raw)
+                    data = json.loads(raw) if raw else None
+                except Exception as e:
+                    logger.debug(f"⚠️ Plugin LLM extract failed (ignored): {e}")
+                    data = None
+
+            if not isinstance(data, dict):
+                return
+
+            # Apply patches (only for fields requested)
+            for field in fields:
+                obj = data.get(field) or {}
+                val = obj.get("value")
+                conf = float(obj.get("confidence") or 0.0)
+                if conf < min_confidence or not isinstance(val, str) or not val.strip():
+                    continue
+                v = val.strip()
+
+                if field == "full_name":
+                    c_l = v.lower()
+                    if "looking forward" in c_l:
+                        continue
+                    if any(ch.isdigit() for ch in v) or "@" in v or len(v.split()) > 4:
+                        continue
+                    logger.info(f"🧠 Mid-call LLM patch: full_name='{v}' (conf={conf:.2f})")
+                    await self.save_collected_data(None, "full_name", v)
+                elif field == "email":
+                    # Let existing normalization happen in save_collected_data path
+                    logger.info(f"🧠 Mid-call LLM patch: email='{v}' (conf={conf:.2f})")
+                    await self.save_collected_data(None, "email", v)
+                elif field == "phone":
+                    logger.info(f"🧠 Mid-call LLM patch: phone='{v}' (conf={conf:.2f})")
+                    await self.save_collected_data(None, "phone", v)
+                elif field == "company":
+                    logger.info(f"🧠 Mid-call LLM patch: company='{v}' (conf={conf:.2f})")
+                    await self.save_collected_data(None, "company", v)
+                elif field == "account_id":
+                    logger.info(f"🧠 Mid-call LLM patch: account_id='{v}' (conf={conf:.2f})")
+                    await self.save_collected_data(None, "account_id", v)
+                elif field == "company_title":
+                    logger.info(f"🧠 Mid-call LLM patch: company_title='{v}' (conf={conf:.2f})")
+                    await self.save_collected_data(None, "company_title", v)
+        except Exception as e:
+            logger.debug(f"⚠️ LLM extract/patch failed (ignored): {e}")
+            return
     
     # Note: on_agent_speech_committed is NOT a valid method in LiveKit Agent class
     # According to https://docs.livekit.io/agents/build/text/, we should use
@@ -2009,21 +2452,47 @@ async def entrypoint(ctx: JobContext):
             @ctx.room.on("participant_connected")
             def _on_participant_connected(participant: rtc.Participant):
                 try:
+                    identity = getattr(participant, 'identity', 'unknown')
+                    kind = getattr(participant, 'kind', 'unknown')
                     logger.info(
-                        f"👤 participant_connected identity={getattr(participant, 'identity', 'unknown')}"
-                        f" kind={getattr(participant, 'kind', 'unknown')}"
+                        f"👤 participant_connected identity={identity}"
+                        f" kind={kind}"
                     )
-                except Exception:
+                    
+                    # HITL: Detect human agent joining
+                    if identity.startswith("human_agent_"):
+                        logger.info(f"🙋 Human agent detected: {identity}")
+                        if agent._handoff_active:
+                            agent._human_agent_identity = identity
+                            # Enter shadow mode asynchronously
+                            asyncio.create_task(agent._enter_shadow_mode())
+                            # Notify Alive5 that human is now live
+                            asyncio.create_task(agent._emit_alive5_socket_event("human_agent_joined", {
+                                "thread_id": agent.alive5_thread_id or "",
+                                "agent_id": identity,
+                                "timestamp": int(asyncio.get_event_loop().time() * 1000)
+                            }))
+                except Exception as e:
+                    logger.warning(f"⚠️ Error in participant_connected handler: {e}")
                     logger.info("👤 participant_connected (details unavailable)")
 
             @ctx.room.on("participant_disconnected")
             def _on_participant_disconnected(participant: rtc.Participant):
                 try:
+                    identity = getattr(participant, 'identity', 'unknown')
+                    kind = getattr(participant, 'kind', 'unknown')
                     logger.info(
-                        f"👤 participant_disconnected identity={getattr(participant, 'identity', 'unknown')}"
-                        f" kind={getattr(participant, 'kind', 'unknown')}"
+                        f"👤 participant_disconnected identity={identity}"
+                        f" kind={kind}"
                     )
-                except Exception:
+                    
+                    # HITL: Detect human agent leaving
+                    if identity.startswith("human_agent_") and agent._human_agent_identity == identity:
+                        logger.info(f"👋 Human agent left: {identity}")
+                        # Exit shadow mode or end call based on configuration
+                        asyncio.create_task(agent._exit_shadow_mode())
+                except Exception as e:
+                    logger.warning(f"⚠️ Error in participant_disconnected handler: {e}")
                     logger.info("👤 participant_disconnected (details unavailable)")
 
             @ctx.room.on("track_published")
@@ -2090,20 +2559,70 @@ async def entrypoint(ctx: JobContext):
                 try:
                     if not is_phone_call:
                         return
-                    kind = getattr(participant, "kind", None)
-                    if kind not in (rtc.ParticipantKind.SIP, rtc.ParticipantKind.INGRESS):
+                    # LiveKit Python SDKs sometimes expose participant.kind as an int (e.g. "kind=3" in logs),
+                    # while rtc.ParticipantKind values are enum members. Normalize to ints for comparison.
+                    kind_raw = getattr(participant, "kind", None)
+                    kind_val = None
+                    try:
+                        if kind_raw is not None:
+                            kind_val = int(getattr(kind_raw, "value", kind_raw))
+                    except Exception:
+                        kind_val = None
+
+                    # Prefer kind match when possible, but also allow identity-based detection.
+                    sip_kind_vals = set()
+                    try:
+                        for _k in (getattr(rtc.ParticipantKind, "SIP", None), getattr(rtc.ParticipantKind, "INGRESS", None)):
+                            if _k is None:
+                                continue
+                            try:
+                                sip_kind_vals.add(int(getattr(_k, "value", _k)))
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                    identity = (getattr(participant, "identity", "") or "").lower()
+                    is_sip_like = False
+                    if kind_val is not None and sip_kind_vals and kind_val in sip_kind_vals:
+                        is_sip_like = True
+                    elif identity.startswith("sip_") or identity.startswith("ingress") or "sip" in identity:
+                        # Fallback for SDKs that report kind differently.
+                        is_sip_like = True
+
+                    if not is_sip_like:
                         return
+
+                    logger.info(
+                        f"📞 PSTN participant_disconnected trigger (caller) identity={getattr(participant, 'identity', 'unknown')} kind={kind_val if kind_val is not None else kind_raw}"
+                    )
 
                     async def _end_after_disconnect():
                         try:
-                            await asyncio.sleep(0.5)
-                            rp2 = getattr(ctx.room, "remote_participants", {}) or {}
-                            if len(rp2) != 0:
-                                return
+                            # Keep this very short to beat backend room deletion on Telnyx hangup.
+                            await asyncio.sleep(0.1)
                             a = agent_ref.get("agent")
                             if a is None:
                                 return
+                            # Wait briefly for Alive5 session identifiers to be present (phone init is async).
+                            try:
+                                for _ in range(10):  # ~2s max
+                                    if getattr(a, "alive5_thread_id", None) and getattr(a, "alive5_channel_id", None) and getattr(a, "alive5_crm_id", None):
+                                        break
+                                    await asyncio.sleep(0.2)
+                            except Exception:
+                                pass
+                            # Caller hung up
+                            try:
+                                a._end_by = "person"
+                            except Exception:
+                                pass
                             await a.on_session_end()
+                            # Best-effort: disconnect worker from room (agent side) so the job terminates cleanly.
+                            try:
+                                await ctx.room.disconnect()
+                            except Exception:
+                                pass
                         except Exception:
                             pass
 
