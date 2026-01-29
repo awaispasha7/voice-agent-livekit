@@ -1,23 +1,16 @@
 {
   "version": 2,
   "name": "alive5-dashboard",
-  "builds": [
-    {
-      "src": "package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "dist/alive5-dashboard"
-      }
-    }
-  ],
+  "buildCommand": "cd alive5-dashboard && pnpm install && pnpm run build",
+  "outputDirectory": "alive5-dashboard/dist/alive5-dashboard",
   "routes": [
+    {
+      "handle": "filesystem"
+    },
     {
       "src": "/(.*)",
       "dest": "/index.html"
     }
-  ],
-  "env": {
-    "NODE_ENV": "production"
-  }
+  ]
 }
 
