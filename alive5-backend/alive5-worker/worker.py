@@ -2059,8 +2059,9 @@ class SimpleVoiceAgent(Agent):
             # Look for patterns like "account id is X", "account number is X", "ID is X", etc.
             if not self.collected_data.get("account_id"):
                 account_id_patterns = [
-                    r'(?:account\s+id|account\s+number|account\s+#|account\s+ID|ID)\s+(?:is|is\s+)?([A-Za-z0-9-]{2,20})',
-                    r'(?:my\s+)?(?:account\s+id|account\s+number|ID)\s+(?:is\s+)?([A-Za-z0-9-]{2,20})',
+                    # Require the literal "account" phrase to avoid false positives like "dID that"
+                    r'\baccount\s*(?:id|number|#)\b\s*(?:is\s*)?([A-Za-z0-9-]{2,20})\b',
+                    r'\bmy\s+account\s*(?:id|number)\b\s*(?:is\s*)?([A-Za-z0-9-]{2,20})\b',
                 ]
                 for pattern in account_id_patterns:
                     account_match = re.search(pattern, user_text_clean, re.IGNORECASE)

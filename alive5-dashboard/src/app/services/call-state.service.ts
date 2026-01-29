@@ -9,6 +9,7 @@ import { BehaviorSubject, Observable } from 'rxjs';
 import { CallSession } from '../models/call.model';
 import { LiveKitService } from './livekit.service';
 import { Alive5SocketService } from './alive5-socket.service';
+import { environment } from '../../environments/environment';
 
 @Injectable({
   providedIn: 'root'
@@ -22,7 +23,7 @@ export class CallStateService {
   
   private durationInterval: any = null;
   
-  private backendUrl: string = 'http://localhost:8000'; // TODO: Configure from environment
+  private backendUrl: string = environment.backendUrl;
 
   constructor(
     private http: HttpClient,
