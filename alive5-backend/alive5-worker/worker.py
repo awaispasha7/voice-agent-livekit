@@ -511,6 +511,7 @@ class SimpleVoiceAgent(Agent):
             Success status and a message.
         """
         logger.info(f"🔔 save_collected_data CALLED: field_name='{field_name}', value='{value[:50] if value else 'None'}...'")
+        
         def _normalize_field_name(name: str) -> str:
             n = (name or "").strip()
             n_l = n.lower().replace("-", "_").replace(" ", "_")
@@ -572,6 +573,19 @@ class SimpleVoiceAgent(Agent):
             normalized_value = _normalize_phone_number(value)
             if normalized_value != value:
                 logger.info(f"📞 Normalized phone number: {value} -> {normalized_value}")
+
+        # Check if this exact value was already saved (prevent duplicate saves that cause hiccups)
+        if normalized_field in self.collected_data:
+            existing_value = self.collected_data[normalized_field]
+            # For notes_entry, compare the list
+            if normalized_field == "notes_entry":
+                if isinstance(existing_value, list) and normalized_value in existing_value:
+                    logger.info(f"⏭️ Skipping duplicate save for {normalized_field}: value already exists")
+                    return {"success": True, "message": f"{normalized_field} already saved (duplicate prevented)"}
+            # For other fields, compare directly
+            elif existing_value == normalized_value:
+                logger.info(f"⏭️ Skipping duplicate save for {normalized_field}: value unchanged ({normalized_value})")
+                return {"success": True, "message": f"{normalized_field} already saved (duplicate prevented)"}
 
         # Try Gateway first if enabled
         if self.agentcore_gateway and self.agentcore_gateway.is_enabled():
@@ -1408,11 +1422,14 @@ class SimpleVoiceAgent(Agent):
 
     async def _ensure_alive5_socket_connected(self) -> bool:
         """
-        For PSTN calls (no frontend), connect directly to Alive5 Socket.IO and initialize voice agent.
+        Connect directly to Alive5 Socket.IO and initialize voice agent.
+        Originally for PSTN calls only, but now also enabled for web sessions
+        to ensure CRM updates reach Alive5 even if frontend widget doesn't forward them.
         This is additive and isolated; failures never affect the call flow.
         """
-        if not self._is_phone_call_room():
-            return False
+        # Allow both web and phone sessions to connect
+        # if not self._is_phone_call_room():
+        #     return False
 
         if not (self.alive5_thread_id and self.alive5_crm_id and self.alive5_channel_id):
             return False
@@ -1713,7 +1730,8 @@ class SimpleVoiceAgent(Agent):
             if phone and phone.strip():
                 _add_updates("phone", phone.strip(), ["phone", "phone_mobile", "phoneMobile"])
             if notes and notes.strip():
-                _add_updates("notes", notes.strip(), ["notes"])
+                # Some Alive5 consumers expect notes under different keys depending on integration/version.
+                _add_updates("notes", notes.strip(), ["notes", "note", "notes_entry", "notesEntry"])
             if account_id and str(account_id).strip():
                 # Send camelCase version first (matches _build_crm_data format), then aliases
                 account_id_str = str(account_id).strip()
@@ -1721,12 +1739,17 @@ class SimpleVoiceAgent(Agent):
                 logger.info(f"💼 Sending accountId to CRM: {account_id_str}")
             if company and company.strip():
                 company_str = company.strip()
-                _add_updates("company", company_str, ["company"])
+                # Some Alive5 consumers expect company in different formats.
+                _add_updates("company", company_str, ["company", "company_name", "companyName"])
                 logger.info(f"💼 Sending company to CRM: {company_str}")
             if company_title and company_title.strip():
                 # Send camelCase version first (matches _build_crm_data format), then aliases
                 company_title_str = company_title.strip()
-                _add_updates("companyTitle", company_title_str, ["companyTitle", "company_title", "companytitle"])
+                _add_updates(
+                    "companyTitle",
+                    company_title_str,
+                    ["companyTitle", "company_title", "companytitle", "companyTitleName", "title"],
+                )
                 logger.info(f"💼 Sending companyTitle to CRM: {company_title_str}")
             if tags:
                 # Tags must be sent as an array
@@ -1769,7 +1792,8 @@ class SimpleVoiceAgent(Agent):
                 )
                 logger.debug(f"✅ CRM update sent via data channel: {update['key']}")
 
-                # PSTN bridge: also emit directly to Alive5 socket (no frontend in phone rooms)
+                # Also emit directly to Alive5 socket for reliability
+                # (originally PSTN-only, but web sessions may have frontend widgets that don't forward all fields)
                 # Run in background to avoid blocking the agent's response
                 try:
                     asyncio.create_task(

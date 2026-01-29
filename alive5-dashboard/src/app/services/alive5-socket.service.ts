@@ -30,11 +30,13 @@ export class Alive5SocketService {
       
       // Create socket connection to our backend (no auth needed for dashboard)
       this.socket = io(socketUrl, {
-        transports: ['websocket'],
+        transports: ['websocket', 'polling'],  // Try websocket first, fallback to polling
         path: '/socket.io',
         reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionAttempts: 5
+        reconnectionDelay: 2000,  // Wait 2 seconds between attempts
+        reconnectionDelayMax: 5000,  // Max 5 seconds
+        reconnectionAttempts: 3,  // Only try 3 times
+        timeout: 10000  // 10 second connection timeout
       });
 
       // Set up event listeners
@@ -56,9 +58,22 @@ export class Alive5SocketService {
       this.connectedSubject.next(true);
     });
 
-    this.socket.on('disconnect', () => {
-      console.log('[Alive5Socket] Disconnected');
+    this.socket.on('disconnect', (reason: string) => {
+      console.log('[Alive5Socket] Disconnected:', reason);
       this.connectedSubject.next(false);
+    });
+
+    this.socket.on('connect_error', (error: any) => {
+      console.error('[Alive5Socket] Connection error:', error.message || error);
+    });
+
+    this.socket.on('reconnect_attempt', (attemptNumber: number) => {
+      console.log(`[Alive5Socket] Reconnection attempt ${attemptNumber}/3`);
+    });
+
+    this.socket.on('reconnect_failed', () => {
+      console.error('[Alive5Socket] Reconnection failed after 3 attempts');
+      console.error('[Alive5Socket] Please check that the backend is running and accessible');
     });
 
     this.socket.on('incoming_human_call', (data: IncomingCall) => {
