@@ -194,6 +194,11 @@ class SimpleVoiceAgent(Agent):
         self._handoff_queue = None
         self._human_agent_identity = None
         self._session_end_started = False  # Guard against duplicate end events
+
+        # Silence nudges (human-like check-ins when user stays silent after a question)
+        self._silence_nudge_task: asyncio.Task | None = None
+        self._silence_nudge_question: str | None = None
+        self._silence_nudge_snooze_until: float = 0.0
         
         # Get LLM provider from env (bedrock, openai, or nova)
         llm_provider = os.getenv("LLM_PROVIDER", "bedrock").lower()
@@ -721,6 +726,78 @@ class SimpleVoiceAgent(Agent):
                 "success": False,
                 "message": f"Error saving data: {str(e)}"
             }
+
+    # -------------------------------------------------------------------------
+    # Silence nudges (LLM-managed; avoids heuristic pattern matching in worker)
+    # -------------------------------------------------------------------------
+    @function_tool()
+    async def expect_user_response(self, context: RunContext, question_text: str = "") -> Dict[str, Any]:
+        """
+        LLM should call this silently right after it asks a question.
+        Starts a timer that will gently check in if the user stays silent.
+        """
+        try:
+            self._cancel_silence_nudge()
+        except Exception:
+            pass
+
+        self._silence_nudge_question = (question_text or "").strip()
+
+        async def _runner():
+            import time as _time
+
+            delays = [
+                float(os.getenv("SILENCE_NUDGE_SECONDS", "8") or "8"),
+                float(os.getenv("SILENCE_NUDGE_REPEAT_SECONDS", "12") or "12"),
+                float(os.getenv("SILENCE_NUDGE_REASK_SECONDS", "18") or "18"),
+            ]
+
+            for idx, delay in enumerate(delays):
+                # Respect snooze (e.g. user asked to wait)
+                snooze_until = float(getattr(self, "_silence_nudge_snooze_until", 0.0) or 0.0)
+                now = _time.monotonic()
+                if snooze_until > now:
+                    await asyncio.sleep(snooze_until - now)
+
+                await asyncio.sleep(delay)
+
+                # Don't nudge during HITL handoff / shutdown
+                if getattr(self, "_handoff_active", False):
+                    return
+                if hasattr(self, "agent_session") and self.agent_session:
+                    if hasattr(self.agent_session, "_closing") and self.agent_session._closing:
+                        return
+
+                if idx == 0:
+                    msg = os.getenv("SILENCE_NUDGE_MSG_1", "Are you still there?")
+                elif idx == 1:
+                    msg = os.getenv("SILENCE_NUDGE_MSG_2", "No rush — take your time. Ready when you are.")
+                else:
+                    q = (self._silence_nudge_question or "").strip()
+                    msg = f"Just to repeat — {q}" if q else "Are you ready to answer now?"
+
+                try:
+                    if hasattr(self, "agent_session") and self.agent_session:
+                        await self.agent_session.say(msg)
+                except Exception:
+                    return
+
+        self._silence_nudge_task = asyncio.create_task(_runner())
+        return {"success": True, "message": "ok"}
+
+    @function_tool()
+    async def snooze_user_response(self, context: RunContext, seconds: int = 60) -> Dict[str, Any]:
+        """
+        LLM should call this silently when the user says things like "wait/hold on".
+        Snoozes silence nudges for a while so we don't pester the user.
+        """
+        try:
+            import time as _time
+            self._silence_nudge_snooze_until = _time.monotonic() + float(seconds or 0)
+            self._cancel_silence_nudge()
+        except Exception:
+            pass
+        return {"success": True, "snoozed_seconds": int(seconds or 0)}
     
     @function_tool()
     async def apply_tag(self, context: RunContext, tags: Optional[List[str]] = None, conversation_summary: Optional[str] = None) -> Dict[str, Any]:
@@ -1884,42 +1961,42 @@ class SimpleVoiceAgent(Agent):
             except Exception as e:
                 logger.error(f"❌ Failed to send message instruction via data channel: {e}")
 
-            # PSTN bridge: also emit directly to Alive5 socket (no frontend in phone rooms)
-            try:
-                payload = dict(socket_instruction.get("payload") or {})
-                # Match frontend semantics:
-                # - remove is_agent flag (server doesn't expect it)
-                # - include voiceAgentId ONLY for agent messages (server maps to created_by/user_id)
-                payload.pop("is_agent", None)
-                # Frontend also clears any existing voiceAgentId fields to ensure a clean state.
-                payload.pop("voiceAgentId", None)
-                payload.pop("voice_agent_id", None)
-                if is_agent:
-                    # CRITICAL FIX: Match web format for phone IDs.
-                    # Web uses: voice_agent_web_8aqz5xbl (8 chars)
-                    # Phone should use: voice_agent_phone_9e4a83df (first 8 chars of UUID, no dashes)
-                    raw_id = getattr(self, 'alive5_voice_agent_id', None)
-                    if raw_id:
-                        # Extract short ID: first 8 alphanumeric chars (remove dashes/underscores)
-                        clean_id = raw_id.replace("-", "").replace("_", "")[:8].lower()
-                        is_phone = self._is_phone_call_room()
-                        platform = "phone" if is_phone else "web"
-                        voice_agent_id = f"voice_agent_{platform}_{clean_id}"
-                        
-                        payload["voiceAgentId"] = voice_agent_id
-                        logger.info(f"🆔 Using voiceAgentId for post_message: {voice_agent_id} (short format, raw={raw_id[:16]}...)")
-                    else:
-                        logger.warning(f"⚠️ No voiceAgentId available for agent message (alive5_voice_agent_id not set)")
-                ok = await self._emit_alive5_socket_event("post_message", payload)
+            # PSTN bridge: also emit directly to Alive5 socket (phone rooms have no frontend widget to relay).
+            # IMPORTANT: For web sessions, the frontend already relays `post_message` from lk.alive5.socket,
+            # so direct socket emit would duplicate messages in Alive5.
+            if self._is_phone_call_room():
                 try:
+                    payload = dict(socket_instruction.get("payload") or {})
+                    # Match frontend semantics:
+                    # - remove is_agent flag (server doesn't expect it)
+                    # - include voiceAgentId ONLY for agent messages (server maps to created_by/user_id)
+                    payload.pop("is_agent", None)
+                    # Frontend also clears any existing voiceAgentId fields to ensure a clean state.
+                    payload.pop("voiceAgentId", None)
+                    payload.pop("voice_agent_id", None)
                     if is_agent:
-                        logger.info(f"📤 PSTN post_message emitted (agent) ok={ok} voiceAgentId={payload.get('voiceAgentId','N/A')}")
-                    else:
-                        logger.info(f"📤 PSTN post_message emitted (user) ok={ok}")
+                        # CRITICAL FIX: Match web format for phone IDs.
+                        # Web uses: voice_agent_web_8aqz5xbl (8 chars)
+                        # Phone should use: voice_agent_phone_9e4a83df (first 8 chars of UUID, no dashes)
+                        raw_id = getattr(self, 'alive5_voice_agent_id', None)
+                        if raw_id:
+                            # Extract short ID: first 8 alphanumeric chars (remove dashes/underscores)
+                            clean_id = raw_id.replace("-", "").replace("_", "")[:8].lower()
+                            voice_agent_id = f"voice_agent_phone_{clean_id}"
+                            payload["voiceAgentId"] = voice_agent_id
+                            logger.info(f"🆔 Using voiceAgentId for post_message: {voice_agent_id} (short format, raw={raw_id[:16]}...)")
+                        else:
+                            logger.warning(f"⚠️ No voiceAgentId available for agent message (alive5_voice_agent_id not set)")
+                    ok = await self._emit_alive5_socket_event("post_message", payload)
+                    try:
+                        if is_agent:
+                            logger.info(f"📤 PSTN post_message emitted (agent) ok={ok} voiceAgentId={payload.get('voiceAgentId','N/A')}")
+                        else:
+                            logger.info(f"📤 PSTN post_message emitted (user) ok={ok}")
+                    except Exception:
+                        pass
                 except Exception:
                     pass
-            except Exception:
-                pass
             
         except Exception as e:
             logger.error(f"❌ Could not send message to Alive5: {e}")
@@ -2142,6 +2219,12 @@ class SimpleVoiceAgent(Agent):
         # Then do our side effects (non-blocking, fire-and-forget)
         user_text = new_message.text_content or ""
         if user_text.strip():
+            # Any user speech cancels pending silence nudges
+            try:
+                self._cancel_silence_nudge()
+            except Exception:
+                pass
+
             # Append to transcript (for post-call reconciliation)
             try:
                 self._conversation_log.append({"role": "user", "text": user_text.strip()})
@@ -2164,6 +2247,65 @@ class SimpleVoiceAgent(Agent):
         
             # Send user message to Alive5 (non-blocking to avoid interfering with agent processing)
             asyncio.create_task(self._send_message_to_alive5(user_text, is_agent=False))
+
+    def _cancel_silence_nudge(self):
+        task = getattr(self, "_silence_nudge_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._silence_nudge_task = None
+        self._silence_nudge_question = None
+
+    def _schedule_silence_nudge_if_question(self, agent_text: str):
+        """
+        If the agent just asked a question and the user is silent, do a gentle human-like check-in.
+        """
+        try:
+            # Deprecated: silence nudges are now LLM-managed via expect_user_response().
+            return
+
+            async def _runner():
+                import time as _time
+
+                # Stage delays: gentle check-in -> no rush -> repeat question
+                delays = [
+                    float(os.getenv("SILENCE_NUDGE_SECONDS", "8") or "8"),
+                    float(os.getenv("SILENCE_NUDGE_REPEAT_SECONDS", "12") or "12"),
+                    float(os.getenv("SILENCE_NUDGE_REASK_SECONDS", "18") or "18"),
+                ]
+
+                for idx, delay in enumerate(delays):
+                    # Respect snooze if user said "wait"
+                    snooze_until = float(getattr(self, "_silence_nudge_snooze_until", 0.0) or 0.0)
+                    now = _time.monotonic()
+                    if snooze_until > now:
+                        await asyncio.sleep(snooze_until - now)
+
+                    await asyncio.sleep(delay)
+
+                    # Don't nudge during HITL handoff / shutdown
+                    if getattr(self, "_handoff_active", False):
+                        return
+                    if hasattr(self, "agent_session") and self.agent_session:
+                        if hasattr(self.agent_session, "_closing") and self.agent_session._closing:
+                            return
+
+                    if idx == 0:
+                        msg = os.getenv("SILENCE_NUDGE_MSG_1", "Are you still there?")
+                    elif idx == 1:
+                        msg = os.getenv("SILENCE_NUDGE_MSG_2", "No rush — take your time. Ready when you are.")
+                    else:
+                        q = self._silence_nudge_question or ""
+                        msg = f"Just to repeat — {q}" if q else "Are you ready to answer now?"
+
+                    try:
+                        if hasattr(self, "agent_session") and self.agent_session:
+                            await self.agent_session.say(msg)
+                    except Exception:
+                        return
+
+            self._silence_nudge_task = asyncio.create_task(_runner())
+        except Exception:
+            return
 
     async def _maybe_verify_crm_fields(self, user_text: str):
         """

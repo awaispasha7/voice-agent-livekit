@@ -30,7 +30,14 @@ export class Alive5SocketService {
       
       // Create socket connection to our backend (no auth needed for dashboard)
       this.socket = io(socketUrl, {
-        transports: ['websocket', 'polling'],  // Try websocket first, fallback to polling
+        // IMPORTANT:
+        // Your current nip.io/nginx setup is not reliably forwarding WebSocket Upgrade headers
+        // to /socket.io, which results in backend logs like:
+        //   "Invalid websocket upgrade" + 400s
+        // Use polling to make the dashboard work everywhere; you can re-enable websocket later
+        // once the reverse proxy is configured for Upgrade headers.
+        transports: ['polling'],
+        upgrade: false,
         path: '/socket.io',
         reconnection: true,
         reconnectionDelay: 2000,  // Wait 2 seconds between attempts
