@@ -42,6 +42,7 @@ Thumbs.db
 
 # docs
 docs/
+*.pdf
 
 # Deployment files (keep local, don't commit to repo)
 *.sh
