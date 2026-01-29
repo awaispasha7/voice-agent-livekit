@@ -596,6 +596,7 @@ class SimpleVoiceAgent(Agent):
                             self.collected_data["notes_entry"].append(normalized_value)
                         # IMPORTANT: Gateway call doesn't emit realtime CRM updates.
                         # Keep behavior consistent with the direct path by emitting the CRM update here too.
+                        # Fire-and-forget CRM updates so the agent can continue speaking immediately
                         logger.info(f"📤 Triggering CRM update for {normalized_field} via Gateway path")
                         if normalized_field == "full_name":
                             name_parts = normalized_value.strip().split(' ', 1)
@@ -605,28 +606,28 @@ class SimpleVoiceAgent(Agent):
                                 self.collected_data["first_name"] = first_name
                             if last_name:
                                 self.collected_data["last_name"] = last_name
-                            await self._update_crm_data(first_name=first_name, last_name=last_name)
+                            asyncio.create_task(self._update_crm_data(first_name=first_name, last_name=last_name))
                         elif normalized_field == "first_name":
-                            await self._update_crm_data(first_name=normalized_value)
+                            asyncio.create_task(self._update_crm_data(first_name=normalized_value))
                         elif normalized_field == "last_name":
-                            await self._update_crm_data(last_name=normalized_value)
+                            asyncio.create_task(self._update_crm_data(last_name=normalized_value))
                         elif normalized_field == "email":
-                            await self._update_crm_data(email=normalized_value)
+                            asyncio.create_task(self._update_crm_data(email=normalized_value))
                         elif normalized_field == "phone":
-                            await self._update_crm_data(phone=normalized_value)  # Use normalized value
+                            asyncio.create_task(self._update_crm_data(phone=normalized_value))  # Use normalized value
                         elif normalized_field == "account_id":
                             logger.info(f"💼 Gateway path: Triggering CRM update for account_id: {normalized_value}")
-                            await self._update_crm_data(account_id=normalized_value)
+                            asyncio.create_task(self._update_crm_data(account_id=normalized_value))
                         elif normalized_field == "company":
                             logger.info(f"💼 Gateway path: Triggering CRM update for company: {normalized_value}")
-                            await self._update_crm_data(company=normalized_value)
+                            asyncio.create_task(self._update_crm_data(company=normalized_value))
                         elif normalized_field == "company_title":
                             logger.info(f"💼 Gateway path: Triggering CRM update for company_title: {normalized_value}")
-                            await self._update_crm_data(company_title=normalized_value)
+                            asyncio.create_task(self._update_crm_data(company_title=normalized_value))
                         elif normalized_field == "notes_entry":
                             notes_str = " | ".join(self.collected_data.get("notes_entry", []))
                             logger.info(f"📝 Gateway path: Triggering CRM update for notes: {notes_str[:50]}...")
-                            await self._update_crm_data(notes=notes_str)
+                            asyncio.create_task(self._update_crm_data(notes=notes_str))
                         logger.info(f"✅ Gateway path: CRM update completed for {normalized_field}")
                     else:
                         logger.warning(f"⚠️ Gateway call returned success=False for {normalized_field}: {result.get('message', 'Unknown error')}")
@@ -1310,23 +1311,42 @@ class SimpleVoiceAgent(Agent):
             self._handoff_active = True
             self._handoff_queue = queue
             
+            # Prepare payload
+            payload = {
+                "thread_id": self.alive5_thread_id or "",
+                "crm_id": self.alive5_crm_id or "",
+                "room_name": self.room_name,
+                "caller_phone": "",  # TODO: Extract from session
+                "queue": queue,
+                "timestamp": int(asyncio.get_event_loop().time() * 1000),
+                "context": f"Agent requested human assistance ({trigger})"
+            }
+            
             # Emit incoming_human_call event to Alive5
             if self._alive5_socket and self._alive5_socket_connected:
                 try:
-                    payload = {
-                        "thread_id": self.alive5_thread_id or "",
-                        "crm_id": self.alive5_crm_id or "",
-                        "room_name": self.room_name,
-                        "caller_phone": "",  # TODO: Extract from session
-                        "queue": queue,
-                        "timestamp": int(asyncio.get_event_loop().time() * 1000),
-                        "context": "Agent requested human assistance"
-                    }
-                    
                     await self._emit_alive5_socket_event("incoming_human_call", payload)
-                    logger.info(f"✅ Emitted incoming_human_call event for queue: {queue}")
+                    logger.info(f"✅ Emitted incoming_human_call event to Alive5 for queue: {queue}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to emit incoming_human_call: {e}")
+                    logger.error(f"❌ Failed to emit incoming_human_call to Alive5: {e}")
+            
+            # Notify dashboard via backend API
+            try:
+                import httpx
+                backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{backend_url}/api/dashboard/notify-call",
+                        json=payload,
+                        timeout=5.0
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        logger.info(f"✅ Notified {result.get('dashboards_notified', 0)} dashboard(s)")
+                    else:
+                        logger.warning(f"⚠️ Dashboard notification failed: {response.status_code}")
+            except Exception as e:
+                logger.error(f"❌ Failed to notify dashboard: {e}")
             
             # TODO: Play hold music or message to caller
             logger.info("📞 Waiting for human agent to join...")
@@ -1750,8 +1770,11 @@ class SimpleVoiceAgent(Agent):
                 logger.debug(f"✅ CRM update sent via data channel: {update['key']}")
 
                 # PSTN bridge: also emit directly to Alive5 socket (no frontend in phone rooms)
+                # Run in background to avoid blocking the agent's response
                 try:
-                    await self._emit_alive5_socket_event("save_crm_data", socket_instruction["payload"])
+                    asyncio.create_task(
+                        self._emit_alive5_socket_event("save_crm_data", socket_instruction["payload"])
+                    )
                 except Exception:
                     pass
                 

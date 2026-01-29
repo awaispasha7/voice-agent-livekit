@@ -22,24 +22,16 @@ export class Alive5SocketService {
   constructor() {}
 
   /**
-   * Connect to Alive5 Socket.IO server
+   * Connect to backend Socket.IO server (for HITL dashboard)
    */
-  connect(apiKey: string, agentId: string, socketUrl: string = 'wss://api-stage.alive5.com'): void {
+  connect(apiKey: string, agentId: string, socketUrl: string = 'http://localhost:8000'): void {
     try {
-      console.log('[Alive5Socket] Connecting to:', socketUrl);
+      console.log('[Alive5Socket] Connecting to backend:', socketUrl);
       
-      // Build query string
-      const query = {
-        type: 'human_agent',
-        'x-a5-apikey': apiKey,
-        agent_id: agentId
-      };
-
-      // Create socket connection
+      // Create socket connection to our backend (no auth needed for dashboard)
       this.socket = io(socketUrl, {
         transports: ['websocket'],
         path: '/socket.io',
-        query: query,
         reconnection: true,
         reconnectionDelay: 1000,
         reconnectionAttempts: 5

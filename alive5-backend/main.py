@@ -312,6 +312,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Socket.IO server for dashboard connections (HITL)
+import socketio
+
+sio = socketio.AsyncServer(
+    async_mode='asgi',
+    cors_allowed_origins='*',  # Replace with specific origins in production
+    logger=False,
+    engineio_logger=False
+)
+
+# Store connected dashboard clients
+dashboard_clients = set()
+
+@sio.event
+async def connect(sid, environ, auth):
+    """Handle dashboard client connection"""
+    logger.info(f"🔌 Dashboard client connected: {sid}")
+    dashboard_clients.add(sid)
+    return True
+
+@sio.event
+async def disconnect(sid):
+    """Handle dashboard client disconnection"""
+    logger.info(f"🔌 Dashboard client disconnected: {sid}")
+    dashboard_clients.discard(sid)
+
+# Create ASGI app with Socket.IO
+socket_app = socketio.ASGIApp(
+    sio,
+    other_asgi_app=app,
+    socketio_path='socket.io'
+)
+
+# Helper function to emit events to all connected dashboards
+async def emit_to_dashboards(event: str, data: dict):
+    """Emit an event to all connected dashboard clients"""
+    if dashboard_clients:
+        logger.info(f"📤 Emitting '{event}' to {len(dashboard_clients)} dashboard(s)")
+        await sio.emit(event, data)
+    else:
+        logger.warning(f"⚠️ No dashboards connected to receive '{event}' event")
+
 # Pydantic models
 class ConnectionDetailsRequest(BaseModel):
     room_name: str
@@ -1788,6 +1830,33 @@ async def telnyx_sip_setup_info():
 
 # ===== HITL (Human-in-the-Loop) Voice Handoff Endpoints =====
 
+class IncomingCallNotification(BaseModel):
+    """Notification payload for incoming human call"""
+    thread_id: str
+    crm_id: str
+    room_name: str
+    caller_phone: Optional[str] = ""
+    queue: str = "general"
+    timestamp: int
+    context: str = ""
+
+@app.post("/api/dashboard/notify-call")
+async def notify_dashboard_incoming_call(notification: IncomingCallNotification):
+    """Endpoint for worker to notify dashboard of incoming human call"""
+    try:
+        logger.info(f"📞 Incoming call notification for room: {notification.room_name}, queue: {notification.queue}")
+        
+        # Emit to all connected dashboards
+        await emit_to_dashboards("incoming_human_call", notification.dict())
+        
+        return {
+            "status": "success",
+            "dashboards_notified": len(dashboard_clients)
+        }
+    except Exception as e:
+        logger.error(f"❌ Error notifying dashboards: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/human-agent/request-takeover")
 async def request_human_takeover(request: HumanTakeoverRequest):
     """Manual intervention endpoint - Human agent requests to take over an active call"""
@@ -1949,7 +2018,7 @@ if __name__ == "__main__":
     # Ensure we can import the app module
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     uvicorn.run(
-        app,
+        "main:socket_app",  # Use socket_app for Socket.IO support
         host="0.0.0.0",
         port=8000,
         reload=False,

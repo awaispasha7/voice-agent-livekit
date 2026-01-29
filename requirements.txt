@@ -15,7 +15,7 @@ fastapi>=0.115.0  # Updated to support newer starlette (required by bedrock-agen
 uvicorn[standard]>=0.30.0  # Updated to match newer starlette
 openai>=1.0.0
 httpx
-python-socketio[asyncio-client]
+python-socketio[asyncio-client,asyncio]  # Client for worker, server for dashboard
 boto3>=1.34.0
 psutil>=5.9.0  # For system resource monitoring (CPU, RAM)
 

@@ -12,7 +12,8 @@ const LIVEKIT_URL = typeof process !== 'undefined' && process.env ? process.env[
 export const environment = {
   production: true,
   backendUrl: BACKEND_URL || 'https://18.210.238.67.nip.io',
-  alive5SocketUrl: A5_SOCKET_URL || 'wss://api-stage.alive5.com',
+  // Dashboard connects to our own backend, not directly to Alive5
+  alive5SocketUrl: BACKEND_URL || 'https://18.210.238.67.nip.io',
   alive5ApiKey: A5_API_KEY || '7954047b-29d7-4098-aeca-9c309ab905da',
   livekitUrl: LIVEKIT_URL || 'ws://18.210.238.67:7880'
 };
