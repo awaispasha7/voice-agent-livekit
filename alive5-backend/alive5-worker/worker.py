@@ -142,6 +142,8 @@ class SimpleVoiceAgent(Agent):
         self.faq_bot_id = None
         # Flag to track if we're using Nova Sonic (speech-to-speech model)
         self._using_nova = False
+        # Store agent session reference so we can stop it during handoff
+        self.agent_session = None
         
         # Flow management
         self.bot_template = None
@@ -196,6 +198,7 @@ class SimpleVoiceAgent(Agent):
         self._handoff_monitor_task: asyncio.Task | None = None
         self._handoff_backend_seen_active = False
         self._session_end_started = False  # Guard against duplicate end events
+        self._human_agent_stt_streams = {}  # Dict[agent_identity, STT stream] - supports multiple human agents
 
         # Silence nudges (human-like check-ins when user stays silent after a question)
         self._silence_nudge_task: asyncio.Task | None = None
@@ -339,6 +342,15 @@ class SimpleVoiceAgent(Agent):
         Returns:
             A status object. For HITL handoff, `success: true` and `is_hitl: true`.
         """
+        # Check if handoff is already active or pending - prevent duplicate transfers
+        if getattr(self, "_handoff_active", False):
+            logger.info("⚠️ Transfer already in progress - ignoring duplicate request")
+            return {
+                "success": True,
+                "is_hitl": True,
+                "message": "Transfer already in progress. Please wait for a human agent to join."
+            }
+        
         # Try Gateway first if enabled
         if self.agentcore_gateway and self.agentcore_gateway.is_enabled():
             try:
@@ -1471,7 +1483,16 @@ class SimpleVoiceAgent(Agent):
         try:
             logger.info(f"🙋 Initiating human handoff - queue: {queue}, trigger: {trigger}")
             
-            # Set handoff state
+            # IMMEDIATELY interrupt any ongoing speech and stop LLM processing
+            # This prevents the AI from responding to messages that came in during transfer
+            try:
+                if self.agent_session:
+                    self.agent_session.interrupt()
+                    logger.info("🛑 AI speech interrupted immediately on handoff initiation")
+            except Exception as interrupt_err:
+                logger.warning(f"⚠️ Could not interrupt session: {interrupt_err}")
+            
+            # Set handoff state to block future LLM calls
             self._handoff_active = True
             self._handoff_queue = queue
 
@@ -1629,28 +1650,76 @@ class SimpleVoiceAgent(Agent):
             return
     
     async def _enter_shadow_mode(self):
-        """Mute AI, continue transcription only"""
+        """Immediately stop and mute AI, preserve context for potential handback"""
         try:
-            logger.info("🔇 Entering shadow mode - AI muted, transcription continues")
+            logger.info("🔇 Entering shadow mode - interrupting and muting AI, preserving context")
             
-            # TODO: Implement audio track muting
-            # This would involve unpublishing the AI's audio track
-            # while keeping STT active
+            # Step 1: Interrupt any ongoing speech immediately
+            # This stops current audio playback and clears the queue
+            try:
+                if self.agent_session:
+                    self.agent_session.interrupt()
+                    logger.info("🛑 AI speech interrupted")
+            except Exception as interrupt_err:
+                logger.warning(f"⚠️ Could not interrupt session: {interrupt_err}")
             
+            # Step 2: Set flag to prevent future LLM responses
+            # This is checked in on_user_turn_completed to block AI processing
             self._handoff_active = True
+            
+            # Step 3: Mute AI audio track using backend Room Service API
+            # According to LiveKit docs, we should use the RoomService API to mute_published_track
+            # from the server side, not from within the agent
+            try:
+                import httpx
+                backend_url = self._backend_internal_url()
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.post(
+                        f"{backend_url}/api/human-agent/mute-agent",
+                        json={"room_name": self.room_name, "muted": True}
+                    )
+                    if resp.status_code == 200:
+                        logger.info("✅ AI audio track muted via backend Room Service API")
+                    else:
+                        logger.warning(f"⚠️ Backend mute failed: {resp.status_code}")
+            except Exception as mute_err:
+                logger.warning(f"⚠️ Could not mute via backend: {mute_err}")
             
         except Exception as e:
             logger.error(f"❌ Error entering shadow mode: {e}")
     
     async def _exit_shadow_mode(self):
-        """Resume AI after human leaves"""
+        """Resume AI after human leaves - restore audio and full context"""
         try:
-            logger.info("🔊 Exiting shadow mode - AI resuming")
+            logger.info("🔊 Exiting shadow mode - unmuting AI audio, resuming with full context")
             
-            # TODO: Implement audio track unmuting
+            # Stop all human agent STT streams if running
+            for agent_id, stt_stream in list(self._human_agent_stt_streams.items()):
+                try:
+                    await stt_stream.aclose()
+                    logger.info(f"🎤 Stopped STT stream for {agent_id}")
+                except Exception:
+                    pass
+            self._human_agent_stt_streams.clear()
             
             self._handoff_active = False
             self._human_agent_identity = None
+
+            # Unmute AI audio track using backend Room Service API
+            try:
+                import httpx
+                backend_url = self._backend_internal_url()
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.post(
+                        f"{backend_url}/api/human-agent/mute-agent",
+                        json={"room_name": self.room_name, "muted": False}
+                    )
+                    if resp.status_code == 200:
+                        logger.info("✅ AI audio track unmuted via backend Room Service API")
+                    else:
+                        logger.warning(f"⚠️ Backend unmute failed: {resp.status_code}")
+            except Exception as unmute_err:
+                logger.warning(f"⚠️ Could not unmute via backend: {unmute_err}")
 
             # Stop any monitor task (handoff is over)
             try:
@@ -1661,6 +1730,95 @@ class SimpleVoiceAgent(Agent):
             
         except Exception as e:
             logger.error(f"❌ Error exiting shadow mode: {e}")
+    
+    async def _start_human_agent_stt(self, audio_track: rtc.AudioTrack, agent_identity: str):
+        """Start transcribing human agent's audio and send to Alive5 (supports multiple agents)"""
+        try:
+            from livekit.plugins import deepgram
+            
+            # Get STT provider from environment (default to Deepgram)
+            stt_provider = os.getenv("STT_PROVIDER", "deepgram").lower()
+            
+            if stt_provider == "deepgram":
+                stt_instance = deepgram.STT(
+                    model="nova-2-general",  # Deepgram Nova 2
+                    language="en",
+                )
+            else:
+                logger.warning(f"⚠️ Unsupported STT provider for human agent: {stt_provider}")
+                return
+            
+            # Create audio stream from track
+            audio_stream = rtc.AudioStream(audio_track)
+            
+            # Start STT stream
+            stt_stream = stt_instance.stream()
+            
+            # Store in dictionary for multiple agent support
+            self._human_agent_stt_streams[agent_identity] = stt_stream
+            
+            logger.info(f"🎤 Human agent STT stream started for {agent_identity}")
+            
+            # Process transcription in parallel tasks
+            async def push_audio():
+                """Push audio frames to STT"""
+                try:
+                    async for audio_frame_event in audio_stream:
+                        if agent_identity not in self._human_agent_stt_streams:
+                            # This agent's stream was removed (they left)
+                            break
+                        stt_stream.push_frame(audio_frame_event.frame)
+                except Exception as e:
+                    logger.warning(f"⚠️ Error pushing audio to STT for {agent_identity}: {e}")
+                finally:
+                    await stt_stream.aclose()
+            
+            async def process_transcripts():
+                """Process transcription results"""
+                try:
+                    async for event in stt_stream:
+                        if agent_identity not in self._human_agent_stt_streams:
+                            # This agent's stream was removed
+                            break
+                        
+                        # Deepgram's SpeechEvent structure: check event type
+                        # Final transcripts have type 'transcript' and is_final=True in the response
+                        if hasattr(event, 'alternatives') and event.alternatives:
+                            text = event.alternatives[0].text.strip()
+                            # Check if it's a final transcript (not interim)
+                            is_final = getattr(event, 'is_final', True)  # Default to True if not present
+                            
+                            if text and is_final:
+                                logger.info(f"👔 Human Agent ({agent_identity}): {text}")
+                                
+                                # Log to conversation transcript
+                                self._conversation_log.append({"role": "assistant", "text": text})
+                                
+                                # Publish to frontend
+                                asyncio.create_task(self._publish_to_frontend("user_transcript", text, speaker="Human Agent"))
+                                
+                                # Send to Alive5 as assistant message
+                                asyncio.create_task(self._send_message_to_alive5(text, is_agent=True))
+                except Exception as e:
+                    logger.warning(f"⚠️ Error processing transcripts for {agent_identity}: {e}")
+            
+            # Run both tasks in parallel
+            await asyncio.gather(
+                push_audio(),
+                process_transcripts(),
+                return_exceptions=True
+            )
+            
+            # Clean up from dictionary
+            self._human_agent_stt_streams.pop(agent_identity, None)
+            logger.info(f"🎤 Human agent STT stream ended for {agent_identity}")
+            
+        except asyncio.CancelledError:
+            logger.info(f"🎤 Human agent STT stream cancelled for {agent_identity}")
+            self._human_agent_stt_streams.pop(agent_identity, None)
+        except Exception as e:
+            logger.warning(f"⚠️ Error in human agent STT for {agent_identity}: {e}")
+            self._human_agent_stt_streams.pop(agent_identity, None)
     
     def _alive5_socket_base_url(self) -> str:
         """
@@ -2408,18 +2566,33 @@ class SimpleVoiceAgent(Agent):
         user_text = new_message.text_content or ""
         if user_text.strip():
             if getattr(self, "_handoff_active", False):
-                # Append to transcript (for post-call reconciliation)
+                # Check if this message is from the human agent (not the original user)
+                # Human agent identity starts with "human_agent_"
+                is_from_human_agent = False
                 try:
-                    self._conversation_log.append({"role": "user", "text": user_text.strip()})
+                    # Try to get the participant identity from the turn context or message
+                    # If it's the human agent, send their message as "assistant" to Alive5
+                    if hasattr(turn_ctx, 'participant') and turn_ctx.participant:
+                        participant_identity = getattr(turn_ctx.participant, 'identity', '')
+                        if participant_identity.startswith('human_agent_'):
+                            is_from_human_agent = True
                 except Exception:
                     pass
 
-                # Publish user transcript to frontend (non-blocking)
-                asyncio.create_task(self._publish_to_frontend("user_transcript", user_text, speaker="User"))
+                # Append to transcript
+                try:
+                    role = "assistant" if is_from_human_agent else "user"
+                    self._conversation_log.append({"role": role, "text": user_text.strip()})
+                except Exception:
+                    pass
 
-                # During handoff, skip auto-detection/LLM-verification to avoid accidental saves.
-                # Still send the user message to Alive5 so the conversation log remains complete.
-                asyncio.create_task(self._send_message_to_alive5(user_text, is_agent=False))
+                # Publish transcript to frontend
+                speaker = "Human Agent" if is_from_human_agent else "User"
+                asyncio.create_task(self._publish_to_frontend("user_transcript", user_text, speaker=speaker))
+
+                # Forward to Alive5 - human agent messages sent as "assistant" (agent messages)
+                # so they appear correctly attributed in the Alive5 chat history
+                asyncio.create_task(self._send_message_to_alive5(user_text, is_agent=is_from_human_agent))
                 return
 
         # CRITICAL: Call parent method FIRST to maintain conversation state
@@ -2987,14 +3160,22 @@ async def entrypoint(ctx: JobContext):
             @ctx.room.on("track_subscribed")
             def _on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
                 try:
+                    participant_identity = getattr(participant, 'identity', 'unknown')
+                    track_kind = getattr(track, 'kind', 'unknown')
                     logger.info(
-                        f"🎧 track_subscribed by={getattr(participant, 'identity', 'unknown')}"
+                        f"🎧 track_subscribed by={participant_identity}"
                         f" kind={getattr(participant, 'kind', 'unknown')}"
                         f" source={getattr(publication, 'source', 'unknown')}"
                         f" name={getattr(publication, 'name', 'unknown')}"
-                        f" track_kind={getattr(track, 'kind', 'unknown')}"
+                        f" track_kind={track_kind}"
                     )
-                except Exception:
+                    
+                    # If this is a human agent's audio track, start transcribing it
+                    if participant_identity.startswith("human_agent_") and track_kind == rtc.TrackKind.KIND_AUDIO:
+                        logger.info(f"🎤 Starting STT for human agent: {participant_identity}")
+                        asyncio.create_task(agent._start_human_agent_stt(track, participant_identity))
+                except Exception as e:
+                    logger.warning(f"⚠️ Error in track_subscribed handler: {e}")
                     logger.info("🎧 track_subscribed (details unavailable)")
 
             @ctx.room.on("sip_dtmf_received")
@@ -3234,6 +3415,7 @@ async def entrypoint(ctx: JobContext):
         
         # Set room on agent for frontend communication
         agent.room = ctx.room
+        agent.ctx = ctx  # Store context so we can access room later
         
         # Initialize TTS (skip for Nova Sonic as it's speech-to-speech)
         tts = None
@@ -3432,6 +3614,9 @@ async def entrypoint(ctx: JobContext):
                 audio_num_channels=1,
                 pre_connect_audio=False,
             )
+        
+        # Store session reference on agent for shadow mode control
+        agent.agent_session = session
         
         await session.start(
             room=ctx.room,

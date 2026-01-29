@@ -95,12 +95,31 @@
   }
   
   .dashboard-grid {
+    /* Mobile: Active call (connected) shows first, then queue */
     grid-template-rows: auto 1fr;
     gap: 1rem;
+    display: flex;
+    flex-direction: column;
+  }
+  
+  /* Reorder on mobile: active call first */
+  .active-call-section {
+    order: 1;
+    flex: 0 1 auto;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  
+  .call-queue-section {
+    order: 2;
+    flex: 1 1 auto;
+    min-height: 250px;
+    overflow-y: auto;
   }
   
   .dashboard-main {
     padding: 0.75rem;
+    overflow: hidden;
   }
 }
 

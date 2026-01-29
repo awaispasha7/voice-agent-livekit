@@ -107,6 +107,8 @@
 .calls-list {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
 }
 
 .call-card {
@@ -342,6 +344,43 @@
 
 /* Responsive adjustments */
 @media (max-width: 768px) {
+  .call-queue-container {
+    max-height: none;
+  }
+  
+  .queue-header {
+    padding: 1rem 1.25rem;
+  }
+  
+  .header-icon {
+    width: 28px;
+    height: 28px;
+  }
+  
+  .header-text h2 {
+    font-size: 1.25rem;
+  }
+  
+  .calls-list {
+    max-height: calc(100vh - 400px);
+  }
+  
+  .call-card {
+    padding: 1.25rem;
+  }
+  
+  .call-actions {
+    flex-direction: column;
+  }
+  
+  .btn {
+    width: 100%;
+  }
+  
+  .btn-reject {
+    flex: 1;
+  }
+  
   .empty-state {
     padding: 1.5rem 1rem;
     min-height: 160px;
@@ -363,5 +402,22 @@
   
   .empty-state p {
     font-size: 0.8125rem;
+  }
+}
+
+/* Extra small mobile */
+@media (max-width: 480px) {
+  .queue-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  
+  .header-content {
+    width: 100%;
+  }
+  
+  .queue-count {
+    align-self: flex-end;
   }
 }

@@ -424,6 +424,12 @@ class EndHandoffRequest(BaseModel):
     resume_ai: bool = False
 
 
+class MuteAgentRequest(BaseModel):
+    """Request to mute/unmute the AI agent's audio track"""
+    room_name: str
+    muted: bool
+
+
 class RejectTakeoverRequest(BaseModel):
     """Request to reject/decline an incoming human handoff"""
     room_name: str
@@ -2055,6 +2061,75 @@ async def generate_human_agent_token(request: GenerateTokenRequest, http_request
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/human-agent/mute-agent")
+async def mute_ai_agent_track(request: MuteAgentRequest):
+    """Mute or unmute the AI agent's audio track using LiveKit Room Service API"""
+    try:
+        logger.info(f"🔇 {'Muting' if request.muted else 'Unmuting'} AI agent in room {request.room_name}")
+        
+        livekit_url = os.getenv("LIVEKIT_URL")
+        livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+        livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+        
+        if not all([livekit_url, livekit_api_key, livekit_api_secret]):
+            raise HTTPException(status_code=500, detail="LiveKit credentials not configured")
+        
+        # Convert ws:// to http:// for API calls, use localhost
+        livekit_api_url = livekit_url.replace("ws://", "http://").replace("wss://", "https://")
+        if "18.210.238.67" in livekit_api_url:
+            livekit_api_url = livekit_api_url.replace("18.210.238.67", "localhost")
+        
+        async with api.LiveKitAPI(livekit_api_url, livekit_api_key, livekit_api_secret) as lk_api:
+            # Get participant details to find the agent's audio track SID
+            from livekit.api import RoomParticipantIdentity
+            
+            # The AI agent's identity is typically the room name or "agent"
+            # We need to find which participant is the AI agent
+            participants = await lk_api.room.list_participants(api.ListParticipantsRequest(room=request.room_name))
+            
+            ai_agent_identity = None
+            ai_agent_track_sid = None
+            
+            for participant in participants.participants:
+                # Skip human agents and users
+                if participant.identity.startswith("human_agent_") or participant.identity.startswith("User_"):
+                    continue
+                # This is the AI agent - find its audio track
+                ai_agent_identity = participant.identity
+                for track in participant.tracks:
+                    if track.type == api.TrackType.AUDIO:
+                        ai_agent_track_sid = track.sid
+                        break
+                break
+            
+            if not ai_agent_identity or not ai_agent_track_sid:
+                logger.warning(f"⚠️ Could not find AI agent or audio track in room {request.room_name}")
+                return {"status": "not_found", "message": "AI agent or audio track not found"}
+            
+            # Mute or unmute the track
+            await lk_api.room.mute_published_track(api.MuteRoomTrackRequest(
+                room=request.room_name,
+                identity=ai_agent_identity,
+                track_sid=ai_agent_track_sid,
+                muted=request.muted,
+            ))
+            
+            logger.info(f"✅ AI agent track {'muted' if request.muted else 'unmuted'}: identity={ai_agent_identity}, track_sid={ai_agent_track_sid}")
+            
+            return {
+                "status": "success",
+                "agent_identity": ai_agent_identity,
+                "track_sid": ai_agent_track_sid,
+                "muted": request.muted
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error muting AI agent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/human-agent/end-handoff")
 async def end_human_handoff(request: EndHandoffRequest):
     """End human agent handoff - optionally resume AI or end call"""
@@ -2086,8 +2161,17 @@ async def end_human_handoff(request: EndHandoffRequest):
         
         logger.info(f"✅ Handoff ended for {request.room_name}, resume_ai={request.resume_ai}")
 
-        # If the dashboard ended the call (resume_ai=false), close the LiveKit room so the user is disconnected.
+        # If the dashboard ended the call (resume_ai=false), notify Alive5 and close the room
         if not request.resume_ai:
+            # Send end_voice_chat to Alive5 BEFORE deleting the room
+            # This ensures the Alive5 thread closes properly
+            try:
+                await _emit_end_voice_chat_for_session(session, end_by="human_agent")
+                logger.info(f"✅ Sent end_voice_chat to Alive5 for {request.room_name}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to send end_voice_chat: {e}")
+            
+            # Now close the LiveKit room
             try:
                 await delete_room(request.room_name)
             except Exception as e:
