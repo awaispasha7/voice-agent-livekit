@@ -391,18 +391,50 @@ class SimpleVoiceAgent(Agent):
                     source = session_data.get("user_data", {}).get("source")
                     
                     # Check if this is a web session (no call_control_id or source is not telnyx_phone)
-                    if not call_control_id or source != "telnyx_phone":
-                        logger.info("ℹ️ Transfer requested for web session - not available")
+                    is_phone_call = call_control_id and source == "telnyx_phone"
+                    
+                    if not is_phone_call:
+                        # Web session - always use HITL
+                        logger.info("ℹ️ Transfer requested for web session - initiating HITL handoff")
+                        
+                        # Use default queue (agent node answer not available in tool context)
+                        queue = "general"
+                        
+                        # Initiate HITL handoff for web session
+                        await self._initiate_human_handoff(queue=queue, trigger="transfer_tool")
+                        
                         return {
-                            "success": False,
+                            "success": True,
                             "is_web_session": True,
-                            "message": "I'm sorry, call transfers are only available for phone calls, not through this web interface. Is there anything else I can help you with today?"
+                            "is_hitl": True,
+                            "message": "Certainly! Let me connect you with a live agent. One moment please..."
                         }
                     
+                    # Phone call - check if we should use HITL or traditional transfer
+                    use_hitl_for_phone = os.getenv("PHONE_USE_HITL", "false").lower() == "true"
+                    
+                    if use_hitl_for_phone:
+                        # Use HITL handoff for phone call
+                        logger.info("📞 Phone call - using HITL handoff (PHONE_USE_HITL=true)")
+                        
+                        # Use default queue (agent node answer not available in tool context)
+                        queue = "general"
+                        
+                        # Initiate HITL handoff for phone call
+                        await self._initiate_human_handoff(queue=queue, trigger="transfer_tool")
+                        
+                        return {
+                            "success": True,
+                            "is_web_session": False,
+                            "is_hitl": True,
+                            "message": "Certainly! Let me connect you with a live agent. One moment please..."
+                        }
+                    
+                    # Traditional Telnyx transfer for phone call
                     if call_control_id:
                         # Return success immediately so agent can speak acknowledgment first
                         # The actual transfer will happen in the background after a delay
-                        logger.info(f"📞 Transfer requested - will execute after agent speaks acknowledgment")
+                        logger.info(f"📞 Phone call - using Telnyx transfer (PHONE_USE_HITL=false)")
                         
                         # Schedule the transfer to happen after agent speaks (in background)
                         import asyncio
