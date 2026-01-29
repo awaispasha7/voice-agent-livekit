@@ -87,6 +87,28 @@ export class CallStateService {
   }
 
   /**
+   * Reject/decline an incoming call (no LiveKit join)
+   */
+  async rejectCall(call: any, agentId: string, agentName: string, reason: string = 'rejected'): Promise<void> {
+    try {
+      console.log('[CallState] Rejecting call:', call.room_name);
+
+      await this.http.post(`${this.backendUrl}/api/human-agent/reject-takeover`, {
+        room_name: call.room_name,
+        agent_id: agentId,
+        agent_name: agentName,
+        reason
+      }).toPromise();
+
+      // Remove from incoming queue
+      this.alive5SocketService.removeIncomingCall(call.room_name);
+    } catch (error) {
+      console.error('[CallState] Failed to reject call:', error);
+      throw error;
+    }
+  }
+
+  /**
    * End the active call
    */
   async endCall(resumeAI: boolean = false): Promise<void> {

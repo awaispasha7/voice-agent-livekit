@@ -193,6 +193,7 @@ class SimpleVoiceAgent(Agent):
         self._handoff_active = False
         self._handoff_queue = None
         self._human_agent_identity = None
+        self._handoff_monitor_task: asyncio.Task | None = None
         self._session_end_started = False  # Guard against duplicate end events
 
         # Silence nudges (human-like check-ins when user stays silent after a question)
@@ -497,6 +498,77 @@ class SimpleVoiceAgent(Agent):
                 "is_web_session": False,
                 "message": "I'm having trouble transferring you right now."
             }
+
+    @function_tool()
+    async def end_call(self, context: RunContext, reason: str = "user_requested_end") -> Dict[str, Any]:
+        """
+        End the current call/session (web or phone).
+
+        This is LLM-managed: call this right after you say goodbye when the user indicates they want to end.
+        """
+        try:
+            # Mark that the user ended the call (aligns end_voice_chat payload semantics)
+            try:
+                self._end_by = "person"
+            except Exception:
+                pass
+
+            backend_url = self._backend_internal_url()
+
+            import httpx
+            from urllib.parse import quote
+
+            room_name = (self.room_name or "").strip()
+            encoded_room = quote(room_name, safe="")
+
+            # Fetch session so we can decide phone vs web
+            session_data = {}
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.get(f"{backend_url}/api/sessions/{encoded_room}")
+                if resp.status_code == 200 and resp.content:
+                    session_data = resp.json()
+            except Exception:
+                session_data = {}
+
+            call_control_id = (session_data.get("call_control_id") or "").strip()
+            source = ((session_data.get("user_data", {}) or {}).get("source") or "").strip()
+
+            # End phone calls via Telnyx hangup
+            if call_control_id and source == "telnyx_phone":
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        await client.post(
+                            f"{backend_url}/api/telnyx/hangup",
+                            json={"call_control_id": call_control_id, "room_name": room_name},
+                        )
+                except Exception as e:
+                    logger.warning(f"⚠️ Telnyx hangup request failed (non-fatal): {e}")
+            else:
+                # End web session by deleting the LiveKit room (disconnects everyone)
+                try:
+                    async with httpx.AsyncClient(timeout=8.0) as client:
+                        await client.delete(f"{backend_url}/api/rooms/{encoded_room}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Room delete request failed (non-fatal): {e}")
+
+            # Best-effort local shutdown / reconciliation
+            try:
+                if hasattr(self, "agent_session") and self.agent_session and hasattr(self.agent_session, "_closing"):
+                    self.agent_session._closing = True
+            except Exception:
+                pass
+
+            try:
+                # Fire-and-forget; on_session_end has guards against duplicates.
+                asyncio.create_task(self.on_session_end())
+            except Exception:
+                pass
+
+            return {"success": True, "message": "ok", "reason": reason}
+        except Exception as e:
+            logger.error(f"❌ end_call failed: {e}")
+            return {"success": False, "message": "Unable to end the call right now."}
     
     @function_tool()
     async def save_collected_data(self, context: RunContext, field_name: str, value: str) -> Dict[str, Any]:
@@ -1401,6 +1473,14 @@ class SimpleVoiceAgent(Agent):
             # Set handoff state
             self._handoff_active = True
             self._handoff_queue = queue
+
+            # Start a background monitor so the AI can react to dashboard reject/end/resume
+            try:
+                if self._handoff_monitor_task and not self._handoff_monitor_task.done():
+                    self._handoff_monitor_task.cancel()
+                self._handoff_monitor_task = asyncio.create_task(self._monitor_handoff_state())
+            except Exception:
+                pass
             
             # Prepare payload
             payload = {
@@ -1444,6 +1524,98 @@ class SimpleVoiceAgent(Agent):
             
         except Exception as e:
             logger.error(f"❌ Error initiating handoff: {e}")
+
+    async def _monitor_handoff_state(self):
+        """
+        Poll backend session state to detect:
+        - Dashboard rejected handoff
+        - Human ended handoff with resume_ai true/false
+        This lets the AI respond appropriately and exit shadow mode.
+        """
+        try:
+            import time as _time
+            import httpx
+            from urllib.parse import quote
+
+            backend_url = self._backend_internal_url()
+            last_notice_at = 0.0
+
+            while True:
+                if getattr(self, "_session_end_started", False):
+                    return
+                if not getattr(self, "_handoff_active", False):
+                    return
+
+                # Avoid hammering backend
+                await asyncio.sleep(0.8)
+
+                try:
+                    encoded_room = quote((self.room_name or "").strip(), safe="")
+                    async with httpx.AsyncClient(timeout=2.0) as client:
+                        resp = await client.get(f"{backend_url}/api/sessions/{encoded_room}")
+                    if resp.status_code != 200:
+                        continue
+                    session = resp.json() if resp.content else {}
+                except Exception:
+                    continue
+
+                hs = (session or {}).get("handoff_state", {}) or {}
+                active = bool(hs.get("active"))
+                if active:
+                    continue
+
+                rejected = bool(hs.get("rejected"))
+                resume_ai = bool(hs.get("resume_ai"))
+
+                # Handoff ended/rejected — clear state and optionally speak
+                try:
+                    self._handoff_active = False
+                    self._handoff_queue = None
+                    self._human_agent_identity = None
+                except Exception:
+                    pass
+
+                # Avoid duplicate "resume" messages if multiple updates come through
+                now = _time.monotonic()
+                if now - last_notice_at < 1.5:
+                    return
+                last_notice_at = now
+
+                if rejected:
+                    msg = "No problem — it looks like no one is available right now. I can help you here. What can I assist with?"
+                    try:
+                        if hasattr(self, "agent_session") and self.agent_session:
+                            await self.agent_session.say(msg)
+                    except Exception:
+                        pass
+                    return
+
+                if resume_ai:
+                    try:
+                        # Ensure we exit any shadow state
+                        await self._exit_shadow_mode()
+                    except Exception:
+                        pass
+                    msg = "I’m back — I’ll take it from here. How can I help?"
+                    try:
+                        if hasattr(self, "agent_session") and self.agent_session:
+                            await self.agent_session.say(msg)
+                    except Exception:
+                        pass
+                    return
+
+                # Ended without resuming AI
+                msg = "Okay — the call has ended. Goodbye."
+                try:
+                    if hasattr(self, "agent_session") and self.agent_session:
+                        await self.agent_session.say(msg)
+                except Exception:
+                    pass
+                return
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
     
     async def _enter_shadow_mode(self):
         """Mute AI, continue transcription only"""
@@ -1468,6 +1640,13 @@ class SimpleVoiceAgent(Agent):
             
             self._handoff_active = False
             self._human_agent_identity = None
+
+            # Stop any monitor task (handoff is over)
+            try:
+                if self._handoff_monitor_task and not self._handoff_monitor_task.done():
+                    self._handoff_monitor_task.cancel()
+            except Exception:
+                pass
             
         except Exception as e:
             logger.error(f"❌ Error exiting shadow mode: {e}")
@@ -2213,8 +2392,27 @@ class SimpleVoiceAgent(Agent):
     
     async def on_user_turn_completed(self, turn_ctx, new_message):
         """Handle user input and publish to frontend"""
+        # During HITL handoff/shadow mode, do NOT let the AI generate replies.
+        # We still publish user transcripts + forward user messages to Alive5 for logging.
+        user_text = new_message.text_content or ""
+        if user_text.strip():
+            if getattr(self, "_handoff_active", False):
+                # Append to transcript (for post-call reconciliation)
+                try:
+                    self._conversation_log.append({"role": "user", "text": user_text.strip()})
+                except Exception:
+                    pass
+
+                # Publish user transcript to frontend (non-blocking)
+                asyncio.create_task(self._publish_to_frontend("user_transcript", user_text, speaker="User"))
+
+                # During handoff, skip auto-detection/LLM-verification to avoid accidental saves.
+                # Still send the user message to Alive5 so the conversation log remains complete.
+                asyncio.create_task(self._send_message_to_alive5(user_text, is_agent=False))
+                return
+
         # CRITICAL: Call parent method FIRST to maintain conversation state
-        # This ensures the agent's conversation history is preserved
+        # This ensures the agent's conversation history is preserved (normal AI mode only)
         await super().on_user_turn_completed(turn_ctx, new_message)
         
         # Then do our side effects (non-blocking, fire-and-forget)
@@ -3264,6 +3462,9 @@ async def entrypoint(ctx: JobContext):
                 if text_content and text_content.strip():
                     # Only send agent messages here (user messages are handled in on_user_turn_completed)
                     if is_agent_msg:
+                        # During HITL/shadow mode, suppress AI messages so Alive5 doesn't attribute them to the voice agent.
+                        if getattr(agent, "_handoff_active", False):
+                            return
                         # Silently send agent message (logging happens in _send_message_to_alive5_internal)
                         asyncio.create_task(agent._send_message_to_alive5(text_content, is_agent=True))
                         # Append to transcript (for post-call reconciliation)

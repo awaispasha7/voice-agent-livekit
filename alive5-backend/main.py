@@ -424,6 +424,14 @@ class EndHandoffRequest(BaseModel):
     resume_ai: bool = False
 
 
+class RejectTakeoverRequest(BaseModel):
+    """Request to reject/decline an incoming human handoff"""
+    room_name: str
+    agent_id: str
+    agent_name: str
+    reason: str = "rejected"
+
+
 # Session storage - use AgentCore Memory if enabled, otherwise fallback to in-memory
 # Import AgentCore Memory
 try:
@@ -1904,6 +1912,46 @@ async def request_human_takeover(request: HumanTakeoverRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/human-agent/reject-takeover")
+async def reject_human_takeover(request: RejectTakeoverRequest):
+    """Dashboard agent rejects/declines an incoming handoff"""
+    try:
+        logger.info(f"🙅 Human agent {request.agent_name} ({request.agent_id}) rejected takeover of {request.room_name} reason={request.reason}")
+
+        session = await get_session_data(request.room_name)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        handoff_state = session.get("handoff_state", {}) or {}
+
+        # Mark handoff as ended + rejected and default to resuming AI
+        await update_session_data(
+            request.room_name,
+            {
+                "handoff_state": {
+                    **handoff_state,
+                    "active": False,
+                    "rejected": True,
+                    "rejected_at": datetime.now().isoformat(),
+                    "rejected_by": {
+                        "agent_id": request.agent_id,
+                        "agent_name": request.agent_name,
+                        "reason": request.reason,
+                    },
+                    # If a human rejects, we should resume AI by default
+                    "resume_ai": True,
+                }
+            },
+        )
+
+        return {"status": "success", "message": "Handoff rejected", "resume_ai": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error rejecting takeover: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/human-agent/generate-token")
 async def generate_human_agent_token(request: GenerateTokenRequest, http_request: Request):
     """Generate LiveKit token for human agent to join the room"""
@@ -2019,7 +2067,14 @@ async def end_human_handoff(request: EndHandoffRequest):
         })
         
         logger.info(f"✅ Handoff ended for {request.room_name}, resume_ai={request.resume_ai}")
-        
+
+        # If the dashboard ended the call (resume_ai=false), close the LiveKit room so the user is disconnected.
+        if not request.resume_ai:
+            try:
+                await delete_room(request.room_name)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to close room on end-handoff (non-fatal): {e}")
+
         return {
             "status": "success",
             "message": "Handoff ended",

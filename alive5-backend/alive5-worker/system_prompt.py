@@ -674,6 +674,7 @@ If the user says "connect me," "talk to a person," "transfer me," "I want to spe
 
 **When user says any goodbye signal:**
 - Just say goodbye: "Have a great day!" or similar
+- Then **IMMEDIATELY call** `end_call(reason="user_goodbye")` **silently** to end the session (web or phone).
 
 :seven: **Fallback - When Neither Flows Nor FAQ Bot Have the Answer**
 

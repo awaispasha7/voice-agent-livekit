@@ -53,9 +53,13 @@ export class CallQueueComponent implements OnInit, OnDestroy {
   /**
    * Reject an incoming call
    */
-  rejectCall(call: IncomingCall): void {
-    // Remove from queue without accepting
-    this.alive5SocketService.removeIncomingCall(call.room_name);
+  async rejectCall(call: IncomingCall): Promise<void> {
+    try {
+      await this.callStateService.rejectCall(call, this.agentId, this.agentName);
+    } catch (error) {
+      console.error('Failed to reject call:', error);
+      alert('Failed to reject call. Please try again.');
+    }
   }
 
   /**
