@@ -6,7 +6,7 @@
       "src": "package.json",
       "use": "@vercel/static-build",
       "config": {
-        "distDir": "dist/alive5-dashboard/browser"
+        "distDir": "dist/alive5-dashboard"
       }
     }
   ],
