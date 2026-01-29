@@ -194,6 +194,7 @@ class SimpleVoiceAgent(Agent):
         self._handoff_queue = None
         self._human_agent_identity = None
         self._handoff_monitor_task: asyncio.Task | None = None
+        self._handoff_backend_seen_active = False
         self._session_end_started = False  # Guard against duplicate end events
 
         # Silence nudges (human-like check-ins when user stays silent after a question)
@@ -1560,8 +1561,18 @@ class SimpleVoiceAgent(Agent):
                     continue
 
                 hs = (session or {}).get("handoff_state", {}) or {}
+                # If handoff_state hasn't been written yet, treat as "pending" (do NOT end).
+                if "active" not in hs:
+                    continue
+
                 active = bool(hs.get("active"))
                 if active:
+                    self._handoff_backend_seen_active = True
+                    continue
+
+                # If we never observed active=True from backend, do not treat inactive as "ended".
+                # This prevents premature "call ended" behavior caused by missing handoff_state writes.
+                if not getattr(self, "_handoff_backend_seen_active", False):
                     continue
 
                 rejected = bool(hs.get("rejected"))
@@ -2923,16 +2934,21 @@ async def entrypoint(ctx: JobContext):
                     # HITL: Detect human agent joining
                     if identity.startswith("human_agent_"):
                         logger.info(f"🙋 Human agent detected: {identity}")
-                        if agent._handoff_active:
-                            agent._human_agent_identity = identity
-                            # Enter shadow mode asynchronously
-                            asyncio.create_task(agent._enter_shadow_mode())
-                            # Notify Alive5 that human is now live
-                            asyncio.create_task(agent._emit_alive5_socket_event("human_agent_joined", {
-                                "thread_id": agent.alive5_thread_id or "",
-                                "agent_id": identity,
-                                "timestamp": int(asyncio.get_event_loop().time() * 1000)
-                            }))
+                        # Always enter shadow mode when a human agent joins, even if handoff_state
+                        # wasn't properly set yet. This prevents the AI from replying over the human.
+                        try:
+                            agent._handoff_active = True
+                        except Exception:
+                            pass
+                        agent._human_agent_identity = identity
+                        # Enter shadow mode asynchronously
+                        asyncio.create_task(agent._enter_shadow_mode())
+                        # Notify Alive5 that human is now live
+                        asyncio.create_task(agent._emit_alive5_socket_event("human_agent_joined", {
+                            "thread_id": agent.alive5_thread_id or "",
+                            "agent_id": identity,
+                            "timestamp": int(asyncio.get_event_loop().time() * 1000)
+                        }))
                 except Exception as e:
                     logger.warning(f"⚠️ Error in participant_connected handler: {e}")
                     logger.info("👤 participant_connected (details unavailable)")

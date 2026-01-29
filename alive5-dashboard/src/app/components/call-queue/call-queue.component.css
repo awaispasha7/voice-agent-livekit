@@ -287,21 +287,26 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 4rem 2rem;
+  padding: 2rem 1.5rem;
   text-align: center;
   flex: 1;
+  min-height: 200px;
 }
 
 .empty-icon-wrapper {
-  width: 120px;
-  height: 120px;
+  width: 64px;
+  height: 64px;
   background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
-  border-radius: 50%;
+  border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 1.5rem;
-  animation: float 3s ease-in-out infinite;
+  margin-bottom: 1rem;
+  transition: transform 0.3s ease;
+}
+
+.empty-icon-wrapper:hover {
+  transform: scale(1.05);
 }
 
 @keyframes float {
@@ -310,25 +315,53 @@
 }
 
 .empty-icon {
-  width: 60px;
-  height: 60px;
+  width: 32px;
+  height: 32px;
   stroke: #667eea;
+  stroke-width: 2.5;
 }
 
 .empty-state h3 {
-  font-size: 1.5rem;
+  font-size: 1.125rem;
   font-weight: 600;
   color: #2d3748;
-  margin: 0 0 0.5rem 0;
+  margin: 0 0 0.375rem 0;
 }
 
 .empty-state p {
-  margin: 0 0 0.5rem 0;
-  font-size: 1rem;
+  margin: 0 0 0.25rem 0;
+  font-size: 0.875rem;
   color: #718096;
+  line-height: 1.5;
 }
 
 .empty-subtext {
-  font-size: 0.875rem !important;
+  font-size: 0.8125rem !important;
   color: #a0aec0 !important;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .empty-state {
+    padding: 1.5rem 1rem;
+    min-height: 160px;
+  }
+  
+  .empty-icon-wrapper {
+    width: 56px;
+    height: 56px;
+  }
+  
+  .empty-icon {
+    width: 28px;
+    height: 28px;
+  }
+  
+  .empty-state h3 {
+    font-size: 1rem;
+  }
+  
+  .empty-state p {
+    font-size: 0.8125rem;
+  }
 }

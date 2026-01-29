@@ -1853,6 +1853,23 @@ async def notify_dashboard_incoming_call(notification: IncomingCallNotification)
     """Endpoint for worker to notify dashboard of incoming human call"""
     try:
         logger.info(f"📞 Incoming call notification for room: {notification.room_name}, queue: {notification.queue}")
+
+        # IMPORTANT: mark handoff as active immediately.
+        # The worker polls handoff_state to know whether it should stay in shadow mode.
+        try:
+            await update_session_data(
+                notification.room_name,
+                {
+                    "handoff_state": {
+                        "active": True,
+                        "handoff_timestamp": datetime.now().isoformat(),
+                        "handoff_trigger": "voice_agent",
+                        "agent_queue": notification.queue,
+                    }
+                },
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to set handoff_state on notify-call (non-fatal): {e}")
         
         # Emit to all connected dashboards
         await emit_to_dashboards("incoming_human_call", notification.dict())
@@ -1878,22 +1895,23 @@ async def request_human_takeover(request: HumanTakeoverRequest):
         
         # Check if handoff already active
         handoff_state = session.get("handoff_state", {})
-        if handoff_state.get("active"):
+        if handoff_state.get("active") and handoff_state.get("human_agent_id"):
+            # Handoff already claimed by another agent
             return {
                 "status": "already_active",
                 "message": "Handoff already in progress",
                 "current_agent": handoff_state.get("human_agent_name")
             }
         
-        # Update session with handoff state
+        # Update session with handoff state (or claim an unclaimed active handoff)
         await update_session_data(request.room_name, {
             "handoff_state": {
                 "active": True,
                 "human_agent_id": request.agent_id,
                 "human_agent_name": request.agent_name,
-                "handoff_timestamp": datetime.now().isoformat(),
-                "handoff_trigger": "manual",
-                "agent_queue": "manual"
+                "handoff_timestamp": handoff_state.get("handoff_timestamp") or datetime.now().isoformat(),
+                "handoff_trigger": handoff_state.get("handoff_trigger") or "manual",
+                "agent_queue": handoff_state.get("agent_queue") or "manual"
             }
         })
         
