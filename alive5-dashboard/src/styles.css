@@ -18,7 +18,22 @@ body {
   background: #f7fafc;
   color: #2d3748;
   line-height: 1.5;
+  margin: 0;
+  padding: 0;
   overflow: hidden;
+}
+
+/* Mobile: Allow scrolling */
+@media (max-width: 768px) {
+  html, body {
+    height: 100%;
+    overflow: visible;
+  }
+  
+  body {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 code {

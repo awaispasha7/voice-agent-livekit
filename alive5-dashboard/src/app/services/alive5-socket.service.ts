@@ -22,6 +22,13 @@ export class Alive5SocketService {
   constructor() {}
 
   /**
+   * Get socket instance (for registering custom event listeners)
+   */
+  getSocket(): Socket | null {
+    return this.socket;
+  }
+
+  /**
    * Connect to backend Socket.IO server (for HITL dashboard)
    */
   connect(apiKey: string, agentId: string, socketUrl: string = 'http://localhost:8000'): void {

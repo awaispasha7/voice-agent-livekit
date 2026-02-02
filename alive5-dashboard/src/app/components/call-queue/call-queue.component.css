@@ -381,6 +381,7 @@
 @media (max-width: 768px) {
   .call-queue-container {
     max-height: none;
+    overflow: visible;
   }
   
   .queue-header {
@@ -397,7 +398,8 @@
   }
   
   .calls-list {
-    max-height: calc(100vh - 400px);
+    max-height: none;
+    overflow: visible;
   }
   
   .call-card {

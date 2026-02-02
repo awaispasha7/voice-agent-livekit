@@ -34,7 +34,6 @@
 }
 
 @keyframes rotate {
-  from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
 
@@ -376,7 +375,6 @@
 }
 
 @keyframes float {
-  0%, 100% { transform: translateY(0px); }
   50% { transform: translateY(-10px); }
 }
 
@@ -418,10 +416,8 @@
 
 @media (max-width: 768px) {
   .active-call-container {
-    max-height: 60vh;
-    overflow-y: auto;
-    overflow-x: hidden;
-    -webkit-overflow-scrolling: touch;
+    max-height: none;
+    overflow: visible;
   }
   
   .call-info-header {

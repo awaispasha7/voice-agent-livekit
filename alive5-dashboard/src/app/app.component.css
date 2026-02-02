@@ -86,40 +86,51 @@
 }
 
 @media (max-width: 768px) {
+  .dashboard-container {
+    height: 100vh;
+    overflow: hidden;
+  }
+  
   .dashboard-header {
     padding: 1rem 1.5rem;
+    flex-shrink: 0;
   }
   
   .dashboard-header h1 {
     font-size: 1.5rem;
   }
   
-  .dashboard-grid {
-    /* Mobile: Active call (connected) shows first, then queue */
-    grid-template-rows: auto 1fr;
-    gap: 1rem;
-    display: flex;
-    flex-direction: column;
+  .dashboard-main {
+    padding: 0.75rem;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    flex: 1;
+    min-height: 0;
   }
   
-  /* Reorder on mobile: active call first */
+  .dashboard-grid {
+    /* Mobile: Stack vertically with natural flow */
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    height: auto;
+    min-height: 100%;
+  }
+  
+  /* Active call first on mobile */
   .active-call-section {
     order: 1;
-    flex: 0 1 auto;
-    max-height: 60vh;
-    overflow-y: auto;
+    flex: 0 0 auto;
+    max-height: none;
+    overflow: visible;
   }
   
   .call-queue-section {
     order: 2;
-    flex: 1 1 auto;
-    min-height: 250px;
-    overflow-y: auto;
-  }
-  
-  .dashboard-main {
-    padding: 0.75rem;
-    overflow: hidden;
+    flex: 0 0 auto;
+    min-height: auto;
+    overflow: visible;
   }
 }
 
