@@ -1923,6 +1923,18 @@ async def request_human_takeover(request: HumanTakeoverRequest):
         
         logger.info(f"✅ Takeover request registered for {request.room_name}")
         
+        # Notify all dashboards that a human agent has joined this call
+        try:
+            await emit_to_dashboards("human_agent_joined", {
+                "room_name": request.room_name,
+                "agent_id": request.agent_id,
+                "agent_name": request.agent_name,
+                "timestamp": datetime.now().isoformat()
+            })
+            logger.info(f"✅ Notified dashboards that {request.agent_name} joined {request.room_name}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to notify dashboards of agent join: {e}")
+        
         return {
             "status": "success",
             "message": "Takeover registered. Generate token to join.",

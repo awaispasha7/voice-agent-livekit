@@ -86,7 +86,29 @@ export class Alive5SocketService {
     this.socket.on('incoming_human_call', (data: IncomingCall) => {
       console.log('[Alive5Socket] Incoming call:', data);
       const currentCalls = this.incomingCallsSubject.value;
+      // Ensure has_human_agent is set to false for new calls
+      data.has_human_agent = false;
       this.incomingCallsSubject.next([...currentCalls, data]);
+    });
+
+    // Listen for human agent joined notifications
+    this.socket.on('human_agent_joined', (data: any) => {
+      console.log('[Alive5Socket] Human agent joined call:', data);
+      
+      // Update the call in the incoming list to show it has a human agent
+      const currentCalls = this.incomingCallsSubject.value;
+      const updatedCalls = currentCalls.map(call => {
+        if (call.room_name === data.room_name) {
+          return {
+            ...call,
+            has_human_agent: true,
+            human_agent_name: data.agent_name
+          };
+        }
+        return call;
+      });
+      
+      this.incomingCallsSubject.next(updatedCalls);
     });
 
     this.socket.on('error', (error: any) => {

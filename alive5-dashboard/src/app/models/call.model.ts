@@ -10,6 +10,8 @@ export interface IncomingCall {
   queue: string;
   timestamp: number;
   context: string;
+  has_human_agent?: boolean; // Indicates if a human agent is already connected
+  human_agent_name?: string; // Name of the connected human agent
 }
 
 export interface CallSession {

@@ -1663,27 +1663,13 @@ class SimpleVoiceAgent(Agent):
             except Exception as interrupt_err:
                 logger.warning(f"⚠️ Could not interrupt session: {interrupt_err}")
             
-            # Step 2: Set flag to prevent future LLM responses
+            # Step 2: Set flag to prevent future LLM responses AND TTS
             # This is checked in on_user_turn_completed to block AI processing
             self._handoff_active = True
             
-            # Step 3: Mute AI audio track using backend Room Service API
-            # According to LiveKit docs, we should use the RoomService API to mute_published_track
-            # from the server side, not from within the agent
-            try:
-                import httpx
-                backend_url = self._backend_internal_url()
-                async with httpx.AsyncClient(timeout=3.0) as client:
-                    resp = await client.post(
-                        f"{backend_url}/api/human-agent/mute-agent",
-                        json={"room_name": self.room_name, "muted": True}
-                    )
-                    if resp.status_code == 200:
-                        logger.info("✅ AI audio track muted via backend Room Service API")
-                    else:
-                        logger.warning(f"⚠️ Backend mute failed: {resp.status_code}")
-            except Exception as mute_err:
-                logger.warning(f"⚠️ Could not mute via backend: {mute_err}")
+            # Step 3: Locally mute the agent's output (don't rely on remote mute - self-hosted LiveKit doesn't support it)
+            # We'll simply skip TTS generation when _handoff_active is True
+            logger.info("🔇 AI muted locally - will not generate TTS while human agent is active")
             
         except Exception as e:
             logger.error(f"❌ Error entering shadow mode: {e}")
@@ -1691,7 +1677,7 @@ class SimpleVoiceAgent(Agent):
     async def _exit_shadow_mode(self):
         """Resume AI after human leaves - restore audio and full context"""
         try:
-            logger.info("🔊 Exiting shadow mode - unmuting AI audio, resuming with full context")
+            logger.info("🔊 Exiting shadow mode - resuming AI with full context")
             
             # Stop all human agent STT streams if running
             for agent_id, stt_stream in list(self._human_agent_stt_streams.items()):
@@ -1702,24 +1688,11 @@ class SimpleVoiceAgent(Agent):
                     pass
             self._human_agent_stt_streams.clear()
             
+            # Clear handoff flags to resume AI
             self._handoff_active = False
             self._human_agent_identity = None
-
-            # Unmute AI audio track using backend Room Service API
-            try:
-                import httpx
-                backend_url = self._backend_internal_url()
-                async with httpx.AsyncClient(timeout=3.0) as client:
-                    resp = await client.post(
-                        f"{backend_url}/api/human-agent/mute-agent",
-                        json={"room_name": self.room_name, "muted": False}
-                    )
-                    if resp.status_code == 200:
-                        logger.info("✅ AI audio track unmuted via backend Room Service API")
-                    else:
-                        logger.warning(f"⚠️ Backend unmute failed: {resp.status_code}")
-            except Exception as unmute_err:
-                logger.warning(f"⚠️ Could not unmute via backend: {unmute_err}")
+            
+            logger.info("✅ AI unmuted locally - TTS will resume")
 
             # Stop any monitor task (handoff is over)
             try:
@@ -1774,7 +1747,7 @@ class SimpleVoiceAgent(Agent):
                     await stt_stream.aclose()
             
             async def process_transcripts():
-                """Process transcription results"""
+                """Process transcription results - only send final, complete transcripts"""
                 try:
                     async for event in stt_stream:
                         if agent_identity not in self._human_agent_stt_streams:
@@ -1788,17 +1761,24 @@ class SimpleVoiceAgent(Agent):
                             # Check if it's a final transcript (not interim)
                             is_final = getattr(event, 'is_final', True)  # Default to True if not present
                             
-                            if text and is_final:
+                            # Only process substantial final transcripts (at least 5 chars to avoid noise)
+                            if text and is_final and len(text) >= 5:
                                 logger.info(f"👔 Human Agent ({agent_identity}): {text}")
                                 
                                 # Log to conversation transcript
                                 self._conversation_log.append({"role": "assistant", "text": text})
                                 
-                                # Publish to frontend
-                                asyncio.create_task(self._publish_to_frontend("user_transcript", text, speaker="Human Agent"))
+                                # Publish to frontend (if room is still open)
+                                try:
+                                    asyncio.create_task(self._publish_to_frontend("user_transcript", text, speaker="Human Agent"))
+                                except Exception:
+                                    pass
                                 
-                                # Send to Alive5 as assistant message
-                                asyncio.create_task(self._send_message_to_alive5(text, is_agent=True))
+                                # Send to Alive5 as assistant message (if room is still open)
+                                try:
+                                    asyncio.create_task(self._send_message_to_alive5(text, is_agent=True))
+                                except Exception:
+                                    pass
                 except Exception as e:
                     logger.warning(f"⚠️ Error processing transcripts for {agent_identity}: {e}")
             
@@ -2301,13 +2281,23 @@ class SimpleVoiceAgent(Agent):
             }
             
             try:
-                await self.room.local_participant.publish_data(
-                    json.dumps(socket_instruction).encode('utf-8'),
-                    topic="lk.alive5.socket"
-                )
-                logger.info(f"📤 Message instruction sent via data channel: {message_content[:50]}...")
+                # Check if room is still open before publishing
+                if hasattr(self, 'room') and self.room and hasattr(self.room, 'state'):
+                    if self.room.state == 'connected':
+                        await self.room.local_participant.publish_data(
+                            json.dumps(socket_instruction).encode('utf-8'),
+                            topic="lk.alive5.socket"
+                        )
+                        logger.info(f"📤 Message instruction sent via data channel: {message_content[:50]}...")
+                    else:
+                        logger.debug(f"⏭️ Skipping data channel publish - room not connected (state={self.room.state})")
+                else:
+                    logger.debug(f"⏭️ Skipping data channel publish - room not available")
+            except (ConnectionError, RuntimeError) as e:
+                # Room closed - this is expected during shutdown, don't log as error
+                logger.debug(f"⏭️ Room closed during message publish: {e}")
             except Exception as e:
-                logger.error(f"❌ Failed to send message instruction via data channel: {e}")
+                logger.warning(f"⚠️ Failed to send message instruction via data channel: {e}")
 
             # PSTN bridge: also emit directly to Alive5 socket (phone rooms have no frontend widget to relay).
             # IMPORTANT: For web sessions, the frontend already relays `post_message` from lk.alive5.socket,
