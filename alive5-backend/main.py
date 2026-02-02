@@ -2200,19 +2200,19 @@ async def end_human_handoff(request: EndHandoffRequest):
         
         logger.info(f"✅ Handoff ended for {request.room_name}, resume_ai={request.resume_ai}")
 
-        # Notify all dashboards that this call has ended
-        try:
-            await emit_to_dashboards("call_ended", {
-                "room_name": request.room_name,
-                "ended_by": "human_agent" if not request.resume_ai else "transfer_to_ai",
-                "timestamp": datetime.now().isoformat()
-            })
-            logger.info(f"📤 Notified dashboards that call {request.room_name} ended")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to notify dashboards of call end: {e}")
-
-        # If the dashboard ended the call (resume_ai=false), notify Alive5 and close the room
+        # ONLY notify dashboards and close room if NOT resuming AI
+        # If resuming AI, the call continues and room stays open
         if not request.resume_ai:
+            # Notify all dashboards that this call has ended
+            try:
+                await emit_to_dashboards("call_ended", {
+                    "room_name": request.room_name,
+                    "ended_by": "human_agent",
+                    "timestamp": datetime.now().isoformat()
+                })
+                logger.info(f"📤 Notified dashboards that call {request.room_name} ended")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to notify dashboards of call end: {e}")
             # Send end_voice_chat to Alive5 BEFORE deleting the room
             # This ensures the Alive5 thread closes properly
             try:
@@ -2226,6 +2226,9 @@ async def end_human_handoff(request: EndHandoffRequest):
                 await delete_room(request.room_name)
             except Exception as e:
                 logger.warning(f"⚠️ Failed to close room on end-handoff (non-fatal): {e}")
+        else:
+            # Resume AI - room stays open, worker will unmute and continue
+            logger.info(f"🔄 Resuming AI for {request.room_name} - room stays open")
 
         return {
             "status": "success",

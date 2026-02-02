@@ -193,6 +193,9 @@ class SimpleVoiceAgent(Agent):
         
         # HITL (Human-in-the-Loop) handoff state
         self._handoff_active = False
+        # Handoff requested (dashboard notified), but no human agent has joined yet.
+        # IMPORTANT: We do NOT mute/interrupt in this state. We only enter shadow mode when a human joins.
+        self._handoff_requested = False
         self._handoff_queue = None
         self._human_agent_identity = None
         self._handoff_monitor_task: asyncio.Task | None = None
@@ -359,8 +362,8 @@ class SimpleVoiceAgent(Agent):
         Returns:
             A status object. For HITL handoff, `success: true` and `is_hitl: true`.
         """
-        # Check if handoff is already active or pending - prevent duplicate transfers
-        if getattr(self, "_handoff_active", False):
+        # Check if handoff is already active or requested - prevent duplicate transfers
+        if getattr(self, "_handoff_active", False) or getattr(self, "_handoff_requested", False):
             logger.info("⚠️ Transfer already in progress - ignoring duplicate request")
             return {
                 "success": True,
@@ -1499,18 +1502,10 @@ class SimpleVoiceAgent(Agent):
         """Start HITL handoff sequence"""
         try:
             logger.info(f"🙋 Initiating human handoff - queue: {queue}, trigger: {trigger}")
-            
-            # IMMEDIATELY interrupt any ongoing speech and stop LLM processing
-            # This prevents the AI from responding to messages that came in during transfer
-            try:
-                if self.agent_session:
-                    self.agent_session.interrupt()
-                    logger.info("🛑 AI speech interrupted immediately on handoff initiation")
-            except Exception as interrupt_err:
-                logger.warning(f"⚠️ Could not interrupt session: {interrupt_err}")
-            
-            # Set handoff state to block future LLM calls
-            self._handoff_active = True
+
+            # IMPORTANT: Keep AI talking until a human actually joins.
+            # We only mark "requested" here (dashboard notified). Shadow mode (interrupt+mute) happens on human join.
+            self._handoff_requested = True
             self._handoff_queue = queue
 
             # Start a background monitor so the AI can react to dashboard reject/end/resume
@@ -1582,7 +1577,8 @@ class SimpleVoiceAgent(Agent):
             while True:
                 if getattr(self, "_session_end_started", False):
                     return
-                if not getattr(self, "_handoff_active", False):
+                # Monitor while handoff is requested OR active (human joined).
+                if not getattr(self, "_handoff_requested", False) and not getattr(self, "_handoff_active", False):
                     return
 
                 # Avoid hammering backend
@@ -1619,6 +1615,7 @@ class SimpleVoiceAgent(Agent):
                 # Handoff ended/rejected — clear state and optionally speak
                 try:
                     self._handoff_active = False
+                    self._handoff_requested = False
                     self._handoff_queue = None
                     self._human_agent_identity = None
                 except Exception:
