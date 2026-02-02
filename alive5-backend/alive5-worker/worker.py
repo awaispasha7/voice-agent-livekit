@@ -321,6 +321,23 @@ class SimpleVoiceAgent(Agent):
         """Prefer an internal backend URL for server-to-server calls to avoid TLS/proxy issues."""
         return (os.getenv("BACKEND_URL_INTERNAL") or "http://127.0.0.1:8000").strip()
 
+    async def _notify_call_ended(self, reason: str = "user_disconnect"):
+        """Notify backend that call ended so it can update dashboards"""
+        try:
+            import httpx
+            backend_url = self._backend_internal_url()
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                await client.post(
+                    f"{backend_url}/api/dashboard/call-ended",
+                    json={
+                        "room_name": self.room_name,
+                        "reason": reason,
+                        "timestamp": asyncio.get_event_loop().time() * 1000
+                    }
+                )
+                logger.info(f"✅ Notified backend of call end: {self.room_name}")
+        except Exception as e:
+            logger.debug(f"⚠️ Failed to notify backend of call end: {e}")
     
     
     @function_tool()
@@ -1652,7 +1669,7 @@ class SimpleVoiceAgent(Agent):
     async def _enter_shadow_mode(self):
         """Immediately stop and mute AI, preserve context for potential handback"""
         try:
-            logger.info("🔇 Entering shadow mode - interrupting and muting AI, preserving context")
+            logger.info("🔇 Entering shadow mode - interrupting and silencing AI, preserving context")
             
             # Step 1: Interrupt any ongoing speech immediately
             # This stops current audio playback and clears the queue
@@ -1663,13 +1680,29 @@ class SimpleVoiceAgent(Agent):
             except Exception as interrupt_err:
                 logger.warning(f"⚠️ Could not interrupt session: {interrupt_err}")
             
-            # Step 2: Set flag to prevent future LLM responses AND TTS
+            # Step 2: Set flag to prevent future LLM responses and TTS generation
             # This is checked in on_user_turn_completed to block AI processing
             self._handoff_active = True
             
-            # Step 3: Locally mute the agent's output (don't rely on remote mute - self-hosted LiveKit doesn't support it)
-            # We'll simply skip TTS generation when _handoff_active is True
-            logger.info("🔇 AI muted locally - will not generate TTS while human agent is active")
+            # Step 3: Try to mute AI audio track using backend Room Service API
+            # NOTE: Self-hosted LiveKit may not support remote unmute
+            # The _handoff_active flag is the primary silence mechanism
+            try:
+                import httpx
+                backend_url = self._backend_internal_url()
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.post(
+                        f"{backend_url}/api/human-agent/mute-agent",
+                        json={"room_name": self.room_name, "muted": True}
+                    )
+                    if resp.status_code == 200:
+                        logger.info("✅ AI audio track muted via backend Room Service API")
+                    else:
+                        logger.info(f"ℹ️ Backend mute skipped (status {resp.status_code}) - using flag-based silence")
+            except Exception as mute_err:
+                logger.info(f"ℹ️ Backend mute not available - using flag-based silence")
+            
+            logger.info("✅ AI silenced (will not generate TTS while human is active)")
             
         except Exception as e:
             logger.error(f"❌ Error entering shadow mode: {e}")
@@ -1688,11 +1721,29 @@ class SimpleVoiceAgent(Agent):
                     pass
             self._human_agent_stt_streams.clear()
             
-            # Clear handoff flags to resume AI
+            # Clear handoff flag FIRST - this allows AI to resume immediately
             self._handoff_active = False
             self._human_agent_identity = None
             
-            logger.info("✅ AI unmuted locally - TTS will resume")
+            logger.info("✅ AI resumed (flag cleared - TTS generation enabled)")
+
+            # Try to unmute AI audio track using backend Room Service API
+            # NOTE: This may fail if remote unmute is not enabled on self-hosted LiveKit
+            # The AI will still work because _handoff_active is now False
+            try:
+                import httpx
+                backend_url = self._backend_internal_url()
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.post(
+                        f"{backend_url}/api/human-agent/mute-agent",
+                        json={"room_name": self.room_name, "muted": False}
+                    )
+                    if resp.status_code == 200:
+                        logger.info("✅ AI audio track unmuted via backend Room Service API")
+                    else:
+                        logger.info(f"ℹ️ Backend unmute skipped (status {resp.status_code}) - AI will resume via new audio generation")
+            except Exception as unmute_err:
+                logger.info(f"ℹ️ Backend unmute not available - AI will resume via new audio generation")
 
             # Stop any monitor task (handoff is over)
             try:
@@ -3131,6 +3182,11 @@ async def entrypoint(ctx: JobContext):
                         logger.info(f"👋 Human agent left: {identity}")
                         # Exit shadow mode or end call based on configuration
                         asyncio.create_task(agent._exit_shadow_mode())
+                    # Detect original user/caller leaving (notify dashboards to update UI)
+                    elif identity.startswith("User_") or identity.startswith("sip_"):
+                        logger.info(f"👋 User/caller left: {identity}")
+                        # Notify backend to emit call_ended to all dashboards
+                        asyncio.create_task(agent._notify_call_ended("user_disconnect"))
                 except Exception as e:
                     logger.warning(f"⚠️ Error in participant_disconnected handler: {e}")
                     logger.info("👤 participant_disconnected (details unavailable)")

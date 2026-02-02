@@ -111,6 +111,14 @@ export class Alive5SocketService {
       this.incomingCallsSubject.next(updatedCalls);
     });
 
+    // Listen for call ended notifications
+    this.socket.on('call_ended', (data: any) => {
+      console.log('[Alive5Socket] Call ended:', data);
+      
+      // Remove the call from the incoming queue
+      this.removeIncomingCall(data.room_name);
+    });
+
     this.socket.on('error', (error: any) => {
       console.error('[Alive5Socket] Socket error:', error);
     });

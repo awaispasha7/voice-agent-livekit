@@ -33,6 +33,7 @@ turn:
 room:
   empty_timeout: 30  # 30 seconds (aggressive cleanup to free memory faster)
   max_participants: 3  # Reduced to 3 for tighter memory control per room
+  enable_remote_unmute: true  # Allow server to unmute participant tracks (required for HITL handoff)
 
 # Development settings (adjust for production)
 development: false

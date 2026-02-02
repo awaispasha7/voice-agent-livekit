@@ -437,6 +437,12 @@ class RejectTakeoverRequest(BaseModel):
     agent_name: str
     reason: str = "rejected"
 
+class CallEndedRequest(BaseModel):
+    """Notification that a call has ended"""
+    room_name: str
+    reason: str = "user_disconnect"
+    timestamp: float
+
 
 # Session storage - use AgentCore Memory if enabled, otherwise fallback to in-memory
 # Import AgentCore Memory
@@ -1888,6 +1894,27 @@ async def notify_dashboard_incoming_call(notification: IncomingCallNotification)
         logger.error(f"❌ Error notifying dashboards: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/dashboard/call-ended")
+async def notify_dashboard_call_ended(request: CallEndedRequest):
+    """Endpoint for worker to notify dashboard that a call has ended"""
+    try:
+        logger.info(f"📞 Call ended notification for room: {request.room_name}, reason: {request.reason}")
+        
+        # Emit to all connected dashboards
+        await emit_to_dashboards("call_ended", {
+            "room_name": request.room_name,
+            "reason": request.reason,
+            "timestamp": datetime.fromtimestamp(request.timestamp / 1000).isoformat()
+        })
+        
+        return {
+            "status": "success",
+            "dashboards_notified": len(dashboard_clients)
+        }
+    except Exception as e:
+        logger.error(f"❌ Error notifying dashboards of call end: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/human-agent/request-takeover")
 async def request_human_takeover(request: HumanTakeoverRequest):
     """Manual intervention endpoint - Human agent requests to take over an active call"""
@@ -2172,6 +2199,17 @@ async def end_human_handoff(request: EndHandoffRequest):
         })
         
         logger.info(f"✅ Handoff ended for {request.room_name}, resume_ai={request.resume_ai}")
+
+        # Notify all dashboards that this call has ended
+        try:
+            await emit_to_dashboards("call_ended", {
+                "room_name": request.room_name,
+                "ended_by": "human_agent" if not request.resume_ai else "transfer_to_ai",
+                "timestamp": datetime.now().isoformat()
+            })
+            logger.info(f"📤 Notified dashboards that call {request.room_name} ended")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to notify dashboards of call end: {e}")
 
         # If the dashboard ended the call (resume_ai=false), notify Alive5 and close the room
         if not request.resume_ai:

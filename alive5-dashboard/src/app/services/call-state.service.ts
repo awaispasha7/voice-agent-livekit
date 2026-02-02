@@ -29,7 +29,22 @@ export class CallStateService {
     private http: HttpClient,
     private liveKitService: LiveKitService,
     private alive5SocketService: Alive5SocketService
-  ) {}
+  ) {
+    // Listen for call ended events
+    this.alive5SocketService.socket?.on('call_ended', (data: any) => {
+      console.log('[CallState] Call ended remotely:', data);
+      const activeCall = this.activeCallSubject.value;
+      if (activeCall && activeCall.room_name === data.room_name) {
+        // Clear active call and leave room
+        this.liveKitService.leaveRoom().catch(err => {
+          console.error('[CallState] Error leaving room after remote end:', err);
+        });
+        this.stopDurationTimer();
+        this.activeCallSubject.next(null);
+        console.log('[CallState] Active call cleared due to remote end');
+      }
+    });
+  }
 
   /**
    * Accept an incoming call

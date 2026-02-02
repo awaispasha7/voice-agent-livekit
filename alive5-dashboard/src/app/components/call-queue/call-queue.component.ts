@@ -7,6 +7,7 @@ import { Component, OnInit, OnDestroy } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { Alive5SocketService } from '../../services/alive5-socket.service';
 import { CallStateService } from '../../services/call-state.service';
+import { AgentProfileService } from '../../services/agent-profile.service';
 import { IncomingCall } from '../../models/call.model';
 
 @Component({
@@ -16,15 +17,27 @@ import { IncomingCall } from '../../models/call.model';
 })
 export class CallQueueComponent implements OnInit, OnDestroy {
   incomingCalls: IncomingCall[] = [];
-  agentId: string = 'agent_' + Math.random().toString(36).substring(7);
-  agentName: string = 'Human Agent';
+  agentId: string = '';
+  agentName: string = 'Agent';
   
   private subscriptions: Subscription[] = [];
 
   constructor(
     private alive5SocketService: Alive5SocketService,
-    private callStateService: CallStateService
-  ) {}
+    private callStateService: CallStateService,
+    private agentProfile: AgentProfileService
+  ) {
+    // Get agent info from profile
+    const profile = this.agentProfile.getProfile();
+    if (profile) {
+      this.agentId = profile.agentId;
+      this.agentName = profile.agentName;
+    } else {
+      // Fallback if profile not set
+      this.agentId = 'agent_' + Math.random().toString(36).substring(7);
+      this.agentName = 'Agent';
+    }
+  }
 
   ngOnInit(): void {
     // Subscribe to incoming calls
