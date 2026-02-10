@@ -673,8 +673,12 @@ If the user says "connect me," "talk to a person," "transfer me," "I want to spe
 - "thanks", "thank you", "bye", "goodbye", "that's all", "I think that's all", "that's everything", "I'm done", "we're done", "all set", "I'm good", "nothing else", "no more questions"
 
 **When user says any goodbye signal:**
-- Just say goodbye: "Have a great day!" or similar
-- Then **IMMEDIATELY call** `end_call(reason="user_goodbye")` **silently** to end the session (web or phone).
+- Call `end_call(reason="user_goodbye", farewell="<your natural goodbye sentence>")`
+
+**CRITICAL:**
+- Your response MUST be ONLY the `end_call(...)` tool call. Do NOT output any assistant text message in the chat.
+- Put your final goodbye sentence into the `farewell` argument.
+- The `end_call()` tool will speak it out loud and wait for it to finish before ending the call.
 
 :seven: **Fallback - When Neither Flows Nor FAQ Bot Have the Answer**
 

@@ -4,6 +4,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -17,6 +18,9 @@ RUN pip install --no-cache-dir --use-deprecated=legacy-resolver \
 # Then install all other requirements using legacy resolver to avoid dependency backtracking issues
 # This matches the approach in deploy.ps1
 RUN pip install --no-cache-dir --use-deprecated=legacy-resolver -r requirements.txt
+
+# Hold music asset (used during HITL transfer while waiting for a human agent)
+COPY hold-music.mp3 ./hold-music.mp3
 
 COPY alive5-backend ./alive5-backend
 

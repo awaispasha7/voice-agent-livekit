@@ -3,6 +3,7 @@ Voice Agent - Single LLM with Function Calling (Brand-Agnostic)
 """
 
 import asyncio
+import inspect
 import logging
 import os
 import random
@@ -190,6 +191,14 @@ class SimpleVoiceAgent(Agent):
         self._last_crm_verify_at: Dict[str, float] = {}
         # Track who ended the session (used for end_voice_chat payload alignment with web)
         self._end_by: str = "voice_agent"
+        # Guard to prevent duplicate end_voice_chat emissions
+        self._a5_end_voice_chat_sent: bool = False
+        # Graceful tool-driven call end (lets agent finish a final utterance before teardown)
+        self._end_call_requested: bool = False
+        self._end_call_in_progress: bool = False
+        # When end_call is requested, only allow ONE assistant message to be forwarded to Alive5
+        # (prevents double-goodbye when the model both speaks and also calls end_call).
+        self._end_call_allow_next_assistant: bool = False
         
         # HITL (Human-in-the-Loop) handoff state
         self._handoff_active = False
@@ -202,6 +211,21 @@ class SimpleVoiceAgent(Agent):
         self._handoff_backend_seen_active = False
         self._session_end_started = False  # Guard against duplicate end events
         self._human_agent_stt_streams = {}  # Dict[agent_identity, STT stream] - supports multiple human agents
+        # During handoff, LiveKit Agents may switch the linked participant to the human agent.
+        # To ensure caller/user messages continue to be logged in Alive5, we run a separate STT stream
+        # for the caller audio track while _handoff_active is True.
+        self._handoff_user_stt_streams = {}  # Dict[participant_identity, STT stream]
+        self._handoff_user_last_sent = {}  # Dict[participant_identity, Tuple[text, monotonic_ts]]
+
+        # Hold music (played after transfer-to-human until a real human agent joins)
+        self._hold_music_task: asyncio.Task | None = None
+        self._hold_music_stop_event: asyncio.Event | None = None
+        self._hold_music_publication = None
+        self._hold_music_track = None
+        self._hold_music_source = None
+        self._hold_music_started: bool = False
+        # Set in entrypoint based on room type (phone/web); used for hold music track format.
+        self._audio_sample_rate: int | None = None
 
         # Silence nudges (human-like check-ins when user stays silent after a question)
         self._silence_nudge_task: asyncio.Task | None = None
@@ -532,19 +556,131 @@ class SimpleVoiceAgent(Agent):
                 "message": "I'm having trouble transferring you right now."
             }
 
+    async def _say(self, text: str):
+        """
+        Wrapper around AgentSession.say():
+        - If hold music is playing (handoff requested), stop it before speaking.
+        - No-op if session is missing/closing.
+        """
+        try:
+            if getattr(self, "_handoff_requested", False) and not getattr(self, "_handoff_active", False):
+                # Only stop if hold music is already actively playing.
+                if getattr(self, "_hold_music_started", False) or getattr(self, "_hold_music_publication", None):
+                    await self._stop_hold_music(reason="ai_speaking")
+        except Exception:
+            pass
+
+        try:
+            if not hasattr(self, "agent_session") or not self.agent_session:
+                return
+            if hasattr(self.agent_session, "_closing") and self.agent_session._closing:
+                return
+            t = (text or "").strip()
+            if not t:
+                return
+            await self.agent_session.say(t)
+        except Exception:
+            return
+
     @function_tool()
-    async def end_call(self, context: RunContext, reason: str = "user_requested_end") -> Dict[str, Any]:
+    async def end_call(self, context: RunContext, reason: str = "user_requested_end", farewell: Optional[str] = None) -> Dict[str, Any]:
         """
         End the current call/session (web or phone).
 
         This is LLM-managed: call this right after you say goodbye when the user indicates they want to end.
         """
         try:
+            # Idempotency: don't run multiple end sequences
+            if getattr(self, "_end_call_in_progress", False):
+                return {"success": True, "message": "ok", "reason": reason}
+            self._end_call_in_progress = True
+            self._end_call_requested = True
+            # Allow exactly one assistant message to be logged to Alive5 after this point.
+            # This should be the farewell spoken by this tool.
+            self._end_call_allow_next_assistant = True
+
             # Mark that the user ended the call (aligns end_voice_chat payload semantics)
             try:
                 self._end_by = "person"
             except Exception:
                 pass
+
+            # IMPORTANT:
+            # - To guarantee the last message is not cut off, we optionally speak the farewell INSIDE this tool
+            #   and await completion before teardown (no hardcoded drain).
+            # - Recommended: for user goodbyes, pass a contextual `farewell` string and do NOT send a separate
+            #   assistant message before calling this tool.
+            # - During HITL shadow mode, do not speak (human is handling).
+            if not getattr(self, "_handoff_active", False):
+                try:
+                    if farewell and hasattr(self, "agent_session") and self.agent_session:
+                        farewell_text = farewell.strip()
+                        if farewell_text:
+                            # IMPORTANT: agent_session.say() does not always create a committed "assistant" conversation item.
+                            # Since the prompt now uses a tool-only goodbye (no assistant chat message),
+                            # we must explicitly log the farewell to Alive5.
+                            try:
+                                await self._send_message_to_alive5(farewell_text, is_agent=True)
+                                try:
+                                    self._conversation_log.append({"role": "assistant", "text": farewell_text})
+                                except Exception:
+                                    pass
+                                # We've already logged the farewell; suppress any subsequent assistant commit
+                                # during the end-call window to avoid duplicates.
+                                try:
+                                    self._end_call_allow_next_assistant = False
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+
+                            # Speak farewell and wait for completion before ending.
+                            await self._say(farewell_text)
+                except Exception:
+                    pass
+
+            # Emit end_voice_chat (server-side) AFTER drain so the final message is visible and audio completes.
+            try:
+                if (not getattr(self, "_a5_end_voice_chat_sent", False)) and getattr(self, "alive5_thread_id", None):
+                    org_name = getattr(self, "alive5_org_name", getattr(self, "org_name", "alive5stage0"))
+                    raw_voice_agent_id = (getattr(self, "alive5_voice_agent_id", None) or "").strip()
+                    voice_agent_id = raw_voice_agent_id or (self._tagged_voice_agent_id("web") or "")
+                    end_by = getattr(self, "_end_by", "voice_agent") or "voice_agent"
+                    message_content = "Voice call completed by user" if end_by == "person" else "Voice call completed by agent"
+
+                    ok = False
+                    for _ in range(3):
+                        try:
+                            ok = await self._emit_alive5_socket_event(
+                                "end_voice_chat",
+                                {
+                                    "end_by": end_by,
+                                    "message_content": message_content,
+                                    "org_name": org_name,
+                                    "thread_id": self.alive5_thread_id,
+                                    "voice_agent_id": voice_agent_id,
+                                },
+                            )
+                            if ok:
+                                break
+                        except Exception:
+                            ok = False
+                        try:
+                            await asyncio.sleep(0.2)
+                        except Exception:
+                            pass
+
+                    if ok:
+                        self._a5_end_voice_chat_sent = True
+                        # Small grace delay so Alive5 processes the event before we drop the room.
+                        try:
+                            await asyncio.sleep(0.4)
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning("⚠️ end_call: end_voice_chat emit failed (best-effort)")
+            except Exception as e:
+                logger.warning(f"⚠️ end_call: could not emit end_voice_chat (best-effort): {e}")
 
             backend_url = self._backend_internal_url()
 
@@ -592,16 +728,15 @@ class SimpleVoiceAgent(Agent):
             except Exception:
                 pass
 
-            try:
-                # Fire-and-forget; on_session_end has guards against duplicates.
-                asyncio.create_task(self.on_session_end())
-            except Exception:
-                pass
-
             return {"success": True, "message": "ok", "reason": reason}
         except Exception as e:
             logger.error(f"❌ end_call failed: {e}")
             return {"success": False, "message": "Unable to end the call right now."}
+        finally:
+            try:
+                self._end_call_in_progress = False
+            except Exception:
+                pass
     
     @function_tool()
     async def save_collected_data(self, context: RunContext, field_name: str, value: str) -> Dict[str, Any]:
@@ -883,7 +1018,7 @@ class SimpleVoiceAgent(Agent):
 
                 try:
                     if hasattr(self, "agent_session") and self.agent_session:
-                        await self.agent_session.say(msg)
+                        await self._say(msg)
                 except Exception:
                     return
 
@@ -1143,6 +1278,12 @@ class SimpleVoiceAgent(Agent):
         except Exception:
             pass
 
+        # Stop hold music early during teardown
+        try:
+            await self._stop_hold_music(reason="session_end")
+        except Exception:
+            pass
+
         # IMPORTANT: Do NOT fire-and-forget here. On disconnect, background tasks can get cancelled.
         # We do a short, best-effort reconciliation before ending the Alive5 thread.
         try:
@@ -1242,37 +1383,70 @@ class SimpleVoiceAgent(Agent):
             except:
                 pass
         
-        # Send end_voice_chat event via socket before calling backend
-        # According to Alive5 docs: end_voice_chat closes the chat and thread
+        # Race-proof: emit end_voice_chat directly to Alive5 BEFORE tearing down anything.
+        # Data-channel relay is best-effort and can be lost if the user disconnects quickly.
+        # Ref: LiveKit participant management notes: remote unmute is gated, and call-ending events
+        # should be sent server-side for reliability. https://docs.livekit.io/intro/basics/rooms-participants-tracks/participants/#getparticipant
         try:
-            if hasattr(self, 'room') and self.room and hasattr(self, 'alive5_thread_id') and self.alive5_thread_id:
-                import json
-                
-                # Get voice_agent_id (stored from init_voice_agent_ack, or use default)
-                voice_agent_id = getattr(self, 'alive5_voice_agent_id', '')
-                org_name = getattr(self, 'alive5_org_name', getattr(self, 'org_name', 'alive5stage0'))
-                
-                socket_instruction = {
-                    "action": "emit",
-                    "event": "end_voice_chat",
-                    "payload": {
-                        "end_by": "voice_agent",  # Agent ended the call (session cleanup)
-                        "message_content": "Voice call completed by agent",
+            if getattr(self, "_a5_end_voice_chat_sent", False):
+                pass
+            elif getattr(self, "alive5_thread_id", None):
+                org_name = getattr(self, "alive5_org_name", getattr(self, "org_name", "alive5stage0"))
+                raw_voice_agent_id = (getattr(self, "alive5_voice_agent_id", None) or "").strip()
+                voice_agent_id = raw_voice_agent_id or (self._tagged_voice_agent_id("web") or "")
+                end_by = getattr(self, "_end_by", "voice_agent") or "voice_agent"
+                message_content = "Voice call completed by user" if end_by == "person" else "Voice call completed by agent"
+
+                ok = await self._emit_alive5_socket_event(
+                    "end_voice_chat",
+                    {
+                        "end_by": end_by,
+                        "message_content": message_content,
                         "org_name": org_name,
                         "thread_id": self.alive5_thread_id,
-                        "voice_agent_id": voice_agent_id
-                    }
-                }
-                try:
-                    await self.room.local_participant.publish_data(
-                        json.dumps(socket_instruction).encode('utf-8'),
-                        topic="lk.alive5.socket"
-                    )
-                    logger.info(f"📤 end_voice_chat event sent via data channel")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to send end_voice_chat via data channel: {e}")
+                        "voice_agent_id": voice_agent_id,
+                    },
+                )
+                if ok:
+                    self._a5_end_voice_chat_sent = True
+                    logger.info(f"✅ end_voice_chat emitted (server-side) end_by={end_by} thread_id={self.alive5_thread_id}")
+                    # Small grace period so Alive5 processes the end before anything else closes.
+                    try:
+                        await asyncio.sleep(0.4)
+                    except Exception:
+                        pass
+                else:
+                    logger.warning("⚠️ end_voice_chat server-side emit failed (best-effort)")
         except Exception as e:
-            logger.warning(f"⚠️ Could not send end_voice_chat event: {e}")
+            logger.warning(f"⚠️ Could not emit end_voice_chat server-side (best-effort): {e}")
+
+        # Fallback: if server-side emit didn't succeed, try data-channel instruction (best-effort)
+        if not getattr(self, "_a5_end_voice_chat_sent", False):
+            try:
+                if getattr(self, "room", None) and getattr(self, "alive5_thread_id", None):
+                    import json
+                    voice_agent_id = (getattr(self, "alive5_voice_agent_id", "") or "").strip()
+                    org_name = getattr(self, "alive5_org_name", getattr(self, "org_name", "alive5stage0"))
+                    end_by = getattr(self, "_end_by", "voice_agent") or "voice_agent"
+                    message_content = "Voice call completed by user" if end_by == "person" else "Voice call completed by agent"
+                    socket_instruction = {
+                        "action": "emit",
+                        "event": "end_voice_chat",
+                        "payload": {
+                            "end_by": end_by,
+                            "message_content": message_content,
+                            "org_name": org_name,
+                            "thread_id": self.alive5_thread_id,
+                            "voice_agent_id": voice_agent_id,
+                        },
+                    }
+                    await self.room.local_participant.publish_data(
+                        json.dumps(socket_instruction).encode("utf-8"),
+                        topic="lk.alive5.socket",
+                    )
+                    logger.info("📤 end_voice_chat sent via data channel (fallback)")
+            except Exception as e:
+                logger.debug(f"end_voice_chat data-channel fallback failed: {e}")
         
         try:
             import httpx
@@ -1325,7 +1499,7 @@ class SimpleVoiceAgent(Agent):
             except Exception as preload_error:
                 logger.error(f"❌ Failed to preload bot flows before greeting: {preload_error}", exc_info=True)
                 if hasattr(self, "agent_session") and self.agent_session:
-                    await self.agent_session.say(
+                    await self._say(
                         "I'm having trouble getting set up right now. Please try again in a moment."
                     )
                 return
@@ -1367,7 +1541,7 @@ class SimpleVoiceAgent(Agent):
                 if hasattr(self, "agent_session") and self.agent_session:
                     # Check if session is closing before using it
                     if not (hasattr(self.agent_session, "_closing") and self.agent_session._closing):
-                        await self.agent_session.say("Failed to load the bot flows. But you can still speak with me naturally.")
+                        await self._say("Failed to load the bot flows. But you can still speak with me naturally.")
             except RuntimeError:
                 # Session is closing, ignore
                 pass
@@ -1394,7 +1568,9 @@ class SimpleVoiceAgent(Agent):
             topic = "lk.conversation.control"
             if data_type == "user_transcript":
                 topic = "lk.user.transcript"
-                data["speaker"] = "User"
+                # Preserve provided speaker (e.g., "Human Agent") if present
+                if "speaker" not in data:
+                    data["speaker"] = "User"
             
             await self.room.local_participant.publish_data(
                 json.dumps(data).encode('utf-8'),
@@ -1553,11 +1729,284 @@ class SimpleVoiceAgent(Agent):
             except Exception as e:
                 logger.error(f"❌ Failed to notify dashboard: {e}")
             
-            # TODO: Play hold music or message to caller
+            # Start hold music while waiting for a real human agent to join.
+            # Stops when:
+            # - a human agent joins (handoff becomes active)
+            # - the AI speaks again (caller continues with AI)
+            try:
+                asyncio.create_task(self._start_hold_music())
+            except Exception:
+                pass
+
             logger.info("📞 Waiting for human agent to join...")
             
         except Exception as e:
             logger.error(f"❌ Error initiating handoff: {e}")
+
+    def _resolve_hold_music_path(self) -> Optional[Path]:
+        """
+        Resolve the hold music file path.
+        Default expects `hold-music.mp3` at container/workdir root (/app/hold-music.mp3).
+        Override with HOLD_MUSIC_FILE env var (absolute or relative).
+        """
+        try:
+            raw = (os.getenv("HOLD_MUSIC_FILE") or "hold-music.mp3").strip() or "hold-music.mp3"
+            p = Path(raw)
+            candidates: list[Path] = []
+
+            if p.is_absolute():
+                candidates.append(p)
+            else:
+                # 1) CWD (Docker WORKDIR=/app)
+                candidates.append(Path.cwd() / p)
+                # 2) Repo/container root: ../../ from alive5-backend/alive5-worker/worker.py -> /app
+                try:
+                    candidates.append(Path(__file__).resolve().parents[2] / p)
+                except Exception:
+                    pass
+                # 3) Same dir as worker.py
+                try:
+                    candidates.append(Path(__file__).resolve().parent / p)
+                except Exception:
+                    pass
+
+            for c in candidates:
+                try:
+                    if c.exists() and c.is_file():
+                        return c
+                except Exception:
+                    continue
+            return None
+        except Exception:
+            return None
+
+    async def _start_hold_music(self):
+        """
+        Start hold music loop (ffmpeg decode -> publish local audio track -> push PCM frames).
+        Plays only while _handoff_requested is True and _handoff_active is False.
+        """
+        # Idempotency: don't start if already running
+        try:
+            t = getattr(self, "_hold_music_task", None)
+            if t and not t.done():
+                return
+        except Exception:
+            pass
+
+        if not getattr(self, "_handoff_requested", False) or getattr(self, "_handoff_active", False):
+            return
+        if getattr(self, "_session_end_started", False):
+            return
+
+        # Delay to avoid overlapping the transfer acknowledgment TTS.
+        try:
+            start_delay = float(os.getenv("HOLD_MUSIC_START_DELAY_SECONDS", "4") or "4")
+        except Exception:
+            start_delay = 4.0
+
+        try:
+            self._hold_music_stop_event = asyncio.Event()
+            self._hold_music_task = asyncio.create_task(self._hold_music_runner(start_delay=start_delay))
+        except Exception:
+            return
+
+    async def _stop_hold_music(self, reason: str = "stop"):
+        """Stop hold music loop and unpublish track (best-effort, idempotent)."""
+        try:
+            ev = getattr(self, "_hold_music_stop_event", None)
+            if ev and not ev.is_set():
+                ev.set()
+        except Exception:
+            pass
+
+        try:
+            t = getattr(self, "_hold_music_task", None)
+            if t and not t.done():
+                t.cancel()
+        except Exception:
+            pass
+
+        # Best-effort unpublish (in case runner didn't get to it yet)
+        try:
+            pub = getattr(self, "_hold_music_publication", None)
+            if pub and getattr(self, "room", None) and getattr(self.room, "local_participant", None):
+                sid = getattr(pub, "sid", None) or getattr(getattr(pub, "track", None), "sid", None)
+                if sid:
+                    try:
+                        r = self.room.local_participant.unpublish_track(sid)
+                        if inspect.isawaitable(r):
+                            await r
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        try:
+            self._hold_music_publication = None
+            self._hold_music_track = None
+            self._hold_music_source = None
+            self._hold_music_started = False
+            self._hold_music_stop_event = None
+            self._hold_music_task = None
+        except Exception:
+            pass
+
+        try:
+            logger.info(f"🎵 Hold music stopped ({reason})")
+        except Exception:
+            pass
+
+    async def _hold_music_runner(self, start_delay: float = 4.0):
+        """
+        Runner task for hold music playback.
+        Uses ffmpeg to decode mp3 to 16-bit PCM and pushes frames into a published audio track.
+        """
+        proc: asyncio.subprocess.Process | None = None
+        try:
+            if start_delay and start_delay > 0:
+                await asyncio.sleep(start_delay)
+
+            # Re-check conditions after delay
+            if getattr(self, "_session_end_started", False):
+                return
+            if not getattr(self, "_handoff_requested", False) or getattr(self, "_handoff_active", False):
+                return
+            if not getattr(self, "room", None) or not getattr(self.room, "local_participant", None):
+                return
+
+            hold_path = self._resolve_hold_music_path()
+            if not hold_path:
+                logger.warning("⚠️ Hold music file not found; skipping playback")
+                return
+
+            # Use the room's configured audio sample rate (set in entrypoint)
+            try:
+                sr = int(getattr(self, "_audio_sample_rate", None) or 24000)
+            except Exception:
+                sr = 24000
+            num_channels = 1
+
+            # Create source + track + publish
+            try:
+                try:
+                    source = rtc.AudioSource(sample_rate=sr, num_channels=num_channels)
+                except Exception:
+                    source = rtc.AudioSource(sr, num_channels)
+                track = rtc.LocalAudioTrack.create_audio_track("hold-music", source)
+                pub = await self.room.local_participant.publish_track(track)
+            except Exception as e:
+                logger.warning(f"⚠️ Could not publish hold-music track: {e}")
+                return
+
+            self._hold_music_source = source
+            self._hold_music_track = track
+            self._hold_music_publication = pub
+            self._hold_music_started = True
+
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(hold_path),
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "-ac",
+                str(num_channels),
+                "-ar",
+                str(sr),
+                "pipe:1",
+            ]
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            # 20ms frames
+            samples_per_channel = max(1, int(sr / 50))
+            bytes_per_frame = samples_per_channel * num_channels * 2  # s16le
+
+            logger.info("🎵 Hold music started (waiting for human agent)")
+
+            stop_ev = getattr(self, "_hold_music_stop_event", None)
+            while True:
+                if stop_ev and stop_ev.is_set():
+                    return
+                if getattr(self, "_session_end_started", False):
+                    return
+                if not getattr(self, "_handoff_requested", False) or getattr(self, "_handoff_active", False):
+                    return
+                if not proc or not proc.stdout:
+                    return
+
+                try:
+                    data = await proc.stdout.readexactly(bytes_per_frame)
+                except asyncio.IncompleteReadError:
+                    return
+                except Exception:
+                    return
+
+                try:
+                    frame = rtc.AudioFrame(
+                        data=data,
+                        sample_rate=sr,
+                        num_channels=num_channels,
+                        samples_per_channel=samples_per_channel,
+                    )
+                    r = source.capture_frame(frame)
+                    if inspect.isawaitable(r):
+                        await r
+                except Exception:
+                    return
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.warning(f"⚠️ Hold music runner error (ignored): {e}")
+            return
+        finally:
+            # Stop ffmpeg
+            try:
+                if proc and proc.returncode is None:
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # Unpublish track
+            try:
+                pub = getattr(self, "_hold_music_publication", None)
+                if pub and getattr(self, "room", None) and getattr(self.room, "local_participant", None):
+                    sid = getattr(pub, "sid", None) or getattr(getattr(pub, "track", None), "sid", None)
+                    if sid:
+                        try:
+                            r = self.room.local_participant.unpublish_track(sid)
+                            if inspect.isawaitable(r):
+                                await r
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            try:
+                self._hold_music_publication = None
+                self._hold_music_track = None
+                self._hold_music_source = None
+                self._hold_music_started = False
+            except Exception:
+                pass
 
     async def _monitor_handoff_state(self):
         """
@@ -1631,7 +2080,7 @@ class SimpleVoiceAgent(Agent):
                     msg = "No problem — it looks like no one is available right now. I can help you here. What can I assist with?"
                     try:
                         if hasattr(self, "agent_session") and self.agent_session:
-                            await self.agent_session.say(msg)
+                            await self._say(msg)
                     except Exception:
                         pass
                     return
@@ -1645,7 +2094,7 @@ class SimpleVoiceAgent(Agent):
                     msg = "I’m back — I’ll take it from here. How can I help?"
                     try:
                         if hasattr(self, "agent_session") and self.agent_session:
-                            await self.agent_session.say(msg)
+                            await self._say(msg)
                     except Exception:
                         pass
                     return
@@ -1654,7 +2103,7 @@ class SimpleVoiceAgent(Agent):
                 msg = "Okay — the call has ended. Goodbye."
                 try:
                     if hasattr(self, "agent_session") and self.agent_session:
-                        await self.agent_session.say(msg)
+                        await self._say(msg)
                 except Exception:
                     pass
                 return
@@ -1667,6 +2116,12 @@ class SimpleVoiceAgent(Agent):
         """Immediately stop and mute AI, preserve context for potential handback"""
         try:
             logger.info("🔇 Entering shadow mode - interrupting and silencing AI, preserving context")
+
+            # Stop hold music immediately when a human agent joins (handoff becomes active)
+            try:
+                await self._stop_hold_music(reason="human_joined")
+            except Exception:
+                pass
             
             # Step 1: Interrupt any ongoing speech immediately
             # This stops current audio playback and clears the queue
@@ -1708,6 +2163,12 @@ class SimpleVoiceAgent(Agent):
         """Resume AI after human leaves - restore audio and full context"""
         try:
             logger.info("🔊 Exiting shadow mode - resuming AI with full context")
+
+            # Ensure hold music is stopped (handoff is over / AI is resuming)
+            try:
+                await self._stop_hold_music(reason="resume_ai")
+            except Exception:
+                pass
             
             # Stop all human agent STT streams if running
             for agent_id, stt_stream in list(self._human_agent_stt_streams.items()):
@@ -1717,9 +2178,22 @@ class SimpleVoiceAgent(Agent):
                 except Exception:
                     pass
             self._human_agent_stt_streams.clear()
+
+            # Stop any handoff user STT streams (caller transcription) if running
+            for pid, stt_stream in list(self._handoff_user_stt_streams.items()):
+                try:
+                    await stt_stream.aclose()
+                    logger.info(f"🎤 Stopped caller STT stream for {pid}")
+                except Exception:
+                    pass
+            self._handoff_user_stt_streams.clear()
+            self._handoff_user_last_sent.clear()
             
             # Clear handoff flag FIRST - this allows AI to resume immediately
             self._handoff_active = False
+            # Handoff request is no longer pending once we exit shadow mode
+            self._handoff_requested = False
+            self._handoff_queue = None
             self._human_agent_identity = None
             
             logger.info("✅ AI resumed (flag cleared - TTS generation enabled)")
@@ -1847,6 +2321,87 @@ class SimpleVoiceAgent(Agent):
         except Exception as e:
             logger.warning(f"⚠️ Error in human agent STT for {agent_identity}: {e}")
             self._human_agent_stt_streams.pop(agent_identity, None)
+
+    async def _start_handoff_user_stt(self, audio_track: rtc.AudioTrack, participant_identity: str):
+        """Start transcribing the caller/user audio during handoff so user messages are logged to Alive5."""
+        try:
+            # Avoid duplicates
+            if participant_identity in self._handoff_user_stt_streams:
+                return
+
+            from livekit.plugins import deepgram
+
+            stt_instance = deepgram.STT(
+                model="nova-2-general",
+                language="en",
+            )
+
+            audio_stream = rtc.AudioStream(audio_track)
+            stt_stream = stt_instance.stream()
+            self._handoff_user_stt_streams[participant_identity] = stt_stream
+
+            logger.info(f"🎤 Caller STT stream started for {participant_identity} (handoff)")
+
+            async def push_audio():
+                try:
+                    async for audio_frame_event in audio_stream:
+                        if not getattr(self, "_handoff_active", False):
+                            break
+                        if participant_identity not in self._handoff_user_stt_streams:
+                            break
+                        stt_stream.push_frame(audio_frame_event.frame)
+                except Exception as e:
+                    logger.debug(f"Caller STT push_audio error for {participant_identity}: {e}")
+                finally:
+                    try:
+                        await stt_stream.aclose()
+                    except Exception:
+                        pass
+
+            async def process_transcripts():
+                try:
+                    import time as _time
+                    async for event in stt_stream:
+                        if not getattr(self, "_handoff_active", False):
+                            break
+                        if participant_identity not in self._handoff_user_stt_streams:
+                            break
+
+                        if hasattr(event, "alternatives") and event.alternatives:
+                            text = (event.alternatives[0].text or "").strip()
+                            is_final = getattr(event, "is_final", True)
+                            if not text or not is_final or len(text) < 2:
+                                continue
+
+                            # Simple dedupe: same text within 1.5s
+                            last = self._handoff_user_last_sent.get(participant_identity)
+                            now = _time.monotonic()
+                            if last and last[0] == text and (now - float(last[1])) < 1.5:
+                                continue
+                            self._handoff_user_last_sent[participant_identity] = (text, now)
+
+                            logger.info(f"👤 User (handoff): {text}")
+                            try:
+                                self._conversation_log.append({"role": "user", "text": text})
+                            except Exception:
+                                pass
+
+                            # Send to Alive5 as user message
+                            asyncio.create_task(self._send_message_to_alive5(text, is_agent=False))
+                except Exception as e:
+                    logger.debug(f"Caller STT process_transcripts error for {participant_identity}: {e}")
+
+            await asyncio.gather(push_audio(), process_transcripts(), return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"⚠️ Error in caller STT for {participant_identity}: {e}")
+        finally:
+            self._handoff_user_stt_streams.pop(participant_identity, None)
+            try:
+                logger.info(f"🎤 Caller STT stream ended for {participant_identity} (handoff)")
+            except Exception:
+                pass
     
     def _alive5_socket_base_url(self) -> str:
         """
@@ -2328,24 +2883,44 @@ class SimpleVoiceAgent(Agent):
                 }
             }
             
+            published_via_data = False
             try:
-                # Check if room is still open before publishing
-                if hasattr(self, 'room') and self.room and hasattr(self.room, 'state'):
-                    if self.room.state == 'connected':
-                        await self.room.local_participant.publish_data(
-                            json.dumps(socket_instruction).encode('utf-8'),
-                            topic="lk.alive5.socket"
-                        )
-                        logger.info(f"📤 Message instruction sent via data channel: {message_content[:50]}...")
-                    else:
-                        logger.debug(f"⏭️ Skipping data channel publish - room not connected (state={self.room.state})")
+                # LiveKit Room object does not reliably expose a `state` attribute in all SDK builds.
+                # If we have a room + local_participant, try to publish and let exceptions handle closed rooms.
+                room = getattr(self, "room", None)
+                lp = getattr(room, "local_participant", None) if room else None
+                if room and lp:
+                    await lp.publish_data(
+                        json.dumps(socket_instruction).encode("utf-8"),
+                        topic="lk.alive5.socket",
+                    )
+                    published_via_data = True
+                    logger.info(f"📤 Message instruction sent via data channel: {message_content[:50]}...")
                 else:
-                    logger.debug(f"⏭️ Skipping data channel publish - room not available")
+                    logger.debug("⏭️ Skipping data channel publish - room/local_participant not available")
             except (ConnectionError, RuntimeError) as e:
-                # Room closed - this is expected during shutdown, don't log as error
+                # Room closed - expected during shutdown or disconnects
                 logger.debug(f"⏭️ Room closed during message publish: {e}")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to send message instruction via data channel: {e}")
+
+            # Web fallback: if the widget relay path isn't available (visitor left / data channel unavailable),
+            # send the message directly to Alive5 over Socket.IO. This is best-effort and avoids duplicates
+            # because we only do it when the data-channel publish did NOT succeed.
+            if (not published_via_data) and (not self._is_phone_call_room()):
+                try:
+                    payload = dict(socket_instruction.get("payload") or {})
+                    payload.pop("is_agent", None)
+                    payload.pop("voiceAgentId", None)
+                    payload.pop("voice_agent_id", None)
+                    if is_agent:
+                        vid = self._tagged_voice_agent_id("web")
+                        if vid:
+                            payload["voiceAgentId"] = vid
+                    ok = await self._emit_alive5_socket_event("post_message", payload)
+                    logger.info(f"📤 Web fallback post_message emitted ok={ok} (data_channel={published_via_data})")
+                except Exception as e:
+                    logger.debug(f"Web fallback post_message failed: {e}")
 
             # PSTN bridge: also emit directly to Alive5 socket (phone rooms have no frontend widget to relay).
             # IMPORTANT: For web sessions, the frontend already relays `post_message` from lk.alive5.socket,
@@ -2720,7 +3295,7 @@ class SimpleVoiceAgent(Agent):
 
                     try:
                         if hasattr(self, "agent_session") and self.agent_session:
-                            await self.agent_session.say(msg)
+                            await self._say(msg)
                     except Exception:
                         return
 
@@ -3145,10 +3720,17 @@ async def entrypoint(ctx: JobContext):
                     # HITL: Detect human agent joining
                     if identity.startswith("human_agent_"):
                         logger.info(f"🙋 Human agent detected: {identity}")
+                        # Stop hold music immediately when a real human agent joins
+                        try:
+                            asyncio.create_task(agent._stop_hold_music(reason="human_joined"))
+                        except Exception:
+                            pass
                         # Always enter shadow mode when a human agent joins, even if handoff_state
                         # wasn't properly set yet. This prevents the AI from replying over the human.
                         try:
                             agent._handoff_active = True
+                            # Not "requested" anymore; we are now actively in a human handoff.
+                            agent._handoff_requested = False
                         except Exception:
                             pass
                         agent._human_agent_identity = identity
@@ -3178,7 +3760,21 @@ async def entrypoint(ctx: JobContext):
                     if identity.startswith("human_agent_") and agent._human_agent_identity == identity:
                         logger.info(f"👋 Human agent left: {identity}")
                         # Exit shadow mode or end call based on configuration
-                        asyncio.create_task(agent._exit_shadow_mode())
+                        async def _resume_after_human_left():
+                            try:
+                                await agent._exit_shadow_mode()
+                            except Exception:
+                                pass
+                            # Deterministic handback phrase so the AI doesn't "apologize for delays"
+                            # or act like transfer is still pending.
+                            try:
+                                msg = "I’m back — I’ll take it from here. How can I help?"
+                                if hasattr(agent, "agent_session") and agent.agent_session:
+                                    await agent._say(msg)
+                            except Exception:
+                                pass
+
+                        asyncio.create_task(_resume_after_human_left())
                     # Detect original user/caller leaving (notify dashboards to update UI)
                     elif identity.startswith("User_") or identity.startswith("sip_"):
                         logger.info(f"👋 User/caller left: {identity}")
@@ -3217,6 +3813,16 @@ async def entrypoint(ctx: JobContext):
                     if participant_identity.startswith("human_agent_") and track_kind == rtc.TrackKind.KIND_AUDIO:
                         logger.info(f"🎤 Starting STT for human agent: {participant_identity}")
                         asyncio.create_task(agent._start_human_agent_stt(track, participant_identity))
+                    # During handoff, also transcribe the caller/user audio so their messages continue
+                    # to be logged to Alive5 even if the linked participant switches to the human.
+                    elif track_kind == rtc.TrackKind.KIND_AUDIO and getattr(agent, "_handoff_active", False):
+                        try:
+                            local_id = getattr(getattr(getattr(agent, "room", None), "local_participant", None), "identity", "")
+                        except Exception:
+                            local_id = ""
+                        if participant_identity and participant_identity != local_id and not participant_identity.startswith("human_agent_"):
+                            logger.info(f"🎤 Starting caller STT during handoff: {participant_identity}")
+                            asyncio.create_task(agent._start_handoff_user_stt(track, participant_identity))
                 except Exception as e:
                     logger.warning(f"⚠️ Error in track_subscribed handler: {e}")
                     logger.info("🎧 track_subscribed (details unavailable)")
@@ -3631,6 +4237,10 @@ async def entrypoint(ctx: JobContext):
         #
         # Also disable pre-connect audio to avoid any early feature negotiation that can trip cloud-only paths.
         audio_sample_rate = 8000 if is_phone_call else 24000
+        try:
+            agent._audio_sample_rate = int(audio_sample_rate)
+        except Exception:
+            agent._audio_sample_rate = 24000
 
         if is_phone_call:
             # SIP trunks may show up as SIP or INGRESS participants.
@@ -3706,9 +4316,27 @@ async def entrypoint(ctx: JobContext):
                 if text_content and text_content.strip():
                     # Only send agent messages here (user messages are handled in on_user_turn_completed)
                     if is_agent_msg:
+                        # If we're waiting for a human after transfer, and the AI speaks again,
+                        # stop the hold music so audio doesn't overlap.
+                        if getattr(agent, "_handoff_requested", False) and not getattr(agent, "_handoff_active", False):
+                            try:
+                                if getattr(agent, "_hold_music_started", False) or getattr(agent, "_hold_music_publication", None):
+                                    asyncio.create_task(agent._stop_hold_music(reason="ai_speaking"))
+                            except Exception:
+                                pass
                         # During HITL/shadow mode, suppress AI messages so Alive5 doesn't attribute them to the voice agent.
                         if getattr(agent, "_handoff_active", False):
                             return
+                        # If end_call has been requested, we only forward ONE assistant message to Alive5.
+                        # This prevents duplicate goodbyes (LLM message + tool-spoken farewell).
+                        if getattr(agent, "_end_call_requested", False):
+                            if getattr(agent, "_end_call_allow_next_assistant", False):
+                                try:
+                                    agent._end_call_allow_next_assistant = False
+                                except Exception:
+                                    pass
+                            else:
+                                return
                         # Silently send agent message (logging happens in _send_message_to_alive5_internal)
                         asyncio.create_task(agent._send_message_to_alive5(text_content, is_agent=True))
                         # Append to transcript (for post-call reconciliation)

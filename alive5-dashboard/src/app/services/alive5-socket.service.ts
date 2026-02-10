@@ -22,6 +22,26 @@ export class Alive5SocketService {
   constructor() {}
 
   /**
+   * Upsert an incoming call by room_name (fallback: thread_id).
+   * This makes the dashboard idempotent when backend re-emits the same call.
+   */
+  private upsertIncomingCall(call: IncomingCall): void {
+    const currentCalls = this.incomingCallsSubject.value;
+    const idx = currentCalls.findIndex(
+      (c) => c.room_name === call.room_name || (!!c.thread_id && c.thread_id === call.thread_id),
+    );
+
+    if (idx >= 0) {
+      const next = [...currentCalls];
+      next[idx] = { ...next[idx], ...call };
+      this.incomingCallsSubject.next(next);
+      return;
+    }
+
+    this.incomingCallsSubject.next([...currentCalls, call]);
+  }
+
+  /**
    * Get socket instance (for registering custom event listeners)
    */
   getSocket(): Socket | null {
@@ -92,10 +112,11 @@ export class Alive5SocketService {
 
     this.socket.on('incoming_human_call', (data: IncomingCall) => {
       console.log('[Alive5Socket] Incoming call:', data);
-      const currentCalls = this.incomingCallsSubject.value;
       // Ensure has_human_agent is set to false for new calls
-      data.has_human_agent = false;
-      this.incomingCallsSubject.next([...currentCalls, data]);
+      if (typeof data.has_human_agent === 'undefined') {
+        data.has_human_agent = false;
+      }
+      this.upsertIncomingCall(data);
     });
 
     // Listen for human agent joined notifications
