@@ -2192,9 +2192,25 @@ class SimpleVoiceAgent(Agent):
                 last_notice_at = now
 
                 if rejected:
+                    # Ensure agent audio is unmuted (in case it was muted during handoff initiation)
+                    try:
+                        import httpx
+                        backend_url = self._backend_internal_url()
+                        async with httpx.AsyncClient(timeout=3.0) as client:
+                            resp = await client.post(
+                                f"{backend_url}/api/human-agent/mute-agent",
+                                json={"room_name": self.room_name, "muted": False}
+                            )
+                            if resp.status_code == 200:
+                                logger.info("✅ AI audio track unmuted after rejection")
+                    except Exception:
+                        pass
+                    
                     msg = "No problem — it looks like no one is available right now. I can help you here. What can I assist with?"
                     try:
                         if hasattr(self, "agent_session") and self.agent_session:
+                            # Small delay to ensure hold music cleanup completes before speaking
+                            await asyncio.sleep(0.2)
                             await self._say(msg)
                     except Exception:
                         pass

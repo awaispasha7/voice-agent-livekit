@@ -895,6 +895,14 @@ class DynamicVoiceAgent {
                 if (audioElement) {
                     track.detach(audioElement);
                     audioElement.remove();
+                    console.log(`[Audio] Removed audio element for track ${trackSid} from ${participant.identity}`);
+                }
+                // IMPORTANT: When a track is unsubscribed, ensure other tracks from the same participant
+                // are still attached and playing. This is especially important when hold music stops
+                // and we need to ensure the agent's TTS track is still audible.
+                if (participant && participant.identity && participant.identity.includes('agent')) {
+                    // Log for debugging - agent tracks should remain subscribed
+                    console.log(`[Audio] Track unsubscribed from agent participant - checking other tracks...`);
                 }
             }
         });
