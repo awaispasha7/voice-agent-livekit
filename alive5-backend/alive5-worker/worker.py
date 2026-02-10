@@ -3,10 +3,12 @@ Voice Agent - Single LLM with Function Calling (Brand-Agnostic)
 """
 
 import asyncio
+import audioop
 import inspect
 import logging
 import os
 import random
+import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -224,6 +226,12 @@ class SimpleVoiceAgent(Agent):
         self._hold_music_track = None
         self._hold_music_source = None
         self._hold_music_started: bool = False
+        # While handoff is pending, we keep the hold music track running and "duck" it under AI speech.
+        self._hold_music_allowed: bool = False  # becomes true once handover sentence finishes playing out
+        self._hold_music_pending_after_handover: bool = False
+        self._hold_music_gain: float = 0.0
+        self._hold_music_target_gain: float = 0.0
+        self._hold_music_resume_task: asyncio.Task | None = None
         # Set in entrypoint based on room type (phone/web); used for hold music track format.
         self._audio_sample_rate: int | None = None
 
@@ -562,11 +570,10 @@ class SimpleVoiceAgent(Agent):
         - If hold music is playing (handoff requested), stop it before speaking.
         - No-op if session is missing/closing.
         """
+        # If we're waiting for a human, duck hold music while we speak, then resume afterwards.
         try:
             if getattr(self, "_handoff_requested", False) and not getattr(self, "_handoff_active", False):
-                # Only stop if hold music is already actively playing.
-                if getattr(self, "_hold_music_started", False) or getattr(self, "_hold_music_publication", None):
-                    await self._stop_hold_music(reason="ai_speaking")
+                await self._duck_hold_music(reason="ai_speaking")
         except Exception:
             pass
 
@@ -581,6 +588,30 @@ class SimpleVoiceAgent(Agent):
             await self.agent_session.say(t)
         except Exception:
             return
+        finally:
+            try:
+                if getattr(self, "_handoff_requested", False) and not getattr(self, "_handoff_active", False):
+                    await self._resume_hold_music(reason="ai_finished_speaking")
+            except Exception:
+                pass
+
+    def _estimate_tts_seconds(self, text: str) -> float:
+        """
+        Rough estimate for how long TTS playout will take (used only as a fallback when playout-ended events
+        are not available).
+        """
+        try:
+            t = (text or "").strip()
+            if not t:
+                return 0.0
+            words = max(1, len(t.split()))
+            # ~155 wpm => 0.387s/word; keep a bit conservative
+            base = words * 0.40
+            # punctuation adds pauses
+            pauses = 0.12 * (t.count(",") + t.count(";")) + 0.22 * (t.count(".") + t.count("?") + t.count("!"))
+            return min(20.0, max(1.0, base + pauses))
+        except Exception:
+            return 2.5
 
     @function_tool()
     async def end_call(self, context: RunContext, reason: str = "user_requested_end", farewell: Optional[str] = None) -> Dict[str, Any]:
@@ -1798,20 +1829,60 @@ class SimpleVoiceAgent(Agent):
         if getattr(self, "_session_end_started", False):
             return
 
-        # Delay to avoid overlapping the transfer acknowledgment TTS.
-        try:
-            start_delay = float(os.getenv("HOLD_MUSIC_START_DELAY_SECONDS", "4") or "4")
-        except Exception:
-            start_delay = 4.0
-
         try:
             self._hold_music_stop_event = asyncio.Event()
-            self._hold_music_task = asyncio.create_task(self._hold_music_runner(start_delay=start_delay))
+            # Start immediately but silent; we "allow" it (fade-in) after the handover sentence finishes.
+            self._hold_music_allowed = False
+            self._hold_music_pending_after_handover = False
+            self._hold_music_gain = 0.0
+            self._hold_music_target_gain = 0.0
+            self._hold_music_task = asyncio.create_task(self._hold_music_runner())
+        except Exception:
+            return
+
+    async def _duck_hold_music(self, reason: str = "duck"):
+        """Fade hold music down while AI is speaking (handoff still pending)."""
+        try:
+            if not getattr(self, "_hold_music_started", False):
+                return
+            self._hold_music_target_gain = 0.0
+        except Exception:
+            return
+
+    async def _resume_hold_music(self, reason: str = "resume"):
+        """Fade hold music back up after AI finishes speaking, if handoff is still pending and allowed."""
+        try:
+            if not getattr(self, "_hold_music_started", False):
+                return
+            if not getattr(self, "_handoff_requested", False) or getattr(self, "_handoff_active", False):
+                return
+            if not getattr(self, "_hold_music_allowed", False):
+                return
+            self._hold_music_target_gain = 1.0
+        except Exception:
+            return
+
+    async def _allow_hold_music(self, reason: str = "handover_complete"):
+        """Enable hold music fade-in once the handover sentence has completed playout."""
+        try:
+            if not getattr(self, "_handoff_requested", False) or getattr(self, "_handoff_active", False):
+                return
+            self._hold_music_allowed = True
+            await self._resume_hold_music(reason=reason)
         except Exception:
             return
 
     async def _stop_hold_music(self, reason: str = "stop"):
         """Stop hold music loop and unpublish track (best-effort, idempotent)."""
+        # Fade out a bit for a smoother transition
+        try:
+            if getattr(self, "_hold_music_started", False):
+                self._hold_music_target_gain = 0.0
+                fade_out_ms = int(float(os.getenv("HOLD_MUSIC_FADE_OUT_MS", "450") or "450"))
+                await asyncio.sleep(max(0.05, fade_out_ms / 1000.0))
+        except Exception:
+            pass
+
         try:
             ev = getattr(self, "_hold_music_stop_event", None)
             if ev and not ev.is_set():
@@ -1846,6 +1917,10 @@ class SimpleVoiceAgent(Agent):
             self._hold_music_track = None
             self._hold_music_source = None
             self._hold_music_started = False
+            self._hold_music_allowed = False
+            self._hold_music_pending_after_handover = False
+            self._hold_music_gain = 0.0
+            self._hold_music_target_gain = 0.0
             self._hold_music_stop_event = None
             self._hold_music_task = None
         except Exception:
@@ -1856,17 +1931,14 @@ class SimpleVoiceAgent(Agent):
         except Exception:
             pass
 
-    async def _hold_music_runner(self, start_delay: float = 4.0):
+    async def _hold_music_runner(self):
         """
         Runner task for hold music playback.
         Uses ffmpeg to decode mp3 to 16-bit PCM and pushes frames into a published audio track.
         """
         proc: asyncio.subprocess.Process | None = None
         try:
-            if start_delay and start_delay > 0:
-                await asyncio.sleep(start_delay)
-
-            # Re-check conditions after delay
+            # Re-check conditions
             if getattr(self, "_session_end_started", False):
                 return
             if not getattr(self, "_handoff_requested", False) or getattr(self, "_handoff_active", False):
@@ -1877,6 +1949,12 @@ class SimpleVoiceAgent(Agent):
             hold_path = self._resolve_hold_music_path()
             if not hold_path:
                 logger.warning("⚠️ Hold music file not found; skipping playback")
+                return
+
+            # Resolve ffmpeg binary (mp3 decode). Required for mp3 playback in this implementation.
+            ffmpeg_bin = (os.getenv("FFMPEG_BIN") or "").strip() or (shutil.which("ffmpeg") or "")
+            if not ffmpeg_bin:
+                logger.warning("⚠️ Hold music disabled: ffmpeg not installed on server. Install with: sudo apt-get update && sudo apt-get install -y ffmpeg")
                 return
 
             # Use the room's configured audio sample rate (set in entrypoint)
@@ -1904,7 +1982,7 @@ class SimpleVoiceAgent(Agent):
             self._hold_music_started = True
 
             cmd = [
-                "ffmpeg",
+                ffmpeg_bin,
                 "-hide_banner",
                 "-loglevel",
                 "error",
@@ -1954,8 +2032,35 @@ class SimpleVoiceAgent(Agent):
                     return
 
                 try:
+                    # Apply gain ramp for smooth fade in/out (ducking under AI speech)
+                    try:
+                        frame_ms = 20.0
+                        fade_in_ms = float(os.getenv("HOLD_MUSIC_FADE_IN_MS", "650") or "650")
+                        fade_out_ms = float(os.getenv("HOLD_MUSIC_FADE_OUT_MS", "450") or "450")
+                        target = float(getattr(self, "_hold_music_target_gain", 0.0) or 0.0)
+                        cur = float(getattr(self, "_hold_music_gain", 0.0) or 0.0)
+                        target = 1.0 if target >= 1.0 else (0.0 if target <= 0.0 else target)
+                        cur = 1.0 if cur >= 1.0 else (0.0 if cur <= 0.0 else cur)
+                        if target > cur:
+                            step = frame_ms / max(50.0, fade_in_ms)
+                            cur = min(target, cur + step)
+                        elif target < cur:
+                            step = frame_ms / max(50.0, fade_out_ms)
+                            cur = max(target, cur - step)
+                        self._hold_music_gain = cur
+
+                        if cur <= 0.001:
+                            # Keep silent frames to maintain timing without dropping the track
+                            data_out = b"\x00" * len(data)
+                        elif cur >= 0.999:
+                            data_out = data
+                        else:
+                            data_out = audioop.mul(data, 2, cur)
+                    except Exception:
+                        data_out = data
+
                     frame = rtc.AudioFrame(
-                        data=data,
+                        data=data_out,
                         sample_rate=sr,
                         num_channels=num_channels,
                         samples_per_channel=samples_per_channel,
@@ -2005,6 +2110,10 @@ class SimpleVoiceAgent(Agent):
                 self._hold_music_track = None
                 self._hold_music_source = None
                 self._hold_music_started = False
+                self._hold_music_allowed = False
+                self._hold_music_pending_after_handover = False
+                self._hold_music_gain = 0.0
+                self._hold_music_target_gain = 0.0
             except Exception:
                 pass
 
@@ -2067,6 +2176,12 @@ class SimpleVoiceAgent(Agent):
                     self._handoff_requested = False
                     self._handoff_queue = None
                     self._human_agent_identity = None
+                except Exception:
+                    pass
+
+                # If handoff is no longer pending/active, ensure hold music stops.
+                try:
+                    await self._stop_hold_music(reason="handoff_state_end")
                 except Exception:
                     pass
 
@@ -3208,6 +3323,32 @@ class SimpleVoiceAgent(Agent):
                 asyncio.create_task(self._send_message_to_alive5(user_text, is_agent=is_from_human_agent))
                 return
 
+        # If we are waiting for a human and hold music is currently playing, duck it immediately at the
+        # start of the AI response generation. This is earlier than `conversation_item_added` (which can
+        # fire only after the assistant message is committed).
+        try:
+            if getattr(self, "_handoff_requested", False) and not getattr(self, "_handoff_active", False):
+                # Ensure hold music runner exists (it stays silent until allowed after handover sentence).
+                asyncio.create_task(self._start_hold_music())
+                # Duck if currently audible.
+                if float(getattr(self, "_hold_music_gain", 0.0) or 0.0) > 0.02:
+                    asyncio.create_task(self._duck_hold_music(reason="user_turn_completed"))
+
+                # Safety: if something goes wrong and the AI never commits an assistant message,
+                # don't leave hold music ducked forever.
+                duck_max_s = float(os.getenv("HOLD_MUSIC_DUCK_MAX_SECONDS", "25") or "25")
+
+                async def _fail_safe_resume():
+                    try:
+                        await asyncio.sleep(max(3.0, duck_max_s))
+                        await self._resume_hold_music(reason="duck_failsafe")
+                    except Exception:
+                        return
+
+                asyncio.create_task(_fail_safe_resume())
+        except Exception:
+            pass
+
         # CRITICAL: Call parent method FIRST to maintain conversation state
         # This ensures the agent's conversation history is preserved (normal AI mode only)
         await super().on_user_turn_completed(turn_ctx, new_message)
@@ -4283,6 +4424,59 @@ async def entrypoint(ctx: JobContext):
                 sync_transcription=True  # Enable sync transcription for frontend display
             )
         )
+
+        # Best-effort: hook into agent speech playout events so we can duck/resume hold music smoothly
+        # and allow music only after the handover sentence finishes.
+        try:
+            def _on_agent_speech_start(_ev=None):
+                try:
+                    if getattr(agent, "_handoff_requested", False) and not getattr(agent, "_handoff_active", False):
+                        asyncio.create_task(agent._duck_hold_music(reason="agent_speech_start"))
+                except Exception:
+                    pass
+
+            def _on_agent_speech_end(_ev=None):
+                try:
+                    if getattr(agent, "_handoff_requested", False) and not getattr(agent, "_handoff_active", False):
+                        # If this was the end of the handover sentence, allow the hold music now.
+                        if getattr(agent, "_hold_music_pending_after_handover", False):
+                            try:
+                                agent._hold_music_pending_after_handover = False
+                            except Exception:
+                                pass
+                            asyncio.create_task(agent._allow_hold_music(reason="handover_complete_event"))
+                        else:
+                            asyncio.create_task(agent._resume_hold_music(reason="agent_speech_end"))
+                except Exception:
+                    pass
+
+            possible_start_events = [
+                "agent_speech_playout_started",
+                "agent_speech_started",
+                "speech_playout_started",
+                "speech_started",
+                "tts_started",
+            ]
+            possible_end_events = [
+                "agent_speech_playout_ended",
+                "agent_speech_ended",
+                "speech_playout_ended",
+                "speech_ended",
+                "tts_ended",
+            ]
+
+            for _ev in possible_start_events:
+                try:
+                    session.on(_ev)(_on_agent_speech_start)
+                except Exception:
+                    pass
+            for _ev in possible_end_events:
+                try:
+                    session.on(_ev)(_on_agent_speech_end)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         
         # Listen to conversation item added event (as per LiveKit docs)
         # According to https://docs.livekit.io/agents/build/text/, this event fires when
@@ -4316,14 +4510,61 @@ async def entrypoint(ctx: JobContext):
                 if text_content and text_content.strip():
                     # Only send agent messages here (user messages are handled in on_user_turn_completed)
                     if is_agent_msg:
-                        # If we're waiting for a human after transfer, and the AI speaks again,
-                        # stop the hold music so audio doesn't overlap.
+                        # If we're waiting for a human after transfer, we duck hold music under AI speech
+                        # and resume after the utterance ends (best-effort).
                         if getattr(agent, "_handoff_requested", False) and not getattr(agent, "_handoff_active", False):
                             try:
-                                if getattr(agent, "_hold_music_started", False) or getattr(agent, "_hold_music_publication", None):
-                                    asyncio.create_task(agent._stop_hold_music(reason="ai_speaking"))
+                                # Ensure runner is up (silent until allowed)
+                                asyncio.create_task(agent._start_hold_music())
                             except Exception:
                                 pass
+                            try:
+                                asyncio.create_task(agent._duck_hold_music(reason="ai_speaking"))
+                            except Exception:
+                                pass
+
+                            # Detect handover sentence and allow hold music only AFTER it finishes playing out.
+                            # We try to use playout-ended events (below). If unavailable, fall back to an estimate.
+                            try:
+                                tl = (text_content or "").strip().lower()
+                                is_handover = ("connecting you with a representative" in tl and "please hold" in tl)
+                            except Exception:
+                                is_handover = False
+
+                            if is_handover:
+                                try:
+                                    agent._hold_music_pending_after_handover = True
+                                except Exception:
+                                    pass
+                                try:
+                                    delay_s = float(agent._estimate_tts_seconds(text_content) + 0.2)
+                                except Exception:
+                                    delay_s = 2.5
+
+                                async def _allow_later():
+                                    try:
+                                        await asyncio.sleep(max(0.5, delay_s))
+                                        # If playout-ended event already enabled it, this is a no-op.
+                                        await agent._allow_hold_music(reason="handover_complete_estimate")
+                                    except Exception:
+                                        return
+
+                                asyncio.create_task(_allow_later())
+                            else:
+                                # For other AI utterances during waiting, resume hold music after a rough estimate.
+                                try:
+                                    delay_s = float(agent._estimate_tts_seconds(text_content) + 0.15)
+                                except Exception:
+                                    delay_s = 2.0
+
+                                async def _resume_later():
+                                    try:
+                                        await asyncio.sleep(max(0.4, delay_s))
+                                        await agent._resume_hold_music(reason="ai_finished_estimate")
+                                    except Exception:
+                                        return
+
+                                asyncio.create_task(_resume_later())
                         # During HITL/shadow mode, suppress AI messages so Alive5 doesn't attribute them to the voice agent.
                         if getattr(agent, "_handoff_active", False):
                             return

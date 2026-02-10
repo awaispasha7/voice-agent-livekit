@@ -225,6 +225,18 @@ if ($choice -eq "1") {
     
     Write-Host "  - Deploying requirements.txt..." -ForegroundColor White
     & scp -i $KEY -o StrictHostKeyChecking=no requirements.txt "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/"
+
+    # Deploy hold music asset (used during HITL transfer wait)
+    if (Test-Path "hold-music.mp3") {
+        Write-Host "  - Deploying hold-music.mp3..." -ForegroundColor White
+        & scp -i $KEY -o StrictHostKeyChecking=no hold-music.mp3 "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/"
+    } else {
+        Write-Host "  ⚠️  Warning: hold-music.mp3 not found locally - hold music will be disabled" -ForegroundColor $WarningColor
+    }
+
+    # Ensure ffmpeg is installed (required to decode mp3 hold music)
+    Write-Host "  - Ensuring ffmpeg is installed (for hold music)..." -ForegroundColor White
+    & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "command -v ffmpeg >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y ffmpeg)" 2>&1 | Out-Null
     
     Write-Host "Worker files deployed successfully!" -ForegroundColor $SuccessColor
     
@@ -245,7 +257,10 @@ if ($choice -eq "1") {
         "Type=simple",
         "User=ubuntu",
         "WorkingDirectory=/home/ubuntu/alive5-voice-agent",
-        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin`"",
+        # IMPORTANT: include system paths so binaries like ffmpeg (installed to /usr/bin) are discoverable.
+        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`"",
+        # Explicit override also supported by worker.py (FFMPEG_BIN env var)
+        "Environment=`"FFMPEG_BIN=/usr/bin/ffmpeg`"",
         "ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py dev",
         "Restart=always",
         "RestartSec=10",
@@ -341,6 +356,18 @@ if ($choice -eq "1") {
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/memory.py $agentcoreTarget
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/gateway_tools.py $agentcoreTarget
     
+    # Deploy hold music asset (used during HITL transfer wait)
+    if (Test-Path "hold-music.mp3") {
+        Write-Host "  - Deploying hold-music.mp3..." -ForegroundColor White
+        & scp -i $KEY -o StrictHostKeyChecking=no hold-music.mp3 "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/"
+    } else {
+        Write-Host "  ⚠️  Warning: hold-music.mp3 not found locally - hold music will be disabled" -ForegroundColor $WarningColor
+    }
+
+    # Ensure ffmpeg is installed (required to decode mp3 hold music)
+    Write-Host "  - Ensuring ffmpeg is installed (for hold music)..." -ForegroundColor White
+    & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "command -v ffmpeg >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y ffmpeg)" 2>&1 | Out-Null
+
     Write-Host "Worker files deployed successfully!" -ForegroundColor $SuccessColor
     
     # Create backend service
@@ -357,7 +384,7 @@ if ($choice -eq "1") {
         "Type=simple",
         "User=ubuntu",
         "WorkingDirectory=/home/ubuntu/alive5-voice-agent",
-        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin`"",
+        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`"",
         "ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python backend/main.py",
         "Restart=always",
         "RestartSec=10",
@@ -390,7 +417,10 @@ if ($choice -eq "1") {
         "Type=simple",
         "User=ubuntu",
         "WorkingDirectory=/home/ubuntu/alive5-voice-agent",
-        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin`"",
+        # IMPORTANT: include system paths so binaries like ffmpeg (installed to /usr/bin) are discoverable.
+        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`"",
+        # Explicit override also supported by worker.py (FFMPEG_BIN env var)
+        "Environment=`"FFMPEG_BIN=/usr/bin/ffmpeg`"",
         "ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py dev",
         "Restart=always",
         "RestartSec=10",
@@ -481,6 +511,18 @@ if ($choice -eq "1") {
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/memory.py $agentcoreTarget
     & scp -i $KEY -o StrictHostKeyChecking=no alive5-backend/agentcore/gateway_tools.py $agentcoreTarget
     
+    # Deploy hold music asset (used during HITL transfer wait)
+    if (Test-Path "hold-music.mp3") {
+        Write-Host "  - Deploying hold-music.mp3..." -ForegroundColor White
+        & scp -i $KEY -o StrictHostKeyChecking=no hold-music.mp3 "${USER}@${SERVER}:/home/ubuntu/alive5-voice-agent/"
+    } else {
+        Write-Host "  ⚠️  Warning: hold-music.mp3 not found locally - hold music will be disabled" -ForegroundColor $WarningColor
+    }
+
+    # Ensure ffmpeg is installed (required to decode mp3 hold music)
+    Write-Host "  - Ensuring ffmpeg is installed (for hold music)..." -ForegroundColor White
+    & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "command -v ffmpeg >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y ffmpeg)" 2>&1 | Out-Null
+
     Write-Host "Worker files deployed successfully!" -ForegroundColor $SuccessColor
     
     # Create virtual environment if it doesn't exist
@@ -532,7 +574,7 @@ if ($choice -eq "1") {
         # Try installing AWS plugin separately with legacy resolver
         Write-Host "  - Attempting to install livekit-plugins-aws separately..." -ForegroundColor $WarningColor
         Write-Host "    (Using legacy resolver to avoid backtracking)..." -ForegroundColor White
-        $awsPluginResult = & ssh -i $KEY -o StrictHostKeyChecking=no -o ServerAliveInterval=10 "$USER@$SERVER" "bash -c 'cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/pip install --no-cache-dir --timeout=300 --use-deprecated=legacy-resolver livekit-plugins-aws>=1.2.0,<2.0.0 2>&1'" 2>&1 | ForEach-Object {
+        $null = & ssh -i $KEY -o StrictHostKeyChecking=no -o ServerAliveInterval=10 "$USER@$SERVER" "bash -c 'cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/pip install --no-cache-dir --timeout=300 --use-deprecated=legacy-resolver livekit-plugins-aws>=1.2.0,<2.0.0 2>&1'" 2>&1 | ForEach-Object {
             Write-Host $_ -ForegroundColor Gray
             $_
         }
@@ -555,7 +597,7 @@ if ($choice -eq "1") {
     Write-Host "Downloading model files..." -ForegroundColor $InfoColor
     Write-Host "  - Running download-files command..." -ForegroundColor White
     Write-Host "    (This downloads turn detector model weights, ~66 MB for English or ~281 MB for multilingual)" -ForegroundColor Gray
-    $downloadResult = & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py download-files 2>&1" 2>&1 | ForEach-Object {
+    $null = & ssh -i $KEY -o StrictHostKeyChecking=no "$USER@$SERVER" "cd /home/ubuntu/alive5-voice-agent && /home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py download-files 2>&1" 2>&1 | ForEach-Object {
         Write-Host $_ -ForegroundColor Gray
         $_
     }
@@ -580,7 +622,7 @@ if ($choice -eq "1") {
         "Type=simple",
         "User=ubuntu",
         "WorkingDirectory=/home/ubuntu/alive5-voice-agent",
-        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin`"",
+        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`"",
         "ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python backend/main.py",
         "Restart=always",
         "RestartSec=10",
@@ -613,7 +655,10 @@ if ($choice -eq "1") {
         "Type=simple",
         "User=ubuntu",
         "WorkingDirectory=/home/ubuntu/alive5-voice-agent",
-        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin`"",
+        # IMPORTANT: include system paths so binaries like ffmpeg (installed to /usr/bin) are discoverable.
+        "Environment=`"PATH=/home/ubuntu/alive5-voice-agent/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`"",
+        # Explicit override also supported by worker.py (FFMPEG_BIN env var)
+        "Environment=`"FFMPEG_BIN=/usr/bin/ffmpeg`"",
         "ExecStart=/home/ubuntu/alive5-voice-agent/venv/bin/python backend/alive5-worker/worker.py dev",
         "Restart=always",
         "RestartSec=10",

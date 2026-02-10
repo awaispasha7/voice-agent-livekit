@@ -847,16 +847,25 @@ class DynamicVoiceAgent {
         });
         
         // Handle audio tracks from agent
+        // IMPORTANT: a single participant (the worker/agent) may publish multiple audio tracks (e.g. hold music + TTS).
+        // If we reuse one <audio> element per participant, the last subscribed track can "replace" the previous one,
+        // causing silence or missing speech. So we attach one <audio> element per *track*.
         this.room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
             // console.log('Track subscribed:', track.kind, 'from participant:', participant.identity);
             
             if (track.kind === 'audio') {
-                let audioElement = document.getElementById(`audio-${participant.sid}`);
+                const pubSid = (publication && (publication.trackSid || publication.sid)) || '';
+                const trackSid = pubSid || track.sid || `${participant.sid}-${Date.now()}`;
+                const elId = `audio-${participant.sid}-${trackSid}`;
+                
+                let audioElement = document.getElementById(elId);
                 if (!audioElement) {
                     audioElement = document.createElement('audio');
-                    audioElement.id = `audio-${participant.sid}`;
+                    audioElement.id = elId;
                     audioElement.autoplay = true;
                     audioElement.controls = false;
+                    audioElement.dataset.participantSid = participant.sid;
+                    audioElement.dataset.trackSid = trackSid;
                     document.body.appendChild(audioElement);
                 }
                 
@@ -879,7 +888,10 @@ class DynamicVoiceAgent {
         
         this.room.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
             if (track.kind === 'audio') {
-                const audioElement = document.getElementById(`audio-${participant.sid}`);
+                const pubSid = (publication && (publication.trackSid || publication.sid)) || '';
+                const trackSid = pubSid || track.sid || '';
+                const elId = `audio-${participant.sid}-${trackSid}`;
+                const audioElement = document.getElementById(elId);
                 if (audioElement) {
                     track.detach(audioElement);
                     audioElement.remove();
